@@ -40,6 +40,7 @@ linking also needs the HashLink import library, selected with `HL_LIB_DIR`.
 - [blinc_ts](https://github.com/project-blinc/blinc_ts): TypeScript SDK and Node integration.
 - [ashui](https://github.com/rayzor-blade/ashui): existing Haxe integration.
 
-See [the adapter separation plan](docs/adapters.md).
+See [adapter separation and compatibility checks](docs/adapters.md) and
+[contributing](docs/contributing.md).
 
 Apache-2.0. Source provenance is recorded in [NOTICE](NOTICE).

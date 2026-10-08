@@ -58,4 +58,17 @@ Node integration tests cover callback identity/errors, dynamic dependencies,
 nested effect cleanup and HMR scopes. The original adapter still compiles with
 default features. The `scene` feature now builds the shared paint walk, hit testing
 and text/image helpers independently of HashLink; owned scene APIs, Node resource
-bindings and compatibility snapshots remain the next extraction milestone.
+bindings remain the next extraction milestone.
+
+
+## Compatibility checkpoint
+
+The extraction at `4b70e01` was checked on macOS against the existing Haxe
+consumer on 2026-10-08. Both libraries export the same 209 HashLink entry points.
+The same compiled `Glass` scene produces identical pixels at 1x and 2x; all 16
+frames of `AccordionMotion` also match pixel for pixel. This verifies the sampled
+text, glass, clipping, reactive updates and layout animation paths. Linux and
+Windows runtime validation remain separate platform gates.
+
+See [contributing](contributing.md) for milestone commits, issue tracking and
+compatibility verification.
