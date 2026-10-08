@@ -900,10 +900,14 @@ pub fn append(
         let transparent = Brush::Solid(Color::TRANSPARENT);
         // An image background, a bitmap ashui names by its slot, is drawn over the box under the border.
         let image = match &props.background {
-            Some(Brush::Image(i)) => i
-                .source
-                .strip_prefix("ashui:bitmap:")
-                .and_then(|s| s.parse::<i32>().ok())
+            Some(Brush::Image(i)) => tree.image_sources.get(&i.source)
+                .and_then(|slots| match i.fit {
+                    blinc_core::layer::ImageFit::Cover => slots[0],
+                    blinc_core::layer::ImageFit::Contain => slots[1],
+                    blinc_core::layer::ImageFit::Fill => slots[2],
+                    _ => None,
+                })
+                .or_else(|| i.source.strip_prefix("ashui:bitmap:").and_then(|s| s.parse::<i32>().ok()))
                 .map(|slot| (slot, i.opacity)),
             _ => None,
         };

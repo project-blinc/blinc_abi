@@ -16,6 +16,9 @@ pub struct Tree {
     /// Nodes that draw an image in their content box: an SVG or a bitmap,
     /// named by a slot the caller resolves after the walk.
     pub(crate) images: HashMap<LayoutNodeId, i32>,
+    /// Image-brush sources resolved by the host, with one prepared slot per fit.
+    #[cfg(feature = "scene")]
+    pub(crate) image_sources: HashMap<String, [Option<i32>; 3]>,
     /// Nodes that paint with the GPU themselves in their content box, named
     /// by a slot the caller resolves while the frame is drawn.
     pub(crate) canvases: HashMap<LayoutNodeId, i32>,
@@ -58,6 +61,8 @@ impl Tree {
             pruned: false,
             owners: HashMap::new(),
             images: HashMap::new(),
+            #[cfg(feature = "scene")]
+            image_sources: HashMap::new(),
             canvases: HashMap::new(),
             scrolls: HashMap::new(),
             pass_through: HashSet::new(),
