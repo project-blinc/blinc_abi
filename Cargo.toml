@@ -1,0 +1,54 @@
+[package]
+name = "blinc_abi"
+version = "0.1.0"
+edition = "2024"
+description = "ABI for the Blinc UI"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+default = ["hashlink"]
+hashlink = ["dep:hl_abi", "scene"]
+scene = ["dep:blinc_svg", "dep:blinc_text", "dep:blinc_image", "dep:swash", "blinc_layout/text_measurer"]
+
+[dependencies]
+blinc_core = {git = "https://github.com/project-blinc/blinc", branch = "main"}
+blinc_svg = {git = "https://github.com/project-blinc/blinc", branch = "main", features = ["svg_raster_images"], optional = true}
+blinc_text = {git = "https://github.com/project-blinc/blinc", branch = "main", optional = true}
+blinc_image = {git = "https://github.com/project-blinc/blinc", branch = "main", default-features = false, features = ["png", "jpeg", "webp"], optional = true}
+blinc_layout = {git = "https://github.com/project-blinc/blinc", branch = "main"}
+hl_abi = {git="https://github.com/rayzor-blade/hl_abi", branch="main", optional=true}
+taffy = { version = "0.14", features = ["content_size"] }
+# Glyph outlines for text drawn on a canvas, scaled as blinc_text rasterizes its faces.
+swash = { version = "0.1", optional = true }
+
+[workspace]
+resolver = "3"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# SVG is parsed and rasterized once per image and size, never per frame: small over fast.
+[profile.release.package.usvg]
+opt-level = "s"
+[profile.release.package.resvg]
+opt-level = "s"
+[profile.release.package.tiny-skia]
+opt-level = "s"
+[profile.release.package.tiny-skia-path]
+opt-level = "s"
+[profile.release.package.roxmltree]
+opt-level = "s"
+[profile.release.package.svgtypes]
+opt-level = "s"
+[profile.release.package.simplecss]
+opt-level = "s"
+[profile.release.package.fontdb]
+opt-level = "s"
+[profile.release.package.blinc_svg]
+opt-level = "s"
