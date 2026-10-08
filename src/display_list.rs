@@ -434,6 +434,8 @@ fn shape_clip(
 #[derive(Clone)]
 struct Clipping {
     screen: ([f32; 4], [f32; 4], f32),
+    /// Layer bounds must still include clipped records until the composite is resolved.
+    cull: bool,
     local: Option<([f32; 4], [f32; 4])>,
     n: f32,
     /// The innermost fading clip's rect on screen and its fade distances.
@@ -445,25 +447,19 @@ struct Clipping {
 /// The clips under `clips` for a record placed at `origin` in layout
 /// coordinates under `m`. Those pushed under `m` itself become its local
 /// clip, unless `local` is false; the rest are clipped on screen.
-fn clipping(clips: &[Clip], m: Affine, origin: (f32, f32), local: bool) -> Clipping {
+fn clipping(clips: &[Clip], m: Affine, origin: (f32, f32), local: bool, cull: bool) -> Clipping {
     let shares = |c: &Clip| local && m != IDENTITY && c.frame == m;
     // A clip-path clips by its shape alone, not as a rect.
     let rects = clips.iter().filter(|c| c.shape.is_none());
-    let on_screen: Vec<Clip> = rects.clone().filter(|c| !shares(c)).copied().collect();
-    let in_frame: Vec<Clip> = rects
-        .filter(|c| shares(c))
-        .map(|c| Clip {
-            rect: c.layout,
-            radii: c.layout_radii,
-            ..*c
-        })
-        .collect();
-    let local = if in_frame.is_empty() {
-        None
-    } else {
-        let (r, radii, _) = clip_data(&in_frame);
-        Some(([r[0] - origin.0, r[1] - origin.1, r[2], r[3]], radii))
-    };
+    let on_screen = rects.clone().filter(|c| !shares(c)).copied();
+    let in_frame = rects.filter(|c| shares(c)).map(|c| Clip {
+        rect: c.layout,
+        radii: c.layout_radii,
+        ..*c
+    });
+    let (r, radii, flag) = clip_data(in_frame);
+    let local =
+        (flag != CLIP_NONE).then_some(([r[0] - origin.0, r[1] - origin.1, r[2], r[3]], radii));
     // One corner shape per record: the innermost rounded clip's, which a
     // single squircle parent clipping its children makes exact.
     let n = clips
@@ -477,7 +473,8 @@ fn clipping(clips: &[Clip], m: Affine, origin: (f32, f32), local: bool) -> Clipp
         .find(|c| c.fade.iter().any(|&f| f > 0.0))
         .map_or(([0.0; 4], [0.0; 4]), |c| (c.rect, c.fade));
     Clipping {
-        screen: clip_data(&on_screen),
+        screen: clip_data(on_screen),
+        cull,
         local,
         n,
         fade,
@@ -489,15 +486,14 @@ fn clipping(clips: &[Clip], m: Affine, origin: (f32, f32), local: bool) -> Clipp
 /// rects, with a corner rounded only where the intersection still reaches
 /// into the rounded corner of the clip it came from. Blinc's
 /// `GpuPaintContext::get_clip_data` for rect and rounded-rect clips.
-fn clip_data(clips: &[Clip]) -> ([f32; 4], [f32; 4], f32) {
-    if clips.is_empty() {
-        return (NO_CLIP, [0.0; 4], CLIP_NONE);
-    }
+fn clip_data(clips: impl Iterator<Item = Clip>) -> ([f32; 4], [f32; 4], f32) {
+    let mut any = false;
     let (mut min_x, mut min_y) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
     let (mut max_x, mut max_y) = (f32::INFINITY, f32::INFINITY);
     // Per corner: the largest radius and the bounds of the clip it came from.
     let mut sources = [(0.0f32, [0.0f32; 4]); 4];
     for clip in clips {
+        any = true;
         let [x, y, w, h] = clip.rect;
         min_x = min_x.max(x);
         min_y = min_y.max(y);
@@ -508,6 +504,9 @@ fn clip_data(clips: &[Clip]) -> ([f32; 4], [f32; 4], f32) {
                 sources[corner] = (clip.radii[corner], [x, y, x + w, y + h]);
             }
         }
+    }
+    if !any {
+        return (NO_CLIP, [0.0; 4], CLIP_NONE);
     }
     let mut radii = [0.0f32; 4];
     // How far the intersection's edges sit inside the source's, per corner.
@@ -695,7 +694,54 @@ impl Primitive {
         );
     }
 
+    /// Reject only against the explicit screen clip, including its 0.75-unit
+    /// antialiasing fringe. No viewport or ancestor layout box is an implicit
+    /// clip: overflow and backdrop sampling can need geometry outside them.
+    fn outside_clip(&self, clipping: &Clipping) -> bool {
+        if !clipping.cull
+            || clipping.screen.2 == CLIP_NONE
+            || self.kind == PRIM_CANVAS
+            || self.kind == PRIM_LAYER
+            || self.kind == PRIM_LAYER_BEGIN
+        {
+            return false;
+        }
+        // ShadowShader expands its vertex quad by this reach in local units.
+        // Spread is also retained conservatively, including future quad expansion.
+        let grow = if self.kind == PRIM_SHADOW {
+            self.shadow[2].max(0.0) * 3.0
+                + self.shadow[0].abs()
+                + self.shadow[1].abs()
+                + self.shadow[3].max(0.0)
+        } else {
+            0.0
+        };
+        let [a, b, c, d] = self.affine;
+        let [x, y, w, h] = self.bounds;
+        if ![a, b, c, d, x, y, w, h, grow].iter().all(|v| v.is_finite()) {
+            return false;
+        }
+        let bounds = if self.affine == [1.0, 0.0, 0.0, 1.0] {
+            [x - grow, y - grow, w + 2.0 * grow, h + 2.0 * grow]
+        } else {
+            bounding(
+                [a, b, c, d, x, y],
+                [-grow, -grow, w + 2.0 * grow, h + 2.0 * grow],
+            )
+        };
+        let [cx, cy, cw, ch] = clipping.screen.0;
+        let [x, y, w, h] = bounds;
+        // Keep uncertain/degenerate geometry. Local clips and clip paths are
+        // left to the shader; their coverage depends on transformed derivatives.
+        w >= 0.0
+            && h >= 0.0
+            && (x + w < cx - 1.0 || y + h < cy - 1.0 || x > cx + cw + 1.0 || y > cy + ch + 1.0)
+    }
+
     fn push(&self, clipping: &Clipping, out: &mut Vec<f32>) {
+        if self.outside_clip(clipping) {
+            return;
+        }
         let clip = &clipping.screen;
         let (row6, row7) = match &clipping.local {
             Some((rect, radii)) => (rect, radii),
@@ -759,6 +805,24 @@ pub fn append(
     clips: &mut Vec<Clip>,
     glyphs: &mut Glyphs,
     out: &mut Vec<f32>,
+) {
+    append_inner(
+        tree, node, origin, opacity, color, m, clips, glyphs, out, true,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_inner(
+    tree: &Tree,
+    node: LayoutNodeId,
+    origin: (f32, f32),
+    opacity: f32,
+    color: [f32; 4],
+    m: Affine,
+    clips: &mut Vec<Clip>,
+    glyphs: &mut Glyphs,
+    out: &mut Vec<f32>,
+    mut cull: bool,
 ) {
     let Some(layout) = tree.layout.get_layout(node) else {
         return;
@@ -845,6 +909,7 @@ pub fn append(
             || mask.is_some()
             || (props.opacity < 1.0 && painted_at_least(tree, node, 2))
         {
+            cull = false;
             layer = Some((
                 out.len(),
                 opacity * props.opacity,
@@ -854,7 +919,7 @@ pub fn append(
                 mask,
             ));
             Primitive::new(PRIM_LAYER_BEGIN, [0.0; 4], [0.0; 4])
-                .push(&clipping(&[], IDENTITY, (0.0, 0.0), false), out);
+                .push(&clipping(&[], IDENTITY, (0.0, 0.0), false, cull), out);
             opacity = 1.0;
         } else {
             opacity *= props.opacity;
@@ -877,8 +942,8 @@ pub fn append(
         let radii = [r.top_left, r.top_right, r.bottom_right, r.bottom_left];
         let notch = tree.notches.get(&node).copied().unwrap_or([[0.0; 4]; 3]);
         // A shadow's local-clip rows hold the shadow itself.
-        let shadow_clip = clipping(clips, m, (x, y), false);
-        let clip = clipping(clips, m, (x, y), true);
+        let shadow_clip = clipping(clips, m, (x, y), false, cull);
+        let clip = clipping(clips, m, (x, y), true, cull);
 
         // Outer shadows under the fill; inset ones go over it, after.
         for s in props.shadow.iter().rev() {
@@ -900,14 +965,20 @@ pub fn append(
         let transparent = Brush::Solid(Color::TRANSPARENT);
         // An image background, a bitmap ashui names by its slot, is drawn over the box under the border.
         let image = match &props.background {
-            Some(Brush::Image(i)) => tree.image_sources.get(&i.source)
+            Some(Brush::Image(i)) => tree
+                .image_sources
+                .get(&i.source)
                 .and_then(|slots| match i.fit {
                     blinc_core::layer::ImageFit::Cover => slots[0],
                     blinc_core::layer::ImageFit::Contain => slots[1],
                     blinc_core::layer::ImageFit::Fill => slots[2],
                     _ => None,
                 })
-                .or_else(|| i.source.strip_prefix("ashui:bitmap:").and_then(|s| s.parse::<i32>().ok()))
+                .or_else(|| {
+                    i.source
+                        .strip_prefix("ashui:bitmap:")
+                        .and_then(|s| s.parse::<i32>().ok())
+                })
                 .map(|slot| (slot, i.opacity)),
             _ => None,
         };
@@ -920,7 +991,7 @@ pub fn append(
             let on_screen = glyphs.display_scale * (m[0] * m[3] - m[1] * m[2]).abs().sqrt();
             rec.gradient = [slot as f32, on_screen, 0.0, 0.0];
             rec.place(m, x, y);
-            rec.push(&clipping(&ring_clips, m, (x, y), true), out);
+            rec.push(&clipping(&ring_clips, m, (x, y), true, cull), out);
         }
         // A glass or blur brush draws what is behind the box, blurred and
         // filtered, in place of a fill; the border still draws, over nothing.
@@ -1077,7 +1148,7 @@ pub fn append(
             o.side_colors = [o.border_color; 4];
             o.place(m, x - grow, y - grow);
             if o.border_color[3] > 0.0 {
-                o.push(&clipping(clips, m, (x - grow, y - grow), true), out);
+                o.push(&clipping(clips, m, (x - grow, y - grow), true, cull), out);
             }
         }
     }
@@ -1111,6 +1182,7 @@ pub fn append(
                     &own,
                     glyphs.display_scale,
                     out,
+                    cull,
                 );
             }
             None => image_record(
@@ -1125,6 +1197,7 @@ pub fn append(
                 clips,
                 glyphs.display_scale,
                 out,
+                cull,
             ),
         }
     }
@@ -1140,6 +1213,7 @@ pub fn append(
             clips,
             glyphs,
             out,
+            cull,
         );
     }
 
@@ -1198,7 +1272,7 @@ pub fn append(
     let scroll = tree.scrolls.get(&node).copied();
     let (sx, sy) = scroll.map_or((0.0, 0.0), |s| (s.x, s.y));
     for child in tree.layout.children(node) {
-        append(
+        append_inner(
             tree,
             child,
             (x - sx, y - sy),
@@ -1208,10 +1282,11 @@ pub fn append(
             clips,
             glyphs,
             out,
+            cull,
         );
     }
     if let Some(s) = scroll {
-        thumbs(tree, node, s, (x, y), opacity, m, clips, out);
+        thumbs(tree, node, s, (x, y), opacity, m, clips, out, cull);
     }
     if pushed {
         clips.pop();
@@ -1256,7 +1331,7 @@ pub fn append(
             c.radii = mask.translate;
             c.offsets = mask.offsets;
         }
-        c.push(&clipping(&[], IDENTITY, (0.0, 0.0), false), out);
+        c.push(&clipping(&[], IDENTITY, (0.0, 0.0), false, cull), out);
     }
 }
 
@@ -1632,6 +1707,7 @@ fn thumbs(
     m: Affine,
     clips: &[Clip],
     out: &mut Vec<f32>,
+    cull: bool,
 ) {
     let alpha = s.thumb[3] * opacity;
     if alpha <= 0.0 {
@@ -1656,7 +1732,10 @@ fn thumbs(
         p.color = color;
         p.color2 = color;
         p.place(m, x + rect[0], y + rect[1]);
-        p.push(&clipping(clips, m, (x + rect[0], y + rect[1]), true), out);
+        p.push(
+            &clipping(clips, m, (x + rect[0], y + rect[1]), true, cull),
+            out,
+        );
     };
     if content_h > view_h + 0.5 && view_h > 0.0 {
         let track = view_h - 2.0 * THUMB_GAP;
@@ -1695,6 +1774,7 @@ fn text_records(
     clips: &[Clip],
     glyphs: &mut Glyphs,
     out: &mut Vec<f32>,
+    cull: bool,
 ) {
     let props = tree.props.get(&node);
     let color = [color[0], color[1], color[2], color[3] * opacity];
@@ -1717,7 +1797,9 @@ fn text_records(
         context,
         w,
         props.and_then(|p| p.text_align),
-        props.and_then(|p| p.letter_spacing).unwrap_or(context.letter_spacing),
+        props
+            .and_then(|p| p.letter_spacing)
+            .unwrap_or(context.letter_spacing),
         color,
         k,
         subpixel,
@@ -1731,6 +1813,10 @@ fn text_records(
     };
     // Glyphs start half the extra leading below the line box's top, as in CSS.
     let lead = text::half_leading(context, context.font_size * k);
+    // All glyphs share these clips. Resolve them once, then rebase the local
+    // rect directly from layout coordinates to retain the exact f32 arithmetic.
+    let mut clip = clipping(clips, m, (0.0, 0.0), true, cull);
+    let local_clip = clip.local;
     for g in &prepared.glyphs {
         let [gx, gy, gw, gh] = g.bounds;
         let gy = gy + lead;
@@ -1748,7 +1834,8 @@ fn text_records(
             p.bounds[0] = (p.bounds[0] * display).round() / display;
             p.bounds[1] = (p.bounds[1] * display).round() / display;
         }
-        p.push(&clipping(clips, m, at, true), out);
+        clip.local = local_clip.map(|(r, radii)| ([r[0] - at.0, r[1] - at.1, r[2], r[3]], radii));
+        p.push(&clip, out);
     }
 }
 
@@ -1768,6 +1855,7 @@ fn image_record(
     clips: &[Clip],
     display_scale: f32,
     out: &mut Vec<f32>,
+    cull: bool,
 ) {
     let Some(layout) = tree.layout.get_layout(node) else {
         return;
@@ -1791,7 +1879,7 @@ fn image_record(
         rec.bounds[0] = (rec.bounds[0] * display_scale).round() / display_scale;
         rec.bounds[1] = (rec.bounds[1] * display_scale).round() / display_scale;
     }
-    rec.push(&clipping(clips, m, (x + left, y + top), true), out);
+    rec.push(&clipping(clips, m, (x + left, y + top), true, cull), out);
 }
 
 /// A clip to a node's own rounded box, `rect` in layout coordinates under `m`.
@@ -1842,4 +1930,79 @@ fn border_side_colors(props: &RenderProps) -> [Option<Color>; 4] {
         _ => props.border_color,
     };
     [of(&s.top), of(&s.right), of(&s.bottom), of(&s.left)]
+}
+
+#[cfg(test)]
+mod culling_tests {
+    use super::*;
+
+    fn rect_clip(rect: [f32; 4]) -> Clip {
+        Clip {
+            rect,
+            radii: [0.0; 4],
+            layout: rect,
+            layout_radii: [0.0; 4],
+            frame: IDENTITY,
+            n: 1.0,
+            fade: [0.0; 4],
+            shape: None,
+        }
+    }
+
+    #[test]
+    fn explicit_clips_keep_antialiasing_and_transformed_geometry() {
+        let clips = [rect_clip([10.0, 10.0, 80.0, 80.0])];
+        let clip = clipping(&clips, IDENTITY, (0.0, 0.0), true, true);
+        let mut p = Primitive::new(PRIM_RECT, [0.0, 20.0, 5.0, 5.0], [0.0; 4]);
+        assert!(p.outside_clip(&clip));
+        p.bounds[0] = 4.5; // Ends inside the clip's antialiased fringe.
+        assert!(!p.outside_clip(&clip));
+        p.bounds = [0.0, 0.0, 30.0, 10.0];
+        p.place([1.0, 1.0, 0.0, 1.0, 0.0, 0.0], 0.0, 0.0);
+        assert!(!p.outside_clip(&clip), "A skewed quad reaches the clip");
+        assert!(
+            !p.outside_clip(&clipping(&[], IDENTITY, (0.0, 0.0), true, true)),
+            "Viewport/layout bounds do not imply a clip"
+        );
+    }
+
+    #[test]
+    fn shadow_reach_canvas_and_layer_bounds_survive() {
+        let clips = [rect_clip([10.0, 10.0, 80.0, 80.0])];
+        let clip = clipping(&clips, IDENTITY, (0.0, 0.0), false, true);
+        let mut p = Primitive::new(PRIM_SHADOW, [-40.0, 20.0, 20.0, 20.0], [0.0; 4]);
+        p.shadow = [30.0, 0.0, 4.0, 2.0];
+        assert!(
+            !p.outside_clip(&clip),
+            "Off-clip boxes can cast visible shadows"
+        );
+        p.bounds[0] = -500.0;
+        assert!(p.outside_clip(&clip));
+        for kind in [PRIM_CANVAS, PRIM_LAYER, PRIM_LAYER_BEGIN] {
+            p.kind = kind;
+            assert!(!p.outside_clip(&clip));
+        }
+        p.kind = PRIM_RECT;
+        assert!(
+            !p.outside_clip(&clipping(&clips, IDENTITY, (0.0, 0.0), true, false)),
+            "Clipped records still determine filtered layer bounds"
+        );
+    }
+
+    #[test]
+    fn transformed_local_clips_and_shape_paths_stay_conservative() {
+        let m = [0.8, 0.6, -0.6, 0.8, 40.0, 20.0];
+        let mut c = rect_clip([10.0, 10.0, 80.0, 80.0]);
+        c.frame = m;
+        let clip = clipping(&[c], m, (0.0, 0.0), true, true);
+        assert!(clip.local.is_some());
+        let p = Primitive::new(PRIM_RECT, [-500.0, 20.0, 20.0, 20.0], [0.0; 4]);
+        assert!(!p.outside_clip(&clip));
+        c.shape = Some(ShapeClip {
+            inverse: [1.0, 0.0, 0.0, 1.0],
+            rest: [0.0; 4],
+            params: [0.0; 4],
+        });
+        assert!(!p.outside_clip(&clipping(&[c], IDENTITY, (0.0, 0.0), true, true)));
+    }
 }
