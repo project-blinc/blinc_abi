@@ -629,6 +629,50 @@ mod tests {
         assert!(bytes.iter().any(|b| *b > 0));
     }
     #[test]
+    fn text_spacing_matches_measured_layout() {
+        let mut tree = LayoutContext::new();
+        let root = tree.create_node(style(500.0, 100.0)).unwrap();
+        let text = TextMeasureContext {
+            content: "MMMM".into(),
+            font_size: 24.0,
+            line_height: 1.2,
+            letter_spacing: 0.0,
+            wrap: false,
+            font_name: None,
+            generic_font: blinc_layout::div::GenericFont::SansSerif,
+            font_weight: 400,
+            italic: false,
+        };
+        let label = tree.create_text(Style::default(), text).unwrap();
+        tree.set_children(root, &[label]).unwrap();
+        tree.compute(root, 500.0, 100.0).unwrap();
+        let mut encoder = SceneEncoder::new();
+        let info = encoder
+            .prepare(&tree, root, PaintOptions::default())
+            .unwrap();
+        assert_eq!(info.count, 4);
+        let mut before = vec![0.0; info.floats];
+        encoder.read(&tree, &mut before).unwrap();
+        let mut bounds_before = [0.0; 4];
+        tree.read_bounds(&[label], &mut bounds_before).unwrap();
+        let mut text = tree.text(label).unwrap();
+        text.letter_spacing = 10.0;
+        tree.set_text(label, text).unwrap();
+        tree.compute(root, 500.0, 100.0).unwrap();
+        encoder
+            .prepare(&tree, root, PaintOptions::default())
+            .unwrap();
+        let mut after = vec![0.0; info.floats];
+        encoder.read(&tree, &mut after).unwrap();
+        let mut bounds_after = [0.0; 4];
+        tree.read_bounds(&[label], &mut bounds_after).unwrap();
+        assert!(bounds_after[2] > bounds_before[2] + 25.0);
+        for i in 1..4 {
+            let delta = after[i * RECORD_FLOATS] - before[i * RECORD_FLOATS];
+            assert!((delta - 10.0 * i as f32).abs() <= 1.0, "glyph {i}: {delta}");
+        }
+    }
+    #[test]
     fn disposed_scene_rejects_access_without_changing_output() {
         let mut ctx = LayoutContext::new();
         let root = ctx.create_node(style(100.0, 100.0)).unwrap();

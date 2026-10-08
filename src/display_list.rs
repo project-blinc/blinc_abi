@@ -1713,7 +1713,7 @@ fn text_records(
         context,
         w,
         props.and_then(|p| p.text_align),
-        props.and_then(|p| p.letter_spacing).unwrap_or(0.0),
+        props.and_then(|p| p.letter_spacing).unwrap_or(context.letter_spacing),
         color,
         k,
         subpixel,
