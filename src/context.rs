@@ -71,7 +71,10 @@ impl LayoutContext {
     }
     pub fn set_style(&mut self, node: Node, style: Style) -> Result<()> {
         let id = self.check(node)?;
-        self.tree.as_mut().unwrap().set_style(id, style);
+        self.tree
+            .as_mut()
+            .ok_or("Layout context is disposed")?
+            .set_style(id, style);
         self.bounds.clear();
         Ok(())
     }
@@ -98,7 +101,7 @@ impl LayoutContext {
             }
             ids.push(child);
         }
-        let tree = self.tree.as_mut().unwrap();
+        let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
         // Rebuild each previous parent's child list only once for a bulk move.
         let old_parents: HashSet<_> = ids
             .iter()
@@ -125,7 +128,7 @@ impl LayoutContext {
 
     pub fn remove(&mut self, node: Node) -> Result<()> {
         let id = self.check(node)?;
-        let tree = self.tree.as_mut().unwrap();
+        let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
         let mut nodes = vec![id];
         let mut index = 0;
         while index < nodes.len() {
@@ -150,15 +153,18 @@ impl LayoutContext {
         if self.parents.contains_key(&id) {
             return Err("Layout root must have no parent");
         }
-        self.tree.as_mut().unwrap().compute_layout(
-            id,
-            Size {
-                width: AvailableSpace::Definite(width),
-                height: AvailableSpace::Definite(height),
-            },
-        );
+        self.tree
+            .as_mut()
+            .ok_or("Layout context is disposed")?
+            .compute_layout(
+                id,
+                Size {
+                    width: AvailableSpace::Definite(width),
+                    height: AvailableSpace::Definite(height),
+                },
+            );
         // Resolve absolute coordinates once, not once per queried node and ancestor.
-        let tree = self.tree.as_ref().unwrap();
+        let tree = self.tree.as_ref().ok_or("Layout context is disposed")?;
         let mut pending = vec![(id, (0.0, 0.0))];
         while let Some((node, parent_offset)) = pending.pop() {
             let bounds = tree
@@ -271,5 +277,39 @@ mod tests {
         ctx.dispose();
         ctx.dispose();
         assert!(ctx.create_node(Style::default()).is_err());
+    }
+    #[test]
+    fn disposed_context_rejects_access_without_changing_output() {
+        let mut ctx = LayoutContext::new();
+        let root = ctx.create_node(box_style(100.0, 100.0)).unwrap();
+        ctx.compute(root, 100.0, 100.0).unwrap();
+        ctx.dispose();
+        ctx.dispose();
+        let mut out = [9.0; 4];
+        assert_eq!(
+            ctx.create_node(Style::default()).unwrap_err(),
+            "Layout context is disposed"
+        );
+        assert_eq!(ctx.style(root).unwrap_err(), "Layout context is disposed");
+        assert_eq!(
+            ctx.set_style(root, Style::default()),
+            Err("Layout context is disposed")
+        );
+        assert_eq!(
+            ctx.set_children(root, &[]),
+            Err("Layout context is disposed")
+        );
+        assert_eq!(ctx.remove(root), Err("Layout context is disposed"));
+        assert_eq!(
+            ctx.compute(root, 100.0, 100.0),
+            Err("Layout context is disposed")
+        );
+        assert_eq!(
+            ctx.read_bounds(&[root], &mut out),
+            Err("Layout context is disposed")
+        );
+        assert_eq!(out, [9.0; 4]);
+        assert_eq!(ctx.len(), Err("Layout context is disposed"));
+        assert_eq!(ctx.is_empty(), Err("Layout context is disposed"));
     }
 }
