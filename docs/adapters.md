@@ -44,6 +44,21 @@ boundary; SDK consumers must never retain a borrowed view past its lifetime.
 Visual offsets and drawn sizes affect both painting and hit testing. Preserve
 that contract for layout animation.
 
+With the `scene` feature, scene properties and measured text belong to
+`LayoutContext`. Compute layout before calling `SceneEncoder::prepare`; copy
+its records into caller-owned storage with `read`. Preparation records the context
+identity and scene revision, so edits, disposal or another context invalidate the
+read. `DISPLAY_LIST_VERSION` identifies the current record schema for adapters to
+negotiate with their renderer.
+
+Each encoder owns its glyph atlases and retains buffer capacity across frames.
+Call `atlas_info` with the revision last uploaded to the GPU, then `read_atlas`
+with that same revision and sufficient output capacity. Upload the returned
+rectangle before acknowledging its revision. Missing update history or resized
+atlases require a full upload; recent changes are combined into one rectangle.
+An undersized output fails without changing the caller's buffer. Image and canvas
+slots are renderer-owned indices; the context does not own GPU resources.
+
 ## Validation gates
 
 1. Compile the extraction using its copied lockfile.
@@ -56,9 +71,10 @@ Owned layout and reactive contexts are available without the default `hashlink`
 feature. Core tests cover ownership, tree edits, batches and effect disposal;
 Node integration tests cover callback identity/errors, dynamic dependencies,
 nested effect cleanup and HMR scopes. The original adapter still compiles with
-default features. The `scene` feature now builds the shared paint walk, hit testing
-and text/image helpers independently of HashLink; owned scene APIs, Node resource
-bindings remain the next extraction milestone.
+default features. The `scene` feature adds owned scene APIs alongside the shared
+paint walk, hit testing and text/image helpers. Its tests cover measured text,
+display records, visual offsets, pointer events, incremental atlases, stale buffers
+and disposal. Node resource bindings and full GPU rendering remain in progress.
 
 
 ## Compatibility checkpoint
@@ -69,6 +85,11 @@ The same compiled `Glass` scene produces identical pixels at 1x and 2x; all 16
 frames of `AccordionMotion` also match pixel for pixel. This verifies the sampled
 text, glass, clipping, reactive updates and layout animation paths. Linux and
 Windows runtime validation remain separate platform gates.
+
+The owned scene milestone was rechecked on macOS on 2026-10-08: all 209 exports
+still match, and isolated runs of the same compiled Glass and AccordionMotion
+scenes match all 18 baseline images pixel for pixel. This checks the shared font
+initialization changes as well as the existing paint paths.
 
 See [contributing](contributing.md) for milestone commits, issue tracking and
 compatibility verification.

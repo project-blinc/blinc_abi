@@ -9,17 +9,25 @@ static NEXT_CONTEXT: AtomicU64 = AtomicU64::new(1);
 /// A generation-checked node, valid only in its originating context.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct Node {
-    context: u64,
-    id: LayoutNodeId,
+    pub(crate) context: u64,
+    pub(crate) id: LayoutNodeId,
+}
+
+impl Node {
+    /// Generation-bearing identity, unique within this context.
+    pub fn raw(self) -> u64 {
+        self.id.to_raw()
+    }
 }
 
 /// Each adapter owns a context and serializes access to it on its host thread.
 /// Styles are Taffy's complete styles; SDKs choose their authored style surface.
 pub struct LayoutContext {
-    id: u64,
-    tree: Option<crate::tree::Tree>,
-    parents: HashMap<LayoutNodeId, LayoutNodeId>,
-    bounds: HashMap<LayoutNodeId, [f32; 4]>,
+    pub(crate) id: u64,
+    pub(crate) tree: Option<crate::tree::Tree>,
+    pub(crate) revision: u64,
+    pub(crate) parents: HashMap<LayoutNodeId, LayoutNodeId>,
+    pub(crate) bounds: HashMap<LayoutNodeId, [f32; 4]>,
 }
 
 type Result<T> = std::result::Result<T, &'static str>;
@@ -35,6 +43,7 @@ impl LayoutContext {
         Self {
             id: NEXT_CONTEXT.fetch_add(1, Ordering::Relaxed),
             tree: Some(crate::tree::Tree::new()),
+            revision: 0,
             parents: HashMap::new(),
             bounds: HashMap::new(),
         }
@@ -46,7 +55,7 @@ impl LayoutContext {
             .map(|tree| &tree.layout)
             .ok_or("Layout context is disposed")
     }
-    fn check(&self, node: Node) -> Result<LayoutNodeId> {
+    pub(crate) fn check(&self, node: Node) -> Result<LayoutNodeId> {
         let tree = self.tree()?;
         if node.context != self.id {
             return Err("Node belongs to another layout context");
@@ -59,6 +68,7 @@ impl LayoutContext {
 
     pub fn create_node(&mut self, style: Style) -> Result<Node> {
         let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
+        self.revision += 1;
         Ok(Node {
             context: self.id,
             id: tree.create_node(style),
@@ -76,6 +86,7 @@ impl LayoutContext {
             .ok_or("Layout context is disposed")?
             .set_style(id, style);
         self.bounds.clear();
+        self.revision += 1;
         Ok(())
     }
 
@@ -123,6 +134,7 @@ impl LayoutContext {
             self.parents.insert(child.id, parent);
         }
         self.bounds.clear();
+        self.revision += 1;
         Ok(())
     }
 
@@ -142,6 +154,7 @@ impl LayoutContext {
             tree.forget(id);
         }
         self.bounds.clear();
+        self.revision += 1;
         Ok(())
     }
 
@@ -163,6 +176,7 @@ impl LayoutContext {
                     height: AvailableSpace::Definite(height),
                 },
             );
+        self.revision += 1;
         // Resolve absolute coordinates once, not once per queried node and ancestor.
         let tree = self.tree.as_ref().ok_or("Layout context is disposed")?;
         let mut pending = vec![(id, (0.0, 0.0))];

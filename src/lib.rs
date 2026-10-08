@@ -10,6 +10,8 @@ static ALLOCATOR: alloc::BigBlocksMapped = alloc::BigBlocksMapped;
 
 pub mod context;
 pub mod graph;
+#[cfg(feature = "scene")]
+pub mod scene;
 pub mod tree;
 
 #[cfg(feature = "scene")]

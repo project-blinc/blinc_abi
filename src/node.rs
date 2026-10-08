@@ -20,7 +20,7 @@ use blinc_layout::tree::{LayoutNodeId, LayoutTree, TextMeasureContext};
 use hl_abi::{define_prim, vbyte};
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
-use std::sync::{Mutex, Once};
+use std::sync::Mutex;
 use taffy::prelude::{AvailableSpace, Size, Style};
 
 pub use crate::tree::{Scroll, Tree};
@@ -137,14 +137,11 @@ fn clear_children(tree: &mut Tree, parent: LayoutNodeId) {
 /// Blinc measures text with real fonts once its measurer is installed, which
 /// must happen before the first tree holds text; without it every width is an
 /// estimate. Installed once per process.
-static TEXT_MEASURER: Once = Once::new();
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_blinc_tree_new() -> *mut c_void {
     // The renderer's own registry, so layout measures with the faces text is drawn with.
-    TEXT_MEASURER.call_once(|| {
-        blinc_layout::init_text_measurer_with_registry(crate::text::renderer().font_registry())
-    });
+    crate::text::initialize();
     shared();
     into_handle(TreeHandle {
         id: NEXT_HANDLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),

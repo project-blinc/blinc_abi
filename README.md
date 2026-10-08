@@ -16,9 +16,11 @@ buffers. Disposing it invalidates all its nodes. The reactive context provides
 isolated signals, computed dependencies, batched effects and deferred mutation
 while callbacks run. Host adapters retain values and callback references.
 
-The `scene` feature compiles text/image helpers, the shared paint walk and hit
-testing without HashLink. Connecting these operations to owned scene contexts
-and the Node adapter remains the next milestone.
+The `scene` feature adds owned scene properties, measured text, display-list
+encoding and hit testing without HashLink. Each `SceneEncoder` retains reusable
+buffers and its own glyph atlases, with revisioned incremental uploads. It reuses
+the existing paint and hit-test logic. Text/image helpers are also available;
+Node resource bindings and GPU integration remain in progress.
 
 The ABI generates display lists; GPU execution is supplied by a consuming
 renderer through xgpu. Window integration is supplied through xwindow.
@@ -28,7 +30,7 @@ renderer through xgpu. Window integration is supplied through xwindow.
 ```sh
 cargo check --locked
 cargo test --locked --no-default-features --lib
-cargo check --locked --no-default-features --features scene
+cargo test --locked --no-default-features --features scene --lib
 cargo build --release --locked
 ```
 

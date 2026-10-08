@@ -23,11 +23,17 @@ pub fn renderer() -> MutexGuard<'static, TextRenderer> {
     RENDERER.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Install font-backed measurement once for every adapter sharing this engine.
+pub fn initialize() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| blinc_layout::init_text_measurer_with_registry(global_font_registry()));
+}
+
 /// Loads the face `context` is set in, if the renderer has not yet: layout
 /// measures only with loaded faces, and estimates the rest.
 pub fn ensure_face(context: &TextMeasureContext) {
     let generic = generic(context.generic_font);
-    let registry = renderer().font_registry();
+    let registry = global_font_registry();
     let mut registry = registry.lock().unwrap_or_else(|e| e.into_inner());
     let name = context.font_name.as_deref();
     if registry
@@ -57,7 +63,7 @@ const SYSTEM_UI: &[&str] = &[];
 /// families after them usually list, so they are used only if none of
 /// those is installed. A stack with none is the system face.
 pub fn resolve_family(stack: &str) -> (Option<String>, LayoutGeneric) {
-    let registry = renderer().font_registry();
+    let registry = global_font_registry();
     let mut registry = registry.lock().unwrap_or_else(|e| e.into_inner());
     let mut platform = None;
     for name in stack.split(',') {
@@ -107,7 +113,7 @@ pub fn resolve_family(stack: &str) -> (Option<String>, LayoutGeneric) {
 pub fn system_ui() -> Option<String> {
     static FACE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     FACE.get_or_init(|| {
-        let registry = renderer().font_registry();
+        let registry = global_font_registry();
         let mut registry = registry.lock().unwrap_or_else(|e| e.into_inner());
         SYSTEM_UI
             .iter()
@@ -662,7 +668,7 @@ pub unsafe extern "C" fn hl_blinc_text_outline(
     });
     // From the renderer's registry, loaded as text nodes' faces are, so a weight not yet used is found.
     let (font, fallbacks) = {
-        let registry = renderer().font_registry();
+        let registry = global_font_registry();
         let mut registry = registry.lock().unwrap_or_else(|e| e.into_inner());
         let weight = weight.clamp(1, 1000) as u16;
         let font =
