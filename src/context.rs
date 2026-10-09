@@ -116,6 +116,16 @@ impl LayoutContext {
         Ok(node.id)
     }
 
+    /// The live node with generation-bearing identity `raw` (`Node::raw`) in this context.
+    pub fn node(&self, raw: u64) -> Result<Node> {
+        let node = Node {
+            context: self.id,
+            id: LayoutNodeId::from_raw(raw),
+        };
+        self.check(node)?;
+        Ok(node)
+    }
+
     pub fn create_node(&mut self, style: Style) -> Result<Node> {
         let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
         self.revision += 1;
@@ -556,6 +566,8 @@ mod tests {
         let replacement = ctx.create_node(Style::default()).unwrap();
         assert_ne!(child, replacement);
         assert!(ctx.style(child).is_err());
+        assert_eq!(ctx.node(root.raw()), Ok(root));
+        assert!(ctx.node(child.raw()).is_err());
         ctx.dispose();
         ctx.dispose();
         assert!(ctx.create_node(Style::default()).is_err());
