@@ -11,7 +11,13 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [features]
 default = ["hashlink"]
 hashlink = ["dep:hl_abi", "scene"]
+# The blinc-css command; build it with --no-default-features so it does not link HashLink.
+css-cli = []
 scene = ["dep:blinc_svg", "dep:blinc_text", "dep:blinc_image", "dep:swash", "blinc_layout/text_measurer"]
+
+[[bin]]
+name = "blinc-css"
+required-features = ["css-cli"]
 
 [dependencies]
 blinc_core = {git = "https://github.com/project-blinc/blinc", branch = "main"}
