@@ -272,6 +272,37 @@ impl LayoutContext {
         })
         .collect())
     }
+    /// Exact hit path and a conservative rectangle reusable until any scene geometry changes.
+    pub fn hit_test_region(
+        &self,
+        root: Node,
+        x: f32,
+        y: f32,
+    ) -> Result<(Vec<Hit>, crate::hit::HitRegion)> {
+        let id = self.prepared_root(root)?;
+        if !x.is_finite() || !y.is_finite() {
+            return Err("Invalid hit coordinates");
+        }
+        let (hits, region) = crate::hit::test_region(
+            self.tree.as_ref().ok_or("Layout context is disposed")?,
+            id,
+            x,
+            y,
+        );
+        Ok((
+            hits.into_iter()
+                .map(|hit| Hit {
+                    node: Node {
+                        context: self.id,
+                        id: hit.node,
+                    },
+                    x: hit.x,
+                    y: hit.y,
+                })
+                .collect(),
+            region,
+        ))
+    }
 }
 fn validate_text(text: &TextMeasureContext) -> Result<()> {
     if !text.font_size.is_finite()
