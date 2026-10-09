@@ -14,6 +14,7 @@
 //! `LayoutTree::update_text`.
 
 use crate::hl::{handle_ref, opt_string_from};
+use crate::layout_props;
 use crate::reactive::{AnyComputed, AnySignal, Slot};
 use crate::types::{GlassEffects, Value};
 use blinc_core::CornerShape;
@@ -30,7 +31,6 @@ use hl_abi::{define_prim, vbyte};
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 use taffy::prelude::*;
-use taffy::{Overflow, Point};
 
 const KIND_CONST: i32 = 0;
 const KIND_SIGNAL: i32 = 1;
@@ -161,10 +161,6 @@ enum Write<T> {
     Render(RenderWrite<T>),
 }
 
-fn layout<T>(f: impl Fn(&mut Style, T) + Send + Sync + 'static) -> Option<Write<T>> {
-    Some(Write::Layout(Arc::new(f)))
-}
-
 fn render<T>(f: impl Fn(&mut RenderProps, T) + Send + Sync + 'static) -> Option<Write<T>> {
     Some(Write::Render(Arc::new(f)))
 }
@@ -255,23 +251,6 @@ unsafe fn bind<T: Slot>(
 // F32: lengths, flex factors, opacity, typography metrics
 // ============================================================================
 
-/// A length in pixels; NaN is `auto`.
-fn dimension(v: f32) -> Dimension {
-    if v.is_nan() {
-        Dimension::auto()
-    } else {
-        Dimension::length(v)
-    }
-}
-
-fn length_auto(v: f32) -> LengthPercentageAuto {
-    if v.is_nan() {
-        LengthPercentageAuto::auto()
-    } else {
-        LengthPercentageAuto::length(v)
-    }
-}
-
 /// ashui's own number properties, numbered after Blinc's: one side of a
 /// box's padding, margin, gap or border, a size as a fraction of the
 /// parent's, an outline's width or offset, one side's overflow fade, or a
@@ -281,47 +260,7 @@ const SIDES_BASE: i32 = 43;
 
 fn side_write(node: LayoutNodeId, raw: i32) -> Option<(PropertyId, Write<f32>)> {
     use PropertyId as P;
-    let pad = |v: f32| LengthPercentage::length(v);
     Some(match raw - SIDES_BASE {
-        0 => (P::Padding, layout(move |s, v| s.padding.top = pad(v))?),
-        1 => (P::Padding, layout(move |s, v| s.padding.right = pad(v))?),
-        2 => (P::Padding, layout(move |s, v| s.padding.bottom = pad(v))?),
-        3 => (P::Padding, layout(move |s, v| s.padding.left = pad(v))?),
-        4 => (P::Margin, layout(|s, v| s.margin.top = length_auto(v))?),
-        5 => (P::Margin, layout(|s, v| s.margin.right = length_auto(v))?),
-        6 => (P::Margin, layout(|s, v| s.margin.bottom = length_auto(v))?),
-        7 => (P::Margin, layout(|s, v| s.margin.left = length_auto(v))?),
-        // Taffy's gap.width is the gap between columns, gap.height between rows.
-        8 => (P::Gap, layout(move |s, v| s.gap.width = pad(v))?),
-        9 => (P::Gap, layout(move |s, v| s.gap.height = pad(v))?),
-        10 => (
-            P::Width,
-            layout(|s, v| s.size.width = Dimension::percent(v))?,
-        ),
-        11 => (
-            P::Height,
-            layout(|s, v| s.size.height = Dimension::percent(v))?,
-        ),
-        12 => (
-            P::MinWidth,
-            layout(|s, v| s.min_size.width = LengthPercentageAuto::percent(v))?,
-        ),
-        13 => (
-            P::MaxWidth,
-            layout(|s, v| s.max_size.width = LengthPercentageAuto::percent(v))?,
-        ),
-        14 => (
-            P::MinHeight,
-            layout(|s, v| s.min_size.height = LengthPercentageAuto::percent(v))?,
-        ),
-        15 => (
-            P::MaxHeight,
-            layout(|s, v| s.max_size.height = LengthPercentageAuto::percent(v))?,
-        ),
-        16 => (
-            P::FlexBasis,
-            layout(|s, v| s.flex_basis = Dimension::percent(v))?,
-        ),
         // A side's width over the border's.
         17 => (
             P::BorderWidth,
@@ -355,17 +294,6 @@ fn side_write(node: LayoutNodeId, raw: i32) -> Option<(PropertyId, Write<f32>)> 
         38 => (P::Filter, render(|p, v| filter(p).saturate = v)?),
         39 => (P::Filter, render(|p, v| filter(p).sepia = v)?),
         40 => (P::Filter, render(|p, v| filter(p).blur = v)?),
-        // Width over height; NaN or none positive is no ratio.
-        47 => (
-            P::Width,
-            layout(|s, v: f32| {
-                s.aspect_ratio = if v.is_finite() && v > 0.0 {
-                    Some(v)
-                } else {
-                    None
-                }
-            })?,
-        ),
         // Whether text breaks lines at its width, as CSS's white-space: 0 keeps it to one line.
         48 => (
             P::TextAlign,
@@ -383,19 +311,8 @@ fn side_write(node: LayoutNodeId, raw: i32) -> Option<(PropertyId, Write<f32>)> 
     })
 }
 
-/// A border side, made with its width and colour unset, so a side can set
-/// one and take the border's other: a negative width and a NaN red, which
-/// `display_list` reads as the border's.
 fn side(slot: &mut Option<BorderSide>) -> &mut BorderSide {
-    slot.get_or_insert(BorderSide {
-        width: -1.0,
-        color: blinc_core::Color {
-            r: f32::NAN,
-            g: 0.0,
-            b: 0.0,
-            a: 0.0,
-        },
-    })
+    layout_props::border_side(slot)
 }
 
 fn filter(p: &mut RenderProps) -> &mut blinc_layout::element_style::CssFilter {
@@ -470,44 +387,6 @@ fn own_value_write(raw: i32) -> Option<(PropertyId, Write<Value>)> {
 fn f32_write(node: LayoutNodeId, prop: PropertyId) -> Option<Write<f32>> {
     use PropertyId as P;
     match prop {
-        P::Width => layout(|s, v| s.size.width = dimension(v)),
-        P::Height => layout(|s, v| s.size.height = dimension(v)),
-        P::MinWidth => layout(|s, v| s.min_size.width = length_auto(v)),
-        P::MaxWidth => layout(|s, v| s.max_size.width = length_auto(v)),
-        P::MinHeight => layout(|s, v| s.min_size.height = length_auto(v)),
-        P::MaxHeight => layout(|s, v| s.max_size.height = length_auto(v)),
-        P::FlexBasis => layout(|s, v| s.flex_basis = dimension(v)),
-        P::FlexGrow => layout(|s, v| s.flex_grow = v),
-        P::FlexShrink => layout(|s, v| s.flex_shrink = v),
-        P::Padding => layout(|s, v| {
-            let l = LengthPercentage::length(v);
-            s.padding = Rect {
-                left: l,
-                right: l,
-                top: l,
-                bottom: l,
-            };
-        }),
-        P::Margin => layout(|s, v| {
-            let l = length_auto(v);
-            s.margin = Rect {
-                left: l,
-                right: l,
-                top: l,
-                bottom: l,
-            };
-        }),
-        P::Gap => layout(|s, v| {
-            let l = LengthPercentage::length(v);
-            s.gap = Size {
-                width: l,
-                height: l,
-            };
-        }),
-        P::Top => layout(|s, v| s.inset.top = length_auto(v)),
-        P::Right => layout(|s, v| s.inset.right = length_auto(v)),
-        P::Bottom => layout(|s, v| s.inset.bottom = length_auto(v)),
-        P::Left => layout(|s, v| s.inset.left = length_auto(v)),
         P::Opacity => render(|p, v| p.opacity = v),
         P::BorderWidth => render(|p, v| p.border_width = v),
         P::FontSize => render(move |p, v| {
@@ -536,6 +415,13 @@ pub unsafe extern "C" fn hl_blinc_apply_f32(
     comp: *mut c_void,
 ) {
     let node = LayoutNodeId::from_raw(node);
+    if let Some(id) = layout_props::f32_property(prop) {
+        let write = Write::Layout(Arc::new(move |s: &mut Style, v| {
+            layout_props::set_f32(s, prop, v);
+        }));
+        unsafe { bind(node, id, kind, constant, sig, comp, write) };
+        return;
+    }
     if let Some((prop, write)) = side_write(node, prop) {
         unsafe { bind(node, prop, kind, constant, sig, comp, write) };
         return;
@@ -555,78 +441,6 @@ define_prim!(
 // ============================================================================
 // I32: layout and text enums
 // ============================================================================
-
-fn display(v: i32) -> Display {
-    match v {
-        0 => Display::Block,
-        2 => Display::Grid,
-        3 => Display::None,
-        _ => Display::Flex,
-    }
-}
-
-fn flex_direction(v: i32) -> FlexDirection {
-    match v {
-        1 => FlexDirection::Column,
-        2 => FlexDirection::RowReverse,
-        3 => FlexDirection::ColumnReverse,
-        _ => FlexDirection::Row,
-    }
-}
-
-fn flex_wrap(v: i32) -> FlexWrap {
-    match v {
-        1 => FlexWrap::Wrap,
-        2 => FlexWrap::WrapReverse,
-        _ => FlexWrap::NoWrap,
-    }
-}
-
-/// `None` is `auto`.
-fn align_items(v: i32) -> Option<AlignItems> {
-    Some(match v {
-        0 => AlignItems::START,
-        1 => AlignItems::END,
-        2 => AlignItems::FLEX_START,
-        3 => AlignItems::FLEX_END,
-        4 => AlignItems::CENTER,
-        5 => AlignItems::BASELINE,
-        6 => AlignItems::STRETCH,
-        _ => return None,
-    })
-}
-
-/// `None` is `normal`.
-fn justify_content(v: i32) -> Option<JustifyContent> {
-    Some(match v {
-        0 => JustifyContent::START,
-        1 => JustifyContent::END,
-        2 => JustifyContent::FLEX_START,
-        3 => JustifyContent::FLEX_END,
-        4 => JustifyContent::CENTER,
-        5 => JustifyContent::STRETCH,
-        6 => JustifyContent::SPACE_BETWEEN,
-        7 => JustifyContent::SPACE_EVENLY,
-        8 => JustifyContent::SPACE_AROUND,
-        _ => return None,
-    })
-}
-
-fn position(v: i32) -> Position {
-    match v {
-        1 => Position::Absolute,
-        _ => Position::Relative,
-    }
-}
-
-fn overflow(v: i32) -> Overflow {
-    match v {
-        1 => Overflow::Clip,
-        2 => Overflow::Hidden,
-        3 => Overflow::Scroll,
-        _ => Overflow::Visible,
-    }
-}
 
 /// A CSS numeric weight, to the nearest named one.
 fn font_weight(v: i32) -> FontWeight {
@@ -661,17 +475,6 @@ fn text_align(v: i32) -> TextAlign {
 fn i32_write(node: LayoutNodeId, prop: PropertyId) -> Option<Write<i32>> {
     use PropertyId as P;
     match prop {
-        P::Display => layout(|s, v| s.display = display(v)),
-        P::FlexDirection => layout(|s, v| s.flex_direction = flex_direction(v)),
-        P::FlexWrap => layout(|s, v| s.flex_wrap = flex_wrap(v)),
-        P::AlignItems => layout(|s, v| s.align_items = align_items(v)),
-        P::AlignSelf => layout(|s, v| s.align_self = align_items(v)),
-        P::JustifyContent => layout(|s, v| s.justify_content = justify_content(v)),
-        P::Position => layout(|s, v| s.position = position(v)),
-        P::Overflow => layout(|s, v| {
-            let o = overflow(v);
-            s.overflow = Point { x: o, y: o };
-        }),
         P::FontWeight => render(move |p, v| {
             p.font_weight = Some(font_weight(v));
             record_text(node, move |c| c.font_weight = v.clamp(1, 1000) as u16);
@@ -695,6 +498,13 @@ pub unsafe extern "C" fn hl_blinc_apply_i32(
     comp: *mut c_void,
 ) {
     let node = LayoutNodeId::from_raw(node);
+    if let Some(id) = layout_props::i32_property(prop) {
+        let write = Write::Layout(Arc::new(move |s: &mut Style, v| {
+            layout_props::set_i32(s, prop, v);
+        }));
+        unsafe { bind(node, id, kind, constant, sig, comp, write) };
+        return;
+    }
     let Some(prop) = property(prop) else { return };
     let Some(write) = i32_write(node, prop) else {
         return;
@@ -841,36 +651,11 @@ fn string_write(node: LayoutNodeId, prop: PropertyId) -> Option<Write<Option<Str
 /// (85), `GridTemplateRows` (86), `GridColumn` (87) and `GridRow` (88).
 /// Text that does not parse puts the default back.
 fn own_string_write(raw: i32) -> Option<(PropertyId, Write<Option<String>>)> {
-    // The defaults are read inside each writer: a taffy style value is not Send, so none is captured.
-    let write: Write<Option<String>> = match raw {
-        85 => layout(|s, v: Option<String>| {
-            s.grid_template_columns = v
-                .as_deref()
-                .and_then(crate::grid::template)
-                .unwrap_or_default()
-        })?,
-        86 => layout(|s, v: Option<String>| {
-            s.grid_template_rows = v
-                .as_deref()
-                .and_then(crate::grid::template)
-                .unwrap_or_default()
-        })?,
-        87 => layout(|s, v: Option<String>| {
-            s.grid_column = v
-                .as_deref()
-                .and_then(crate::grid::line_pair)
-                .unwrap_or_else(|| <Style>::DEFAULT.grid_column.clone())
-        })?,
-        88 => layout(|s, v: Option<String>| {
-            s.grid_row = v
-                .as_deref()
-                .and_then(crate::grid::line_pair)
-                .unwrap_or_else(|| <Style>::DEFAULT.grid_row.clone())
-        })?,
-        _ => return None,
-    };
-    // Changing tracks or placement relayouts, as Display does.
-    Some((PropertyId::Display, write))
+    let id = layout_props::string_property(raw)?;
+    let write = Write::Layout(Arc::new(move |s: &mut Style, v: Option<String>| {
+        layout_props::set_string(s, raw, v.as_deref());
+    }));
+    Some((id, write))
 }
 
 #[unsafe(no_mangle)]
@@ -918,9 +703,12 @@ const CORNER_SHAPE: i32 = 1003;
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_unset(node: u64, raw: i32) {
     let node = LayoutNodeId::from_raw(node);
-    let lay = |prop: PropertyId, f: Box<dyn Fn(&mut Style) + Send + Sync>| {
-        queue_layout_update_partial(node, prop, prop.side_effects(), move |s| f(s))
-    };
+    if let Some(prop) = layout_props::unset_property(raw) {
+        queue_layout_update_partial(node, prop, prop.side_effects(), move |s| {
+            layout_props::unset(s, raw);
+        });
+        return;
+    }
     let ren = |prop: PropertyId, f: Box<dyn Fn(&mut RenderProps) + Send + Sync>| {
         queue_prop_update_partial(node, prop, prop.side_effects(), move |p| f(p))
     };
@@ -965,99 +753,6 @@ pub unsafe extern "C" fn hl_blinc_unset(node: u64, raw: i32) {
         7 => ren(P::Color, Box::new(|p| p.text_color = None)),
         8 => ren(P::Filter, Box::new(|p| p.filter = None)),
         9 | 66 => ren(P::AccentColor, Box::new(|p| p.outline_color = None)),
-        10 | 53 => lay(
-            P::Width,
-            Box::new(move |s| s.size.width = <Style>::DEFAULT.size.width),
-        ),
-        11 | 54 => lay(
-            P::Height,
-            Box::new(move |s| s.size.height = <Style>::DEFAULT.size.height),
-        ),
-        12 | 55 => lay(
-            P::MinWidth,
-            Box::new(move |s| s.min_size.width = <Style>::DEFAULT.min_size.width),
-        ),
-        13 | 56 => lay(
-            P::MaxWidth,
-            Box::new(move |s| s.max_size.width = <Style>::DEFAULT.max_size.width),
-        ),
-        14 | 57 => lay(
-            P::MinHeight,
-            Box::new(move |s| s.min_size.height = <Style>::DEFAULT.min_size.height),
-        ),
-        15 | 58 => lay(
-            P::MaxHeight,
-            Box::new(move |s| s.max_size.height = <Style>::DEFAULT.max_size.height),
-        ),
-        16 => lay(
-            P::Padding,
-            Box::new(move |s| s.padding = <Style>::DEFAULT.padding),
-        ),
-        17 => lay(
-            P::Margin,
-            Box::new(move |s| s.margin = <Style>::DEFAULT.margin),
-        ),
-        18 => lay(P::Gap, Box::new(move |s| s.gap = <Style>::DEFAULT.gap)),
-        19 => lay(
-            P::FlexDirection,
-            Box::new(move |s| s.flex_direction = <Style>::DEFAULT.flex_direction),
-        ),
-        20 => lay(
-            P::AlignItems,
-            Box::new(move |s| s.align_items = <Style>::DEFAULT.align_items),
-        ),
-        21 => lay(
-            P::JustifyContent,
-            Box::new(move |s| s.justify_content = <Style>::DEFAULT.justify_content),
-        ),
-        22 => lay(
-            P::AlignSelf,
-            Box::new(move |s| s.align_self = <Style>::DEFAULT.align_self),
-        ),
-        23 => lay(
-            P::FlexGrow,
-            Box::new(move |s| s.flex_grow = <Style>::DEFAULT.flex_grow),
-        ),
-        24 => lay(
-            P::FlexShrink,
-            Box::new(move |s| s.flex_shrink = <Style>::DEFAULT.flex_shrink),
-        ),
-        25 => lay(
-            P::FlexWrap,
-            Box::new(move |s| s.flex_wrap = <Style>::DEFAULT.flex_wrap),
-        ),
-        26 | 59 => lay(
-            P::FlexBasis,
-            Box::new(move |s| s.flex_basis = <Style>::DEFAULT.flex_basis),
-        ),
-        27 => lay(
-            P::Display,
-            Box::new(move |s| s.display = <Style>::DEFAULT.display),
-        ),
-        28 => lay(
-            P::Overflow,
-            Box::new(move |s| s.overflow = <Style>::DEFAULT.overflow),
-        ),
-        29 => lay(
-            P::Position,
-            Box::new(move |s| s.position = <Style>::DEFAULT.position),
-        ),
-        30 => lay(
-            P::Top,
-            Box::new(move |s| s.inset.top = <Style>::DEFAULT.inset.top),
-        ),
-        31 => lay(
-            P::Right,
-            Box::new(move |s| s.inset.right = <Style>::DEFAULT.inset.right),
-        ),
-        32 => lay(
-            P::Bottom,
-            Box::new(move |s| s.inset.bottom = <Style>::DEFAULT.inset.bottom),
-        ),
-        33 => lay(
-            P::Left,
-            Box::new(move |s| s.inset.left = <Style>::DEFAULT.inset.left),
-        ),
         34 => ren(
             P::FontSize,
             Box::new(move |p| {
@@ -1103,46 +798,6 @@ pub unsafe extern "C" fn hl_blinc_unset(node: u64, raw: i32) {
             }),
         ),
         40 => ren(P::TextAlign, Box::new(|p| p.text_align = None)),
-        43 => lay(
-            P::Padding,
-            Box::new(move |s| s.padding.top = LengthPercentage::length(0.0)),
-        ),
-        44 => lay(
-            P::Padding,
-            Box::new(move |s| s.padding.right = LengthPercentage::length(0.0)),
-        ),
-        45 => lay(
-            P::Padding,
-            Box::new(move |s| s.padding.bottom = LengthPercentage::length(0.0)),
-        ),
-        46 => lay(
-            P::Padding,
-            Box::new(move |s| s.padding.left = LengthPercentage::length(0.0)),
-        ),
-        47 => lay(
-            P::Margin,
-            Box::new(move |s| s.margin.top = <Style>::DEFAULT.margin.top),
-        ),
-        48 => lay(
-            P::Margin,
-            Box::new(move |s| s.margin.right = <Style>::DEFAULT.margin.right),
-        ),
-        49 => lay(
-            P::Margin,
-            Box::new(move |s| s.margin.bottom = <Style>::DEFAULT.margin.bottom),
-        ),
-        50 => lay(
-            P::Margin,
-            Box::new(move |s| s.margin.left = <Style>::DEFAULT.margin.left),
-        ),
-        51 => lay(
-            P::Gap,
-            Box::new(move |s| s.gap.width = LengthPercentage::length(0.0)),
-        ),
-        52 => lay(
-            P::Gap,
-            Box::new(move |s| s.gap.height = LengthPercentage::length(0.0)),
-        ),
         60 => ren(
             P::BorderWidth,
             Box::new(|p| side(&mut p.border_sides.top).width = -1.0),
@@ -1203,34 +858,7 @@ pub unsafe extern "C" fn hl_blinc_unset(node: u64, raw: i32) {
         82 => ren(P::Filter, Box::new(|p| filter(p).sepia = 0.0)),
         83 => ren(P::Filter, Box::new(|p| filter(p).blur = 0.0)),
         84 => ren(P::Filter, Box::new(|p| filter(p).drop_shadow = None)),
-        85 => lay(
-            P::Display,
-            Box::new(move |s| s.grid_template_columns = Vec::new()),
-        ),
-        86 => lay(
-            P::Display,
-            Box::new(move |s| s.grid_template_rows = Vec::new()),
-        ),
-        87 => lay(
-            P::Display,
-            Box::new(move |s| {
-                s.grid_column = Line {
-                    start: GridPlacement::Auto,
-                    end: GridPlacement::Auto,
-                }
-            }),
-        ),
-        88 => lay(
-            P::Display,
-            Box::new(move |s| {
-                s.grid_row = Line {
-                    start: GridPlacement::Auto,
-                    end: GridPlacement::Auto,
-                }
-            }),
-        ),
         89 => ren(P::Filter, Box::new(|p| p.mask_image = None)),
-        90 => lay(P::Width, Box::new(|s| s.aspect_ratio = None)),
         91 => ren(
             P::TextAlign,
             Box::new(move |_| record_text(node, |c| c.wrap = true)),

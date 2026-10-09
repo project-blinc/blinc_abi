@@ -18,12 +18,12 @@ pub mod tree;
 pub mod bitmap;
 #[cfg(feature = "scene")]
 pub mod display_list;
-#[cfg(feature = "hashlink")]
 mod grid;
 #[cfg(feature = "scene")]
 pub mod hit;
 #[cfg(feature = "hashlink")]
 mod hl;
+pub mod layout_props;
 #[cfg(feature = "hashlink")]
 pub mod layout_router;
 #[cfg(feature = "hashlink")]
