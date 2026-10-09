@@ -11,8 +11,8 @@ use crate::hl::{Rooted, call_void, handle_ref, into_handle, opt_string_from, str
 use crate::types::Value;
 use blinc_core::reactive::{
     Computed, DerivedId, Effect, EffectId, SignalId, State, begin_host_effect, computed,
-    dispose_derived, dispose_signal, effect, end_host_effect, global_dirty_flag, global_graph,
-    signal,
+    dispose_derived, dispose_host_effect, dispose_signal, effect, end_host_effect,
+    global_dirty_flag, global_graph, host_effect, signal, take_due_host_effects,
 };
 use blinc_layout::binding::with_registry;
 use hl_abi::{define_prim, vbyte};
@@ -129,6 +129,7 @@ pub fn collect_released() {
             g.dispose_effect(e);
         }
     }
+    collect_released_host_effects();
 }
 
 /// A type a signal or computed can hold, and how to find it in a handle.
@@ -701,11 +702,14 @@ define_prim!(
 /// closure for them: Haxe takes the due slots at a flush and runs each body
 /// between `begin` and `end`, which track what it reads.
 struct HostEffects {
-    slots: Vec<Option<Effect>>,
+    slots: Vec<Option<EffectId>>,
     by_id: std::collections::HashMap<EffectId, u32>,
     free: Vec<u32>,
     /// Due slots taken from the graph and not yet handed to Haxe.
     pending: std::collections::VecDeque<u32>,
+    /// Slots released since the last flush. Each keeps its effect until the
+    /// flush disposes of it, so a body that releases its own watch still ends.
+    released: Vec<u32>,
 }
 
 static HOST_EFFECTS: std::sync::LazyLock<Mutex<HostEffects>> = std::sync::LazyLock::new(|| {
@@ -714,6 +718,7 @@ static HOST_EFFECTS: std::sync::LazyLock<Mutex<HostEffects>> = std::sync::LazyLo
         by_id: std::collections::HashMap::new(),
         free: Vec::new(),
         pending: std::collections::VecDeque::new(),
+        released: Vec::new(),
     })
 });
 
@@ -721,7 +726,7 @@ fn host_effects() -> std::sync::MutexGuard<'static, HostEffects> {
     HOST_EFFECTS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn host_effect(slot: i32) -> Option<Effect> {
+fn host_effect_id(slot: i32) -> Option<EffectId> {
     host_effects()
         .slots
         .get(slot.max(0) as usize)
@@ -729,30 +734,44 @@ fn host_effect(slot: i32) -> Option<Effect> {
         .flatten()
 }
 
+/// Disposes of the host effects released since the last flush and frees their slots.
+fn collect_released_host_effects() {
+    let released = std::mem::take(&mut host_effects().released);
+    for slot in released {
+        let id = {
+            let mut h = host_effects();
+            let Some(id) = h.slots.get_mut(slot as usize).and_then(Option::take) else {
+                continue;
+            };
+            h.by_id.remove(&id);
+            h.pending.retain(|&s| s != slot);
+            h.free.push(slot);
+            id
+        };
+        // Blinc takes its own lock; the table's is released first.
+        dispose_host_effect(id);
+    }
+}
+
 /// A new host effect's slot. It starts due; its first run is the caller's,
 /// between `begin` and `end`. Not to be called while the graph is locked:
 /// from inside a computed's closure.
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_blinc_host_effect_new() -> i32 {
-    // The graph lock is released before the table's is taken: making the
-    // effect flushes the graph, which may run closure effects into Haxe.
-    let e = {
-        let graph = global_graph();
-        let mut g = graph.lock().unwrap_or_else(|e| e.into_inner());
-        g.create_host_effect()
-    };
+    // Made before the table is locked: making it flushes the graph, which may run closure effects into Haxe.
+    let id = host_effect().id();
     let mut h = host_effects();
     let slot = match h.free.pop() {
         Some(s) => {
-            h.slots[s as usize] = Some(e);
+            h.slots[s as usize] = Some(id);
             s
         }
         None => {
-            h.slots.push(Some(e));
+            h.slots.push(Some(id));
             h.slots.len() as u32 - 1
         }
     };
-    h.by_id.insert(e.id(), slot);
+    h.by_id.insert(id, slot);
     slot as i32
 }
 define_prim!(hlp_blinc_host_effect_new, hl_blinc_host_effect_new, "_i");
@@ -765,16 +784,17 @@ pub unsafe extern "C" fn hl_blinc_host_effects_due(out: *mut vbyte, capacity: i3
         return 0;
     }
     if host_effects().pending.is_empty() {
-        let due = {
-            let graph = global_graph();
-            let mut g = graph.lock().unwrap_or_else(|e| e.into_inner());
-            g.take_due_host_effects()
-        };
-        let mut h = host_effects();
-        for id in due {
-            // A released effect may still be due until the flush disposes of it.
-            if let Some(&slot) = h.by_id.get(&id) {
-                h.pending.push_back(slot);
+        // Taking them applies writes a closure effect deferred, which can make more due.
+        loop {
+            let due = take_due_host_effects();
+            if due.is_empty() {
+                break;
+            }
+            let mut h = host_effects();
+            for id in due {
+                if let Some(&slot) = h.by_id.get(&id) {
+                    h.pending.push_back(slot);
+                }
             }
         }
     }
@@ -793,10 +813,10 @@ define_prim!(
 );
 
 /// Opens the effect in `slot` for its body: what it reads until `end` is
-/// what it depends on. False for a released slot.
+/// what it depends on. False for a slot with no effect.
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_blinc_host_effect_begin(slot: i32) -> bool {
-    host_effect(slot).is_some_and(|e| begin_host_effect(e.id()))
+    host_effect_id(slot).is_some_and(begin_host_effect)
 }
 define_prim!(
     hlp_blinc_host_effect_begin,
@@ -808,28 +828,26 @@ define_prim!(
 /// Called on every way out of the body, an exception's included.
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_blinc_host_effect_end(slot: i32) {
-    if let Some(e) = host_effect(slot) {
-        end_host_effect(e.id());
+    if let Some(id) = host_effect_id(slot) {
+        end_host_effect(id);
     }
 }
 define_prim!(hlp_blinc_host_effect_end, hl_blinc_host_effect_end, "i_v");
 
-/// Releases the effect in `slot`, whose number may then name another; it is
-/// removed from the graph at the next flush, as a released watch is.
+/// Releases the effect in `slot`; the next flush removes it from the graph,
+/// and the slot may then name another.
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_blinc_host_effect_release(slot: i32) {
     let mut h = host_effects();
-    let Some(e) = h.slots.get_mut(slot.max(0) as usize).and_then(Option::take) else {
-        return;
-    };
-    h.by_id.remove(&e.id());
-    h.pending.retain(|&s| s != slot as u32);
-    h.free.push(slot as u32);
-    drop(h);
-    RELEASED_EFFECTS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push(e);
+    if h.slots
+        .get(slot.max(0) as usize)
+        .copied()
+        .flatten()
+        .is_some()
+        && !h.released.contains(&(slot as u32))
+    {
+        h.released.push(slot as u32);
+    }
 }
 define_prim!(
     hlp_blinc_host_effect_release,
