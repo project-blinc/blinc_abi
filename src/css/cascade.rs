@@ -261,6 +261,11 @@ impl Cascade {
             .collect();
     }
 
+    /// What media queries are asked about, and the root font size.
+    pub fn environment(&self) -> (MediaEnvironment, f64) {
+        (self.env, self.root_font_size)
+    }
+
     pub fn set_root_font_size(&mut self, px: f64) {
         self.root_font_size = px;
     }

@@ -14,8 +14,10 @@
 pub mod cascade;
 pub mod compiled;
 pub mod json;
+pub mod layout;
 pub mod media;
 mod parser;
+pub mod styled;
 mod tree;
 pub mod value;
 
@@ -852,3 +854,5 @@ fn combinator_str(c: Combinator) -> &'static str {
 mod tests;
 #[cfg(test)]
 mod tests_cascade;
+#[cfg(test)]
+mod tests_styled;

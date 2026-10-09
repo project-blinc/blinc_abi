@@ -274,6 +274,19 @@ impl LayoutContext {
         }
     }
 
+    /// The node's children, in the order they were placed.
+    pub fn children(&self, node: Node) -> Result<Vec<Node>> {
+        let id = self.check(node)?;
+        Ok(self
+            .child_list(id)
+            .into_iter()
+            .map(|id| Node {
+                context: self.id,
+                id,
+            })
+            .collect())
+    }
+
     /// The node's parent, if it has one.
     pub fn parent(&self, node: Node) -> Result<Option<Node>> {
         let id = self.check(node)?;
