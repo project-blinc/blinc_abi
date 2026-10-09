@@ -7,12 +7,10 @@
 //! rule they hold, `@import`ed files read through the sheet's loader, and
 //! Sass's `@mixin name($param: default) { … }` with `@include name(args);`,
 //! a mixin's body read again where it is included with its arguments put in.
-//! A port of ashui's `CssParser`: the same sheet gives the same rules and the
-//! same diagnostics.
 
 use super::media::{self, MediaQuery};
-use super::value;
-use super::*;
+use super::tree::{Attribute, Compound, Declaration, Pseudo, Selector};
+use super::{Combinator, Diagnostic, Nth, STATES, Severity, Span, Stylesheet, value};
 use std::collections::HashMap;
 
 /// Reads an `@import`ed file: the path as written, and the file importing it
@@ -35,12 +33,16 @@ pub fn parse(source: &str, file: Option<&str>, load: &mut Loader) -> Stylesheet 
     cx.sheet
 }
 
-/// A selector list on its own: `.card > .title, #save`. An error naming the
-/// text for one it cannot read.
-pub fn parse_selectors(text: &str) -> Result<Vec<Selector>, String> {
-    SelectorReader::new(text, 0)
+/// A selector list on its own, `.card > .title, #save`, laid out in a sheet
+/// of its own, and the span of the sheet's selectors it is. An error naming
+/// the text for one it cannot read.
+pub fn parse_selectors(text: &str) -> Result<(Stylesheet, Span), String> {
+    let list = SelectorReader::new(text, 0)
         .list(false)
-        .map_err(|f| format!("bad selector \"{text}\": {}", f.message))
+        .map_err(|f| format!("bad selector \"{text}\": {}", f.message))?;
+    let mut sheet = Stylesheet::default();
+    let span = sheet.push_selectors(&list);
+    Ok((sheet, span))
 }
 
 struct Failure {
@@ -196,7 +198,7 @@ impl Parser {
         );
     }
 
-    /// Pushes a rule; `:root`'s custom properties outside `@media` become the sheet's variables.
+    /// Lays a rule out in the sheet; `:root`'s custom properties outside `@media` become its variables.
     fn emit(
         &self,
         cx: &mut Cx,
@@ -213,11 +215,15 @@ impl Parser {
         if root_only {
             for d in &declarations {
                 if let Some(name) = d.name.strip_prefix("--") {
-                    cx.sheet.set_variable(name.to_string(), d.value.clone());
+                    cx.sheet.set_variable(name, &d.value);
                 }
             }
         }
-        cx.sheet.rules.push(StyleRule {
+        let sheet = &mut cx.sheet;
+        let selectors = sheet.push_selectors(&selectors);
+        let declarations = sheet.push_declarations(&declarations);
+        let media = media.map(|m| sheet.push_media(&m));
+        sheet.rules.push(super::Rule {
             selectors,
             declarations,
             media,
@@ -371,8 +377,9 @@ impl Parser {
             );
             return;
         }
-        if !cx.sheet.imports.contains(&loaded) {
-            cx.sheet.imports.push(loaded.clone());
+        let atom = cx.sheet.atoms.intern(&loaded);
+        if !cx.sheet.imports.contains(&atom) {
+            cx.sheet.imports.push(atom);
         }
         cx.importing.push(loaded.clone());
         Parser::new(&source, Some(loaded), true, None).rules(
@@ -602,13 +609,10 @@ impl Parser {
             }
             let declarations = self.block(cx, &Scope::top(), true);
             if !bad {
-                frames.push(Keyframe {
-                    offsets,
-                    declarations,
-                });
+                frames.push((offsets, declarations));
             }
         }
-        cx.sheet.set_keyframes(Keyframes { name, frames });
+        cx.sheet.set_keyframes(&name, &frames);
     }
 
     /// A block's declarations, to its `}` when `closed` (consumed), else to
@@ -981,7 +985,7 @@ fn is_property_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-/// The number at the start of `s`, as Haxe's `Std.parseFloat` reads it: NaN when there is none.
+/// The number at the start of `s`, ignoring what follows it: NaN when there is none.
 fn parse_float_prefix(s: &str) -> f64 {
     let s = s.trim_start();
     let mut end = 0;

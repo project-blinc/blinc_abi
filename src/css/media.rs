@@ -59,16 +59,6 @@ pub fn parse(text: &str) -> Result<Vec<MediaQuery>, String> {
         .collect()
 }
 
-pub fn holds(list: &[MediaQuery], env: &MediaEnvironment) -> bool {
-    list.iter()
-        .any(|q| q.features.iter().all(|f| feature(f, env)) != q.not)
-}
-
-/// Whether every list holds: a rule nested in several `@media` blocks.
-pub fn all_hold(all: Option<&[Vec<MediaQuery>]>, env: &MediaEnvironment) -> bool {
-    all.is_none_or(|lists| lists.iter().all(|l| holds(l, env)))
-}
-
 fn query(text: &str) -> Result<MediaQuery, String> {
     let mut t = text.trim().to_lowercase();
     let mut not = false;
@@ -288,26 +278,5 @@ fn flip(c: Compare) -> Compare {
         Compare::Gt => Compare::Lt,
         Compare::Ge => Compare::Le,
         Compare::Eq => Compare::Eq,
-    }
-}
-
-fn feature(f: &MediaFeature, env: &MediaEnvironment) -> bool {
-    let cmp = |op: Compare, a: f64, b: f64| match op {
-        Compare::Eq => (a - b).abs() < 0.001,
-        Compare::Lt => a < b,
-        Compare::Le => a <= b,
-        Compare::Gt => a > b,
-        Compare::Ge => a >= b,
-    };
-    match f {
-        MediaFeature::Width(op, px) => cmp(*op, env.width, *px),
-        MediaFeature::Height(op, px) => cmp(*op, env.height, *px),
-        MediaFeature::AspectRatio(op, r) => {
-            env.height > 0.0 && cmp(*op, env.width / env.height, *r)
-        }
-        MediaFeature::Orientation(portrait) => (env.height >= env.width) == *portrait,
-        MediaFeature::ColorScheme(dark) => env.dark == *dark,
-        MediaFeature::Fixed(holds) => *holds,
-        MediaFeature::Both(a, b) => feature(a, env) && feature(b, env),
     }
 }

@@ -1,5 +1,5 @@
-//! Compiles CSS ahead of time, for SDKs whose build cannot load blinc_abi:
-//! ashui's macros run it to check a sheet and embed its compiled form.
+//! Compiles CSS ahead of time, for builds that cannot load blinc_abi: a
+//! compile-time step runs it to check a sheet and embed its compiled form.
 //!
 //! ```text
 //! blinc-css <in.css> [-o out.bcss] [--json] [--classes]

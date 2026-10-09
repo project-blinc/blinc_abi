@@ -4,7 +4,7 @@
 
 use super::*;
 
-/// `v` as Haxe's `Std.string` writes a float: whole numbers without a point.
+/// `v` with whole numbers written without a point.
 pub fn number(v: f64) -> String {
     if v.is_nan() {
         "NaN".into()
@@ -48,23 +48,27 @@ fn compare(c: Compare) -> &'static str {
 }
 
 /// A media feature as `Width(Ge,600)`.
-pub fn feature(f: &MediaFeature) -> String {
-    match f {
-        MediaFeature::Width(op, v) => format!("Width({},{})", compare(*op), number(*v)),
-        MediaFeature::Height(op, v) => format!("Height({},{})", compare(*op), number(*v)),
-        MediaFeature::AspectRatio(op, v) => format!("AspectRatio({},{})", compare(*op), number(*v)),
+pub fn feature(sheet: &Stylesheet, f: &MediaFeature) -> String {
+    match *f {
+        MediaFeature::Width(op, v) => format!("Width({},{})", compare(op), number(v)),
+        MediaFeature::Height(op, v) => format!("Height({},{})", compare(op), number(v)),
+        MediaFeature::AspectRatio(op, v) => format!("AspectRatio({},{})", compare(op), number(v)),
         MediaFeature::Orientation(b) => format!("Orientation({b})"),
         MediaFeature::ColorScheme(b) => format!("ColorScheme({b})"),
         MediaFeature::Fixed(b) => format!("Fixed({b})"),
-        MediaFeature::Both(a, b) => format!("Both({},{})", feature(a), feature(b)),
+        MediaFeature::Both(a, b) => format!(
+            "Both({},{})",
+            feature(sheet, &sheet.features[a as usize]),
+            feature(sheet, &sheet.features[b as usize])
+        ),
     }
 }
 
-fn declaration(d: &Declaration) -> String {
+fn declaration(sheet: &Stylesheet, d: &Declaration) -> String {
     format!(
         "{{\"name\":{},\"value\":{},\"important\":{},\"line\":{},\"column\":{}}}",
-        string(&d.name),
-        string(&d.value),
+        string(sheet.str(d.name)),
+        string(sheet.str(d.value)),
         d.important,
         d.line,
         d.column
@@ -73,32 +77,36 @@ fn declaration(d: &Declaration) -> String {
 
 pub fn to_json(sheet: &Stylesheet) -> String {
     let rules = list(&sheet.rules, |r| {
-        let media = match &r.media {
+        let media = match r.media {
             None => "null".to_string(),
-            Some(lists) => list(lists, |l| {
-                list(l, |q| {
+            Some(_) => list(sheet.rule_media(r), |&l| {
+                list(sheet.list_queries(l), |q| {
                     format!(
                         "{{\"not\":{},\"features\":{}}}",
                         q.not,
-                        list(&q.features, |f| string(&feature(f)))
+                        list(sheet.query_features(q), |f| string(&feature(sheet, f)))
                     )
                 })
             }),
         };
         format!(
             "{{\"selectors\":{},\"specificity\":{},\"declarations\":{},\"media\":{},\"order\":{},\"line\":{}}}",
-            list(&r.selectors, |s| string(&s.to_string())),
-            list(&r.selectors, |s| s.specificity().to_string()),
-            list(&r.declarations, declaration),
+            list(sheet.rule_selectors(r), |s| string(&sheet.selector_text(s))),
+            list(sheet.rule_selectors(r), |s| s.specificity.to_string()),
+            list(sheet.rule_declarations(r), |d| declaration(sheet, d)),
             media,
             r.order,
             r.line
         )
     });
-    let mut variables = sheet.variables.clone();
-    variables.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut variables: Vec<(&str, &str)> = sheet
+        .variables
+        .iter()
+        .map(|&(k, v)| (sheet.str(k), sheet.str(v)))
+        .collect();
+    variables.sort_by(|a, b| a.0.cmp(b.0));
     let mut keyframes: Vec<&Keyframes> = sheet.keyframes.iter().collect();
-    keyframes.sort_by(|a, b| a.name.cmp(&b.name));
+    keyframes.sort_by(|a, b| sheet.str(a.name).cmp(sheet.str(b.name)));
     format!(
         "{{\"rules\":{},\"variables\":{},\"keyframes\":{},\"imports\":{},\"diagnostics\":{}}}",
         rules,
@@ -109,14 +117,14 @@ pub fn to_json(sheet: &Stylesheet) -> String {
         )),
         list(&keyframes, |k| format!(
             "{{\"name\":{},\"frames\":{}}}",
-            string(&k.name),
-            list(&k.frames, |f| format!(
+            string(sheet.str(k.name)),
+            list(sheet.keyframe_list(k), |f| format!(
                 "{{\"offsets\":{},\"declarations\":{}}}",
-                list(&f.offsets, |o| number(*o)),
-                list(&f.declarations, declaration)
+                list(sheet.keyframe_offsets(f), |o| number(*o)),
+                list(sheet.keyframe_declarations(f), |d| declaration(sheet, d))
             ))
         )),
-        list(&sheet.imports, |i| string(i)),
+        list(&sheet.imports, |&i| string(sheet.str(i))),
         list(&sheet.diagnostics, |d| format!(
             "{{\"severity\":\"{}\",\"message\":{},\"line\":{},\"column\":{},\"file\":{}}}",
             if d.severity == Severity::Error {
