@@ -381,6 +381,151 @@ define_prim!(
 // CARETS
 // ============================================================================
 
+/// A place a caret can stand: before the character at `index` (a UTF-16
+/// index, as JavaScript and Haxe count), at `x` on line `line`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Caret {
+    pub index: u32,
+    pub x: f32,
+    pub line: u32,
+}
+
+/// One laid-out line: the UTF-16 range it shows and its width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeasuredLine {
+    pub start: u32,
+    pub end: u32,
+    pub width: f32,
+}
+
+/// Text laid out as the renderer lays it out, without rasterizing it.
+#[derive(Clone, Debug, Default)]
+pub struct Measured {
+    /// Every character boundary, in order; a blank line still has one.
+    pub carets: Vec<Caret>,
+    pub lines: Vec<MeasuredLine>,
+    /// The widest line.
+    pub width: f32,
+    pub line_height: f32,
+    /// The font's ascender, and its descender (below the baseline, so negative).
+    pub ascender: f32,
+    pub descender: f32,
+}
+
+/// `text` set in `context`'s font, size, weight and line height, with
+/// `letter_spacing`, as the renderer draws it. With `wrap_width`, lines wrap
+/// at that width (with the renderer's allowance for rounding); a line break
+/// always ends a line. `None` when no face can be loaded for the font.
+pub fn measure(
+    context: &TextMeasureContext,
+    text: &str,
+    letter_spacing: f32,
+    wrap_width: Option<f32>,
+) -> Option<Measured> {
+    // The renderer wraps at the laid-out width plus its allowance for rounding.
+    let max_width = wrap_width.filter(|w| *w > 0.0).map(|w| w + 1.0);
+    let generic = generic(context.generic_font);
+    // The face, and the fallback faces its text needs, as Blinc lays it out to draw it.
+    let (font, fallbacks) = {
+        let registry = global_font_registry();
+        let mut registry = registry.lock().ok()?;
+        let font = match registry.get_for_render_with_style(
+            context.font_name.as_deref(),
+            generic,
+            context.font_weight,
+            context.italic,
+        ) {
+            Some(font) => font,
+            None => registry.load_generic(generic).ok()?,
+        };
+        let fallbacks = blinc_text::FallbackFaces::resolve(&mut registry, &font, text);
+        (font, fallbacks)
+    };
+    let size = context.font_size;
+    let options = LayoutOptions {
+        max_width,
+        alignment: TextAlignment::Left,
+        anchor: TextAnchor::Top,
+        line_break: if max_width.is_some() {
+            LineBreakMode::Word
+        } else {
+            LineBreakMode::None
+        },
+        line_height: context.line_height,
+        letter_spacing,
+    };
+    // UTF-16 index of every byte offset that starts a character.
+    let mut utf16 = vec![0u32; text.len() + 1];
+    let mut units = 0u32;
+    for (byte, ch) in text.char_indices() {
+        utf16[byte] = units;
+        units += ch.len_utf16() as u32;
+    }
+    utf16[text.len()] = units;
+    // Each paragraph between line breaks is laid out on its own, as the
+    // renderer breaks lines at them; an empty one is still a line.
+    let engine = blinc_text::TextLayoutEngine::new();
+    let mut out = Measured {
+        line_height: size * context.line_height,
+        ..Default::default()
+    };
+    let mut line = 0u32;
+    let mut base = 0usize;
+    for paragraph in text.split('\n') {
+        let layout = engine.layout_with_fallbacks(paragraph, &font, size, &options, &fallbacks);
+        if layout.lines.is_empty() {
+            out.carets.push(Caret {
+                index: utf16[base],
+                x: 0.0,
+                line,
+            });
+            out.lines.push(MeasuredLine {
+                start: utf16[base],
+                end: utf16[base],
+                width: 0.0,
+            });
+            line += 1;
+        }
+        let ranges = layout.line_byte_ranges(paragraph.len());
+        for (i, l) in layout.lines.iter().enumerate() {
+            for g in &l.glyphs {
+                let index = utf16[(base + g.byte_offset).min(text.len())];
+                if out.carets.last().is_none_or(|c| c.index != index) {
+                    out.carets.push(Caret {
+                        index,
+                        x: g.x,
+                        line,
+                    });
+                }
+            }
+            // The paragraph's end: before its line break, or the text's end.
+            if i + 1 == layout.lines.len() {
+                let end = utf16[base + paragraph.len()];
+                if out.carets.last().is_none_or(|c| c.index != end) {
+                    out.carets.push(Caret {
+                        index: end,
+                        x: l.width,
+                        line,
+                    });
+                }
+            }
+            let range = ranges.get(i).cloned().unwrap_or(0..paragraph.len());
+            out.lines.push(MeasuredLine {
+                start: utf16[(base + range.start).min(text.len())],
+                end: utf16[(base + range.end).min(text.len())],
+                width: l.width,
+            });
+            out.width = out.width.max(l.width);
+            line += 1;
+        }
+        base += paragraph.len() + 1;
+    }
+    let m = font.metrics();
+    out.ascender = m.ascender_px(size);
+    out.descender = m.descender_px(size);
+    Some(out)
+}
+
 /// Where a caret can stand in `text`, set in text node `node`'s font and
 /// letter spacing at `font_size` (the node's own when 0): for each character
 /// boundary, its index in the string as UTF-16 (Haxe's indexing), its x and
@@ -416,110 +561,37 @@ pub unsafe extern "C" fn hl_blinc_text_carets(
         .get(&id)
         .and_then(|p| p.letter_spacing)
         .unwrap_or(0.0);
-    // The renderer wraps at the laid-out width plus its allowance for rounding.
-    let max_width = (wrap_width > 0.0).then_some(wrap_width + 1.0);
-    let generic = match context.generic_font {
-        LayoutGeneric::Monospace => GenericFont::Monospace,
-        LayoutGeneric::Serif => GenericFont::Serif,
-        LayoutGeneric::SansSerif => GenericFont::SansSerif,
-        _ => GenericFont::System,
-    };
-    // The face, and the fallback faces its text needs, as Blinc lays it out to draw it.
-    let (font, fallbacks) = {
-        let registry = global_font_registry();
-        let Ok(mut registry) = registry.lock() else {
-            return 0;
-        };
-        let font = match registry.get_for_render_with_style(
-            context.font_name.as_deref(),
-            generic,
-            context.font_weight,
-            context.italic,
-        ) {
-            Some(font) => font,
-            None => match registry.load_generic(generic) {
-                Ok(font) => font,
-                Err(_) => return 0,
-            },
-        };
-        let fallbacks = blinc_text::FallbackFaces::resolve(&mut registry, &font, &text);
-        (font, fallbacks)
-    };
-    let size = if font_size > 0.0 {
-        font_size
-    } else {
-        context.font_size
-    };
-    let options = LayoutOptions {
-        max_width,
-        alignment: TextAlignment::Left,
-        anchor: TextAnchor::Top,
-        line_break: if max_width.is_some() {
-            LineBreakMode::Word
-        } else {
-            LineBreakMode::None
-        },
-        line_height: context.line_height,
-        letter_spacing,
-    };
-    let line_height = size * context.line_height;
-    // UTF-16 index of every byte offset that starts a character.
-    let mut utf16 = vec![0u32; text.len() + 1];
-    let mut units = 0u32;
-    for (byte, ch) in text.char_indices() {
-        utf16[byte] = units;
-        units += ch.len_utf16() as u32;
+    let mut context = context.clone();
+    if font_size > 0.0 {
+        context.font_size = font_size;
     }
-    utf16[text.len()] = units;
-    // Each paragraph between line breaks is laid out on its own, as the
-    // renderer breaks lines at them; an empty one is still a line.
-    let engine = blinc_text::TextLayoutEngine::new();
-    let mut carets: Vec<[f32; 3]> = Vec::new();
-    let mut line = 0usize;
-    let mut base = 0usize;
-    for paragraph in text.split('\n') {
-        let layout = engine.layout_with_fallbacks(paragraph, &font, size, &options, &fallbacks);
-        if layout.lines.is_empty() {
-            carets.push([utf16[base] as f32, 0.0, line as f32]);
-            line += 1;
-        }
-        for (i, l) in layout.lines.iter().enumerate() {
-            for g in &l.glyphs {
-                let index = utf16[(base + g.byte_offset).min(text.len())] as f32;
-                if carets.last().is_none_or(|c| c[0] != index) {
-                    carets.push([index, g.x, line as f32]);
-                }
-            }
-            // The paragraph's end: before its line break, or the text's end.
-            if i + 1 == layout.lines.len() {
-                let end = utf16[base + paragraph.len()] as f32;
-                if carets.last().is_none_or(|c| c[0] != end) {
-                    carets.push([end, l.width, line as f32]);
-                }
-            }
-            line += 1;
-        }
-        base += paragraph.len() + 1;
-    }
+    let Some(measured) = measure(&context, &text, letter_spacing, Some(wrap_width)) else {
+        return 0;
+    };
     if !info.is_null() {
         let info = info as *mut f32;
-        let m = font.metrics();
         unsafe {
-            info.write_unaligned(line_height);
-            info.add(1).write_unaligned(line.max(1) as f32);
-            info.add(2).write_unaligned(m.ascender_px(size));
-            info.add(3).write_unaligned(m.descender_px(size));
+            info.write_unaligned(measured.line_height);
+            info.add(1)
+                .write_unaligned(measured.lines.len().max(1) as f32);
+            info.add(2).write_unaligned(measured.ascender);
+            info.add(3).write_unaligned(measured.descender);
         }
     }
     if !out.is_null() {
         let out = out as *mut f32;
-        for (i, c) in carets.iter().take(capacity.max(0) as usize).enumerate() {
-            for (j, v) in c.iter().enumerate() {
-                unsafe { out.add(i * 3 + j).write_unaligned(*v) };
+        for (i, c) in measured
+            .carets
+            .iter()
+            .take(capacity.max(0) as usize)
+            .enumerate()
+        {
+            for (j, v) in [c.index as f32, c.x, c.line as f32].into_iter().enumerate() {
+                unsafe { out.add(i * 3 + j).write_unaligned(v) };
             }
         }
     }
-    carets.len() as i32
+    measured.carets.len() as i32
 }
 #[cfg(feature = "hashlink")]
 define_prim!(
@@ -579,6 +651,39 @@ mod tests {
                 "weight {weight}: measured {measured}, drawn {drawn}"
             );
         }
+    }
+    #[test]
+    fn measure_reports_lines_carets_and_metrics() {
+        let context = TextMeasureContext {
+            content: String::new(),
+            font_size: 16.0,
+            line_height: 1.5,
+            letter_spacing: 0.0,
+            wrap: true,
+            font_name: None,
+            generic_font: LayoutGeneric::System,
+            font_weight: 400,
+            italic: false,
+        };
+        ensure_face(&context);
+        let text = "a\u{1F600}b\n\nwide words wrap here";
+        let one = measure(&context, text, 0.0, None).unwrap();
+        // Three paragraphs, the middle one empty; carets at UTF-16 indices.
+        assert_eq!(one.lines.len(), 3);
+        assert_eq!(one.lines[1].start, one.lines[1].end);
+        assert!(
+            one.carets.iter().any(|c| c.index == 3),
+            "after the surrogate pair"
+        );
+        assert!(!one.carets.iter().any(|c| c.index == 2), "not inside it");
+        assert_eq!(one.line_height, 24.0);
+        assert!(one.ascender > 0.0 && one.descender < 0.0);
+        let wrapped = measure(&context, text, 0.0, Some(one.lines[2].width / 2.0)).unwrap();
+        assert!(wrapped.lines.len() > 3);
+        assert!(wrapped.carets.windows(2).all(|w| w[0].index < w[1].index));
+        // Letter spacing widens the line.
+        let spaced = measure(&context, text, 2.0, None).unwrap();
+        assert!(spaced.width > one.width);
     }
 }
 
@@ -761,5 +866,3 @@ pub unsafe extern "C" fn hl_blinc_text_outline(
     }
     n as i32
 }
-#[cfg(feature = "hashlink")]
-define_prim!(hlp_blinc_text_outline, hl_blinc_text_outline, "PBBBBiB_i");

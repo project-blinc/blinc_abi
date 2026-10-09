@@ -24,6 +24,8 @@ mod grid;
 pub mod hit;
 #[cfg(feature = "hashlink")]
 mod hl;
+#[cfg(feature = "scene")]
+pub mod inline;
 pub mod layout_props;
 #[cfg(feature = "hashlink")]
 pub mod layout_router;
