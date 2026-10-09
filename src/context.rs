@@ -466,6 +466,20 @@ impl LayoutContext {
         Ok(())
     }
 
+    /// How far what is laid out inside `node` reaches, right and down from
+    /// its top-left: past its size when content overflows, which bounds scrolling.
+    pub fn content_size(&self, node: Node) -> Result<[f32; 2]> {
+        let id = self.check(node)?;
+        if !self.bounds.contains_key(&id) {
+            return Err("Compute layout before reading bounds");
+        }
+        let (width, height) = self
+            .tree()?
+            .get_content_size(id)
+            .ok_or("Layout node is removed")?;
+        Ok([width, height])
+    }
+
     pub fn len(&self) -> Result<usize> {
         Ok(self.tree()?.len())
     }
@@ -613,6 +627,8 @@ mod tests {
         assert_eq!(ctx.tree().unwrap().children(root.id), [c.id]);
         ctx.insert_before(root, b, Some(c)).unwrap();
         assert_eq!(x_positions(&mut ctx, root, &[b, c]), [0.0, 20.0]);
+        // Content reaches the children's far edges, not the root's own size.
+        assert_eq!(ctx.content_size(root).unwrap(), [50.0, 10.0]);
     }
     #[test]
     fn router_writes_box_model_and_order() {
