@@ -1,11 +1,11 @@
 //! Taffy style writes by router property id, shared by the HashLink router
 //! (`layout_router`) and owned layout contexts (`LayoutContext::apply`).
 //!
-//! Ids are ashui's `PropertyId` numbering: Blinc's `PropertyId` up to 42,
-//! then ashui's own. Lengths are pixels, and NaN is `auto` for sizes,
-//! margins and insets. A `*Percent` id takes a fraction of the parent (0 to
-//! 1). Enum codes are those of `ashui.types.Style`; a code out of range
-//! writes the property's default.
+//! Ids up to 42 are Blinc's `PropertyId` in declaration order; the router's
+//! own ids follow. Lengths are pixels, and NaN is `auto` for sizes, margins
+//! and insets. A `*Percent` id takes a fraction of the parent (0 to 1). Enum
+//! codes are those the converters below match; a code out of
+//! range writes the property's default.
 
 use blinc_layout::element::BorderSide;
 use blinc_layout::property::PropertyId;
