@@ -149,3 +149,75 @@ fn a_change_restyles_only_what_it_can_reach() {
         Some("blue")
     );
 }
+
+#[test]
+fn a_move_restyles_what_tests_its_place() {
+    // A grid of rows, each with cells, and a sheet that tests position only if asked.
+    let build = |css: &str| {
+        let mut ctx = LayoutContext::new();
+        let root = ctx.create_node(Default::default()).unwrap();
+        let mut s = Styles::new();
+        s.cascade_mut().push(parse(css, None, &mut |_, _| None));
+        let e = element(&mut s, &["div"], &["grid"]);
+        s.set_element(root, e);
+        let mut rows = Vec::new();
+        for _ in 0..10 {
+            let r = ctx.create_node(Default::default()).unwrap();
+            ctx.insert_before(root, r, None).unwrap();
+            let e = element(&mut s, &["div"], &["row"]);
+            s.set_element(r, e);
+            for _ in 0..4 {
+                let c = ctx.create_node(Default::default()).unwrap();
+                ctx.insert_before(r, c, None).unwrap();
+                let e = element(&mut s, &["div"], &["cell"]);
+                s.set_element(c, e);
+            }
+            rows.push(r);
+        }
+        s.restyle(&mut ctx, root);
+        assert_eq!(s.last_restyled(), 51);
+        (ctx, s, root, rows)
+    };
+    let move_last_first = |ctx: &mut LayoutContext, s: &mut Styles, root: Node, rows: &[Node]| {
+        ctx.insert_before(root, rows[9], Some(rows[0])).unwrap();
+        s.moved(rows[9]);
+        s.children_changed(root);
+        s.restyle(ctx, root);
+        s.last_restyled()
+    };
+
+    // Nothing tests position: the moved row and its cells.
+    let (mut ctx, mut s, root, rows) = build(".row { height: 10px } .row .cell { width: 5px }");
+    assert_eq!(move_last_first(&mut ctx, &mut s, root, &rows), 5);
+
+    // The rows' places: the parent and each row, alone.
+    let (mut ctx, mut s, root, rows) =
+        build(".row:first-child { height: 20px } .cell { width: 5px }");
+    assert_eq!(move_last_first(&mut ctx, &mut s, root, &rows), 1 + 10 + 4);
+    let height = s.intern("height");
+    assert_eq!(
+        s.computed(rows[9]).and_then(|c| c.value(height)),
+        Some("20px")
+    );
+    assert_eq!(s.computed(rows[0]).and_then(|c| c.value(height)), None);
+
+    // A row's place decides its cells' styles: every row with its cells.
+    let (mut ctx, mut s, root, rows) = build(".row:nth-child(odd) .cell { width: 7px }");
+    assert_eq!(move_last_first(&mut ctx, &mut s, root, &rows), 51);
+    ctx.compute(root, 500.0, 900.0).unwrap();
+    let cell = ctx.children(rows[9]).unwrap()[0];
+    assert_eq!(bounds(&ctx, cell)[2], 7.0);
+
+    // A removal: only the old parent's children answer again.
+    let (mut ctx, mut s, root, rows) = build(".row:last-child { height: 30px }");
+    ctx.detach(rows[9]).unwrap();
+    s.forget(rows[9]);
+    s.children_changed(root);
+    s.restyle(&mut ctx, root);
+    assert_eq!(s.last_restyled(), 10);
+    let height = s.intern("height");
+    assert_eq!(
+        s.computed(rows[8]).and_then(|c| c.value(height)),
+        Some("30px")
+    );
+}

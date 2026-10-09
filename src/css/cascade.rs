@@ -184,6 +184,33 @@ struct Index {
     rest: Vec<Entry>,
 }
 
+/// Whether `c` tests an element's place among its siblings, itself or
+/// through a selector list it holds; `seen` guards against a list met twice.
+fn positional(sheet: &Stylesheet, c: &super::Compound, seen: &mut Vec<u32>) -> bool {
+    sheet.compound_pseudos(c).iter().any(|p| match *p {
+        Pseudo::State(_) | Pseudo::Root => false,
+        Pseudo::Not(list) | Pseudo::Is(list) | Pseudo::Where(list) | Pseudo::Has(list) => {
+            if seen.contains(&list.start) {
+                return false;
+            }
+            seen.push(list.start);
+            sheet.selector_list(list).iter().any(|s| {
+                s.leading.is_some_and(|k| {
+                    matches!(k, Combinator::NextSibling | Combinator::LaterSibling)
+                }) || sheet
+                    .selector_combinators(s)
+                    .iter()
+                    .any(|k| matches!(k, Combinator::NextSibling | Combinator::LaterSibling))
+                    || sheet
+                        .selector_compounds(s)
+                        .iter()
+                        .any(|c| positional(sheet, c, seen))
+            })
+        }
+        _ => true,
+    })
+}
+
 struct Sheet {
     sheet: Stylesheet,
     /// Each of the sheet's atoms, as the cascade's.
@@ -195,6 +222,12 @@ struct Sheet {
     reach: std::collections::HashSet<Atom>,
     /// Whether any selector uses `:has()`, which a change below or beside an element can answer.
     has: bool,
+    /// Whether any selector tests where an element sits among its siblings:
+    /// a sibling combinator, `:empty` or a child-index pseudo-class.
+    position: bool,
+    /// Whether one tests that on an element other than the one it styles, so
+    /// a child placed or removed can change what that child's descendants match.
+    position_above: bool,
 }
 
 /// A sheet in the cascade, for removing it.
@@ -318,6 +351,8 @@ impl Cascade {
         // Which names reach past the element they are on: see `Sheet::reach`.
         let mut reach = std::collections::HashSet::new();
         let mut has = false;
+        let mut position = false;
+        let mut position_above = false;
         let names = |c: &super::Compound, reach: &mut std::collections::HashSet<Atom>| {
             let m = |a: Atom| map[a.0 as usize];
             reach.extend(c.type_name.map(m));
@@ -329,6 +364,26 @@ impl Cascade {
             let compounds = sheet.selector_compounds(s);
             for c in &compounds[..compounds.len() - 1] {
                 names(c, &mut reach);
+            }
+            // Nested selectors are among the sheet's selectors too, so each is seen here on its own.
+            let combinators = sheet.selector_combinators(s);
+            let last = compounds.len() - 1;
+            for (i, comb) in combinators.iter().enumerate() {
+                if matches!(comb, Combinator::NextSibling | Combinator::LaterSibling) {
+                    position = true;
+                    position_above |= i + 1 < last;
+                }
+            }
+            if matches!(
+                s.leading,
+                Some(Combinator::NextSibling | Combinator::LaterSibling)
+            ) {
+                position = true;
+            }
+            for (i, c) in compounds.iter().enumerate() {
+                let here = positional(&sheet, c, &mut Vec::new());
+                position |= here;
+                position_above |= here && i < last;
             }
             for c in compounds {
                 for p in sheet.compound_pseudos(c) {
@@ -355,6 +410,8 @@ impl Cascade {
                     index,
                     reach,
                     has,
+                    position,
+                    position_above,
                 },
             ),
         );
@@ -374,6 +431,16 @@ impl Cascade {
     /// Whether any sheet uses `:has()`.
     pub fn uses_has(&self) -> bool {
         self.sheets.iter().any(|(_, s)| s.has)
+    }
+
+    /// Whether any selector tests an element's place among its siblings.
+    pub fn tests_position(&self) -> bool {
+        self.sheets.iter().any(|(_, s)| s.position)
+    }
+
+    /// Whether any selector tests the place of an element other than the one it styles.
+    pub fn tests_position_above(&self) -> bool {
+        self.sheets.iter().any(|(_, s)| s.position_above)
     }
 
     /// Takes the sheet out; false when it was not in.

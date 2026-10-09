@@ -86,6 +86,7 @@ dependencies = [
  "blinc_svg",
  "blinc_text",
  "hl_abi",
+ "rustc-hash",
  "swash",
  "taffy",
 ]

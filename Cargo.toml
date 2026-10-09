@@ -27,6 +27,7 @@ blinc_image = {git = "https://github.com/project-blinc/blinc", branch = "main", 
 blinc_layout = {git = "https://github.com/project-blinc/blinc", branch = "main"}
 hl_abi = {git="https://github.com/rayzor-blade/hl_abi", branch="main", optional=true}
 taffy = { version = "0.14", features = ["content_size"] }
+rustc-hash = "2"
 # Glyph outlines for text drawn on a canvas, scaled as blinc_text rasterizes its faces.
 swash = { version = "0.1", optional = true }
 
