@@ -91,3 +91,61 @@ fn a_value_it_cannot_read_is_reported_and_the_rest_applies() {
     ctx.compute(root, 100.0, 100.0).unwrap();
     assert_eq!(bounds(&ctx, root)[2], 40.0);
 }
+
+#[test]
+fn a_change_restyles_only_what_it_can_reach() {
+    let mut ctx = LayoutContext::new();
+    let root = ctx.create_node(Default::default()).unwrap();
+    let rows: Vec<Node> = (0..50)
+        .map(|_| ctx.create_node(Default::default()).unwrap())
+        .collect();
+    for &r in &rows {
+        ctx.insert_before(root, r, None).unwrap();
+    }
+    let mut s = Styles::new();
+    s.cascade_mut().push(parse(
+        ".list > .row { height: 10px } .row.wide { width: 40px } .box:has(.on) { width: 99px }",
+        None,
+        &mut |_, _| None,
+    ));
+    let list = element(&mut s, &["div"], &["list", "box"]);
+    s.set_element(root, list);
+    for &r in &rows {
+        let e = element(&mut s, &["div"], &["row"]);
+        s.set_element(r, e);
+    }
+    s.restyle(&mut ctx, root);
+    assert_eq!(s.last_restyled(), 51);
+
+    // Its own declarations: the node alone.
+    let mut e = element(&mut s, &["div"], &["row"]);
+    let w = s.intern("width");
+    e.inline = vec![(w, "12px".into())];
+    s.set_element(rows[10], e);
+    s.restyle(&mut ctx, root);
+    assert_eq!(s.last_restyled(), 1);
+
+    // A class only its own selectors test: the node alone.
+    let e = element(&mut s, &["div"], &["row", "wide"]);
+    s.set_element(rows[20], e);
+    s.restyle(&mut ctx, root);
+    assert_eq!(s.last_restyled(), 1);
+
+    // A class a :has() above tests: the ancestor answers again.
+    let e = element(&mut s, &["div"], &["row", "on"]);
+    s.set_element(rows[30], e);
+    s.restyle(&mut ctx, root);
+    ctx.compute(root, 500.0, 900.0).unwrap();
+    assert_eq!(bounds(&ctx, root)[2], 99.0);
+
+    // A change to what it passes down reaches its children, though nothing marked them.
+    let mut list = element(&mut s, &["div"], &["list", "box"]);
+    let color = s.intern("color");
+    list.inline = vec![(color, "blue".into())];
+    s.set_element(root, list);
+    s.restyle(&mut ctx, root);
+    assert_eq!(
+        s.computed(rows[0]).and_then(|c| c.value(color)),
+        Some("blue")
+    );
+}

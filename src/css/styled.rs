@@ -50,6 +50,8 @@ pub struct Styles {
     /// Nodes to restyle alone: a state they depend on changed.
     stale: HashSet<u64>,
     everything: bool,
+    /// How many nodes the last `restyle` styled.
+    styled: usize,
 }
 
 impl Default for Styles {
@@ -70,6 +72,7 @@ impl Styles {
             changed: HashSet::new(),
             stale: HashSet::new(),
             everything: true,
+            styled: 0,
         }
     }
 
@@ -92,13 +95,27 @@ impl Styles {
         self.everything = true;
     }
 
-    /// Describes `node` as an element; its states are kept.
+    /// Describes `node` as an element; its states are kept. A change to
+    /// names no selector tests on another element, or to its own
+    /// declarations alone, restyles it alone; what it passes to its children
+    /// reaches them if it changed.
     pub fn set_element(&mut self, node: Node, mut element: Element) {
-        if let Some(old) = self.elements.get(&node.raw()) {
-            element.states = old.states;
+        let raw = node.raw();
+        match self.elements.get(&raw) {
+            None => {
+                self.changed.insert(raw);
+            }
+            Some(old) => {
+                element.states = old.states;
+                let names = changed_names(old, &element);
+                if names.iter().any(|&a| self.cascade.reaches(a)) {
+                    self.changed.insert(raw);
+                } else if !names.is_empty() || old.inline != element.inline {
+                    self.stale.insert(raw);
+                }
+            }
         }
-        self.elements.insert(node.raw(), element);
-        self.changed.insert(node.raw());
+        self.elements.insert(raw, element);
     }
 
     /// `node` was placed, moved or had a child placed or removed: its matches may change.
@@ -141,6 +158,11 @@ impl Styles {
             .filter(|(k, _)| !is_layout_property(k))
     }
 
+    /// How many nodes the last `restyle` styled.
+    pub fn last_restyled(&self) -> usize {
+        self.styled
+    }
+
     pub fn computed(&self, node: Node) -> Option<&Computed> {
         self.computed.get(&node.raw())
     }
@@ -161,6 +183,7 @@ impl Styles {
     /// apply, as `property: value: reason`; the rest still apply.
     pub fn restyle(&mut self, ctx: &mut LayoutContext, root: Node) -> Vec<String> {
         let mut errors = Vec::new();
+        self.styled = 0;
         // What a change reaches: each changed node's subtree, and its later siblings' subtrees.
         let mut todo: HashSet<u64> = std::mem::take(&mut self.stale);
         let everything = std::mem::replace(&mut self.everything, false);
@@ -178,6 +201,7 @@ impl Styles {
                     stack.extend(tree.children(x));
                 }
             };
+            let has = self.cascade.uses_has();
             for raw in changed {
                 let Ok(n) = ctx.node(raw) else { continue };
                 reach(n, &mut todo);
@@ -187,6 +211,18 @@ impl Styles {
                         for &s in &siblings[k + 1..] {
                             reach(s, &mut todo);
                         }
+                    }
+                }
+                // A :has() above or beside it may answer differently: its ancestors and their siblings, each alone.
+                if has {
+                    let mut at = Some(n);
+                    while let Some(x) = at {
+                        let up = tree.parent(x);
+                        if let Some(p) = up {
+                            todo.insert(p.raw());
+                            todo.extend(tree.children(p).iter().map(|c| c.raw()));
+                        }
+                        at = up;
                     }
                 }
             }
@@ -206,6 +242,7 @@ impl Styles {
             if !everything && !todo.contains(&raw) {
                 continue;
             }
+            self.styled += 1;
             let parent = ctx
                 .parent(n)
                 .ok()
@@ -267,8 +304,50 @@ impl Styles {
             }
             self.applied
                 .insert(raw, now.iter().map(|(k, _)| *k).collect());
+            // What its children inherit changed: they are restyled too, after it.
+            let passes = |c: &Computed| -> Vec<(Atom, String)> {
+                c.values
+                    .iter()
+                    .filter(|(k, _)| self.cascade.inherits(*k))
+                    .cloned()
+                    .collect()
+            };
+            if self
+                .computed
+                .get(&raw)
+                .is_none_or(|old| passes(old) != passes(&computed))
+            {
+                todo.extend(ctx.children(n).unwrap_or_default().iter().map(|c| c.raw()));
+            }
             self.computed.insert(raw, computed);
         }
         errors
     }
+}
+
+/// The names that differ between two descriptions of an element: types, id,
+/// classes, and attributes added, removed or given another value.
+fn changed_names(old: &Element, new: &Element) -> Vec<Atom> {
+    let mut out = Vec::new();
+    let diff = |a: &[Atom], b: &[Atom], out: &mut Vec<Atom>| {
+        out.extend(a.iter().filter(|x| !b.contains(x)));
+        out.extend(b.iter().filter(|x| !a.contains(x)));
+    };
+    diff(&old.types, &new.types, &mut out);
+    diff(&old.classes, &new.classes, &mut out);
+    if old.id != new.id {
+        out.extend(old.id);
+        out.extend(new.id);
+    }
+    for (k, v) in &old.attributes {
+        if !new.attributes.iter().any(|(nk, nv)| nk == k && nv == v) {
+            out.push(*k);
+        }
+    }
+    for (k, _) in &new.attributes {
+        if !old.attributes.iter().any(|(ok, _)| ok == k) {
+            out.push(*k);
+        }
+    }
+    out
 }

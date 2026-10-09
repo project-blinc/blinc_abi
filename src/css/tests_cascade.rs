@@ -76,8 +76,7 @@ fn specificity_then_order_then_important_and_inline() {
     let mut doc = Doc::default();
     let mut e = el(&mut c, &["div"], &["a", "b"]);
     let (h, w) = (c.intern("height"), c.intern("width"));
-    let (v5, v9) = (c.intern("5px"), c.intern("9px"));
-    e.inline = vec![(h, v5), (w, v9)];
+    e.inline = vec![(h, "5px".into()), (w, "9px".into())];
     doc.add(None, e);
     let s = &style_all(&c, &doc)[0];
     assert_eq!(get(&c, s, "color").as_deref(), Some("green"));

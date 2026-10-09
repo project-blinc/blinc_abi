@@ -117,7 +117,7 @@ pub struct Element {
     /// Its attributes, by name.
     pub attributes: Vec<(Atom, Atom)>,
     /// Its own declarations, as `style` gives them, by property name.
-    pub inline: Vec<(Atom, Atom)>,
+    pub inline: Vec<(Atom, String)>,
     pub states: States,
     /// Made by a layout rather than the author, as a table's wrapper: not
     /// counted among its siblings by structural pseudo-classes.
@@ -189,6 +189,12 @@ struct Sheet {
     /// Each of the sheet's atoms, as the cascade's.
     map: Vec<Atom>,
     index: Index,
+    /// Names a selector tests on an element other than the one it styles:
+    /// those of every compound but a selector's subject, and all of a
+    /// `:has()` argument's. A change to any other name restyles its element alone.
+    reach: std::collections::HashSet<Atom>,
+    /// Whether any selector uses `:has()`, which a change below or beside an element can answer.
+    has: bool,
 }
 
 /// A sheet in the cascade, for removing it.
@@ -309,11 +315,65 @@ impl Cascade {
                 }
             }
         }
+        // Which names reach past the element they are on: see `Sheet::reach`.
+        let mut reach = std::collections::HashSet::new();
+        let mut has = false;
+        let names = |c: &super::Compound, reach: &mut std::collections::HashSet<Atom>| {
+            let m = |a: Atom| map[a.0 as usize];
+            reach.extend(c.type_name.map(m));
+            reach.extend(c.id.map(m));
+            reach.extend(sheet.compound_classes(c).iter().map(|&a| m(a)));
+            reach.extend(sheet.compound_attributes(c).iter().map(|a| m(a.name)));
+        };
+        for s in &sheet.selectors {
+            let compounds = sheet.selector_compounds(s);
+            for c in &compounds[..compounds.len() - 1] {
+                names(c, &mut reach);
+            }
+            for c in compounds {
+                for p in sheet.compound_pseudos(c) {
+                    if let Pseudo::Has(list) = *p {
+                        has = true;
+                        for inner in sheet.selector_list(list) {
+                            for c in sheet.selector_compounds(inner) {
+                                names(c, &mut reach);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let id = SheetId(self.next);
         self.next += 1;
-        self.sheets
-            .insert(at.min(self.sheets.len()), (id, Sheet { sheet, map, index }));
+        self.sheets.insert(
+            at.min(self.sheets.len()),
+            (
+                id,
+                Sheet {
+                    sheet,
+                    map,
+                    index,
+                    reach,
+                    has,
+                },
+            ),
+        );
         id
+    }
+
+    /// Whether a selector tests `name` on an element other than the one it styles.
+    pub fn reaches(&self, name: Atom) -> bool {
+        self.sheets.iter().any(|(_, s)| s.reach.contains(&name))
+    }
+
+    /// Whether a child takes `name` from its parent: an inherited property or a custom property.
+    pub fn inherits(&self, name: Atom) -> bool {
+        self.inherited.contains(&name) || self.str(name).starts_with("--")
+    }
+
+    /// Whether any sheet uses `:has()`.
+    pub fn uses_has(&self) -> bool {
+        self.sheets.iter().any(|(_, s)| s.has)
     }
 
     /// Takes the sheet out; false when it was not in.
@@ -403,30 +463,30 @@ impl Cascade {
         matched.sort_by_key(|m| (m.important, m.specificity, m.sheet, m.order, m.index));
 
         // The element's own declarations stand over every rule but an !important one, which the sort put last.
-        let mut own: Vec<(Atom, Atom)> = Vec::new();
-        let set = |own: &mut Vec<(Atom, Atom)>, name: Atom, value: Atom| {
-            let covered = longhands(self.str(name));
+        let mut own: Vec<(Atom, &str)> = Vec::new();
+        fn set<'a>(cascade: &Cascade, own: &mut Vec<(Atom, &'a str)>, name: Atom, value: &'a str) {
+            let covered = longhands(cascade.str(name));
             if !covered.is_empty() {
-                own.retain(|(k, _)| !covered.contains(&self.str(*k)));
+                own.retain(|(k, _)| !covered.contains(&cascade.str(*k)));
             }
             match own.iter_mut().find(|(k, _)| *k == name) {
                 Some(slot) => slot.1 = value,
                 None => own.push((name, value)),
             }
-        };
+        }
         let mut inlined = false;
         for m in &matched {
             if m.important && !inlined {
                 inlined = true;
-                for &(k, v) in &element.inline {
-                    set(&mut own, k, v);
+                for (k, v) in &element.inline {
+                    set(self, &mut own, *k, v.as_str());
                 }
             }
-            set(&mut own, m.name, m.value);
+            set(self, &mut own, m.name, self.str(m.value));
         }
         if !inlined {
-            for &(k, v) in &element.inline {
-                set(&mut own, k, v);
+            for (k, v) in &element.inline {
+                set(self, &mut own, *k, v.as_str());
             }
         }
 
@@ -441,7 +501,7 @@ impl Cascade {
             })
             .unwrap_or_default();
         for &(k, v) in &own {
-            let v = self.str(v).to_string();
+            let v = v.to_string();
             match values.iter_mut().find(|(n, _)| *n == k) {
                 Some(slot) => slot.1 = v,
                 None => values.push((k, v)),
