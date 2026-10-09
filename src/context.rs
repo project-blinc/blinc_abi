@@ -157,6 +157,8 @@ impl LayoutContext {
         struct Staged {
             id: LayoutNodeId,
             style: Style,
+            /// As it was, so a write that changes nothing leaves layout clean.
+            before: Style,
             props: Option<RenderProps>,
             order: Option<i32>,
         }
@@ -167,9 +169,11 @@ impl LayoutContext {
             for &(node, raw, value) in writes {
                 let id = self.check(node)?;
                 let slot = *index.entry(id).or_insert_with(|| {
+                    let style = tree.layout.get_style(id).unwrap_or_default();
                     staged.push(Staged {
                         id,
-                        style: tree.layout.get_style(id).unwrap_or_default(),
+                        before: style.clone(),
+                        style,
                         props: None,
                         order: None,
                     });
@@ -220,7 +224,9 @@ impl LayoutContext {
         let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
         let mut reordered = Vec::new();
         for entry in staged {
-            tree.layout.set_style(entry.id, entry.style);
+            if entry.style != entry.before {
+                tree.layout.set_style(entry.id, entry.style);
+            }
             if let Some(props) = entry.props {
                 tree.props.insert(entry.id, props);
             }
