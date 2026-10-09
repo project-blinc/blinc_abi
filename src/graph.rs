@@ -1,9 +1,9 @@
 //! Owned Blinc dependency graph. Host values stay in the language adapter;
 //! native signals/deriveds carry unit values and own dependency scheduling.
-use blinc_core::reactive::{Derived, Effect, ReactiveGraph, Signal};
+use blinc_core::reactive::{Derived, Effect, EffectId, ReactiveGraph, Signal};
 use std::{
     cell::{Cell, RefCell},
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     rc::Rc,
     sync::{
         Arc,
@@ -30,6 +30,14 @@ pub struct EffectKey {
     context: u64,
     native: Rc<Cell<Option<Effect>>>,
     alive: Rc<Cell<bool>>,
+}
+
+/// An effect whose body the host runs: due effects are taken by tag and run
+/// between `begin_effect` and `end_effect`.
+#[derive(Clone, Copy)]
+pub struct HostEffectKey {
+    context: u64,
+    native: Effect,
 }
 
 #[derive(Clone, Copy)]
@@ -66,6 +74,10 @@ pub struct GraphContext {
     pending: RefCell<VecDeque<Command>>,
     draining: Cell<bool>,
     disposed: Arc<AtomicBool>,
+    /// The host's tag for each host effect, which due effects are reported by.
+    host_tags: RefCell<HashMap<EffectId, u32>>,
+    /// Host effect scopes now open, innermost last. Commands wait while any is.
+    host_scopes: RefCell<Vec<EffectId>>,
 }
 #[derive(Debug, Clone, Copy)]
 pub struct GraphStats {
@@ -86,6 +98,8 @@ impl GraphContext {
             pending: RefCell::new(VecDeque::new()),
             draining: Cell::new(false),
             disposed: Arc::new(AtomicBool::new(false)),
+            host_tags: RefCell::new(HashMap::new()),
+            host_scopes: RefCell::new(Vec::new()),
         }
     }
     pub fn is_disposed(&self) -> bool {
@@ -135,7 +149,10 @@ impl GraphContext {
         self.flush()
     }
     fn flush(&self) -> Result<()> {
-        if ACTIVE.with(Cell::get).is_some() || self.draining.replace(true) {
+        if ACTIVE.with(Cell::get).is_some()
+            || !self.host_scopes.borrow().is_empty()
+            || self.draining.replace(true)
+        {
             return Ok(());
         }
         struct DrainGuard<'a>(&'a Cell<bool>);
@@ -260,6 +277,92 @@ impl GraphContext {
             }
         }))
     }
+    /// The graph, borrowed for an edit made outside every graph callback.
+    fn edit<R>(&self, run: impl FnOnce(&mut ReactiveGraph) -> R) -> Result<R> {
+        if self.active()?.is_some() {
+            return Err("Host effects cannot be used inside a graph callback");
+        }
+        let mut slot = self
+            .graph
+            .try_borrow_mut()
+            .map_err(|_| "Reactive graph is busy")?;
+        Ok(run(slot.as_mut().ok_or("Reactive context is disposed")?))
+    }
+
+    /// A host effect, reported by `tag` when due. It is due at once, as an
+    /// effect runs at once.
+    pub fn host_effect(&self, tag: u32) -> Result<HostEffectKey> {
+        let native = self.edit(|graph| graph.create_host_effect())?;
+        self.host_tags.borrow_mut().insert(native.id(), tag);
+        Ok(HostEffectKey {
+            context: self.id,
+            native,
+        })
+    }
+
+    /// Append the tags of the host effects now due to `out`, in the order they
+    /// became due. Each is handed out once until it has run.
+    pub fn take_due_host_effects(&self, out: &mut Vec<u32>) -> Result<()> {
+        let due = self.edit(|graph| graph.take_due_host_effects())?;
+        let tags = self.host_tags.borrow();
+        out.extend(due.iter().filter_map(|id| tags.get(id).copied()));
+        Ok(())
+    }
+
+    /// Track what the host reads as the effect's dependencies until
+    /// `end_effect`. Commands such as signal writes wait until the outermost
+    /// scope ends. False if the effect was removed.
+    pub fn begin_effect(&self, key: HostEffectKey) -> Result<bool> {
+        self.own(key.context)?;
+        let id = key.native.id();
+        if !self.host_tags.borrow().contains_key(&id) {
+            return Ok(false);
+        }
+        let begun = self.edit(|graph| graph.begin_effect(id))?;
+        if begun {
+            self.host_scopes.borrow_mut().push(id);
+        }
+        Ok(begun)
+    }
+
+    /// Close the effect's scope, and any opened inside it that were not
+    /// closed. At the outermost scope the waiting commands are applied, so an
+    /// effect that wrote what it read becomes due again.
+    pub fn end_effect(&self, key: HostEffectKey) -> Result<()> {
+        self.own(key.context)?;
+        let id = key.native.id();
+        let Some(at) = self
+            .host_scopes
+            .borrow()
+            .iter()
+            .rposition(|&open| open == id)
+        else {
+            return Ok(());
+        };
+        if self.is_disposed() {
+            self.host_scopes.borrow_mut().truncate(at);
+            return self.flush();
+        }
+        self.edit(|graph| graph.end_effect(id))?;
+        self.host_scopes.borrow_mut().truncate(at);
+        self.flush()
+    }
+
+    pub fn remove_host_effect(&self, key: HostEffectKey) -> Result<()> {
+        self.own(key.context)?;
+        self.assert_mutable()?;
+        if self
+            .host_tags
+            .borrow_mut()
+            .remove(&key.native.id())
+            .is_none()
+        {
+            return Ok(());
+        }
+        let effect = key.native;
+        self.enqueue(Box::new(move |graph| graph.dispose_effect(effect)))
+    }
+
     pub fn begin_batch(&self) -> Result<()> {
         self.assert_mutable()?;
         self.read(|graph| graph.batch_start())
@@ -284,6 +387,7 @@ impl GraphContext {
             self.pending.borrow_mut().clear();
             self.graph.borrow_mut().take();
         }
+        self.host_tags.borrow_mut().clear();
     }
 }
 
@@ -320,5 +424,96 @@ mod tests {
         graph.dispose();
         graph.dispose();
         assert!(graph.track(signal).is_err());
+    }
+
+    /// Run every due host effect as a host would: take the due tags, run each
+    /// between begin and end, and repeat until none is due.
+    fn run_due(graph: &GraphContext, effects: &[(HostEffectKey, &dyn Fn())]) -> Vec<u32> {
+        let mut order = Vec::new();
+        loop {
+            let mut due = Vec::new();
+            graph.take_due_host_effects(&mut due).unwrap();
+            if due.is_empty() {
+                return order;
+            }
+            for tag in due {
+                let (key, run) = effects[tag as usize];
+                if graph.begin_effect(key).unwrap() {
+                    run();
+                    graph.end_effect(key).unwrap();
+                    order.push(tag);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn host_effects_track_reads_and_requeue_on_their_own_writes() {
+        let graph = GraphContext::new();
+        let a = graph.signal().unwrap();
+        let b = graph.signal().unwrap();
+        let first = graph.host_effect(0).unwrap();
+        let second = graph.host_effect(1).unwrap();
+        let writes = Cell::new(0);
+        let read_a = || graph.track(a).unwrap();
+        // Writes what it reads, twice, then stops: each write makes it due again.
+        let read_b_and_write = || {
+            graph.track(b).unwrap();
+            if writes.get() < 2 {
+                writes.set(writes.get() + 1);
+                graph.notify(b).unwrap();
+            }
+        };
+        let effects: [(HostEffectKey, &dyn Fn()); 2] =
+            [(first, &read_a), (second, &read_b_and_write)];
+        // Both are due on creation, in creation order.
+        assert_eq!(run_due(&graph, &effects), [0, 1, 1, 1]);
+        assert!(run_due(&graph, &effects).is_empty());
+        graph.notify(a).unwrap();
+        assert_eq!(run_due(&graph, &effects), [0]);
+        // A batch reports one run however many writes it holds.
+        graph.begin_batch().unwrap();
+        graph.notify(a).unwrap();
+        graph.notify(a).unwrap();
+        graph.end_batch().unwrap();
+        assert_eq!(run_due(&graph, &effects), [0]);
+        // A removed effect is no longer due, and cannot begin.
+        graph.notify(a).unwrap();
+        graph.remove_host_effect(first).unwrap();
+        assert!(run_due(&graph, &effects).is_empty());
+        assert!(!graph.begin_effect(first).unwrap());
+        assert_eq!(graph.stats().unwrap().effects, 1);
+        // An end with no open scope does nothing, and a foreign key is refused.
+        graph.end_effect(second).unwrap();
+        let other = GraphContext::new();
+        assert!(other.begin_effect(second).is_err());
+        graph.dispose();
+        assert!(graph.host_effect(2).is_err());
+    }
+
+    #[test]
+    fn writes_inside_a_host_scope_wait_for_the_outermost_end() {
+        let graph = GraphContext::new();
+        let s = graph.signal().unwrap();
+        let outer = graph.host_effect(0).unwrap();
+        let inner = graph.host_effect(1).unwrap();
+        let mut due = Vec::new();
+        graph.take_due_host_effects(&mut due).unwrap();
+        assert_eq!(due, [0, 1]);
+        assert!(graph.begin_effect(outer).unwrap());
+        graph.track(s).unwrap();
+        assert!(graph.begin_effect(inner).unwrap());
+        graph.notify(s).unwrap();
+        // The inner scope is abandoned when the outer one ends.
+        graph.end_effect(outer).unwrap();
+        due.clear();
+        graph.take_due_host_effects(&mut due).unwrap();
+        assert_eq!(
+            due,
+            [0],
+            "the outer effect read s and is due after the write applies"
+        );
+        assert!(graph.begin_effect(inner).unwrap());
+        graph.end_effect(inner).unwrap();
     }
 }
