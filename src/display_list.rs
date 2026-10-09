@@ -261,15 +261,36 @@ pub(crate) fn shape_contains(
     lx: f32,
     ly: f32,
 ) -> bool {
+    shape_hit_test(path, w, h, lx, ly, false).0
+}
+
+/// Resolve the exact hit shape once, optionally retaining its conservative
+/// bounds. Clip paths can extend beyond their element's layout box.
+pub(crate) fn shape_hit_test(
+    path: &blinc_core::ClipPath,
+    w: f32,
+    h: f32,
+    lx: f32,
+    ly: f32,
+    track_bounds: bool,
+) -> (bool, Option<[f32; 4]>) {
     let mut points = Vec::new();
     let s = shape_clip(path, (0.0, 0.0), w, h, IDENTITY, &mut points);
     let [a, b, c, d] = s.params;
-    match s.rest[2] {
+    let mut bounds = None;
+    let inside = match s.rest[2] {
         k if k == SHAPE_ELLIPSE => {
-            let (u, v) = ((lx - a) / c.max(1e-4), (ly - b) / d.max(1e-4));
+            let (rx, ry) = (c.max(1e-4), d.max(1e-4));
+            if track_bounds {
+                bounds = Some([a - rx, b - ry, 2.0 * rx, 2.0 * ry]);
+            }
+            let (u, v) = ((lx - a) / rx, (ly - b) / ry);
             u * u + v * v <= 1.0
         }
         k if k == SHAPE_RECT => {
+            if track_bounds {
+                bounds = Some([a, b, c, d]);
+            }
             let r = s.rest[3].min(c * 0.5).min(d * 0.5).max(0.0);
             let (qx, qy) = (
                 (lx - (a + c * 0.5)).abs() - c * 0.5 + r,
@@ -284,11 +305,21 @@ pub(crate) fn shape_contains(
             let at = |i: usize| (points[first + 2 * i], points[first + 2 * i + 1]);
             // The nonzero rule, as CSS's default and the shaders'.
             let mut winding = 0;
+            let mut finite_bounds = true;
+            let (mut min_x, mut min_y, mut max_x, mut max_y) =
+                (f32::MAX, f32::MAX, -f32::MAX, -f32::MAX);
             for i in 1..count {
                 let ((x0, y0), (x1, y1)) = (at(i - 1), at(i));
                 // A point at 1e30 parts two rings of a path.
                 if x0 >= 1e29 || x1 >= 1e29 {
                     continue;
+                }
+                if track_bounds {
+                    finite_bounds &= [x0, y0, x1, y1].iter().all(|v| v.is_finite());
+                    min_x = min_x.min(x0).min(x1);
+                    min_y = min_y.min(y0).min(y1);
+                    max_x = max_x.max(x0).max(x1);
+                    max_y = max_y.max(y0).max(y1);
                 }
                 let side = (x1 - x0) * (ly - y0) - (lx - x0) * (y1 - y0);
                 if y0 <= ly {
@@ -299,10 +330,14 @@ pub(crate) fn shape_contains(
                     winding -= 1;
                 }
             }
+            if track_bounds && finite_bounds && min_x <= max_x && min_y <= max_y {
+                bounds = Some([min_x, min_y, max_x - min_x, max_y - min_y]);
+            }
             winding != 0
         }
         _ => true,
-    }
+    };
+    (inside, bounds)
 }
 
 /// Adds `ring` to `points` from a row's start, closed back to its first

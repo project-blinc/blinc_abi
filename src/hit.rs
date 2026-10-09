@@ -175,18 +175,24 @@ fn hit(
     };
     let (lx, ly) = apply(to_layout, px, py);
     let (lx, ly) = (lx - x, ly - y);
-    region.constrain(
-        m,
-        [x, y, w, h],
-        px,
-        py,
-        tree.props.get(&node).is_some_and(|p| p.clip_path.is_some()),
-    );
-    // Outside its clip-path, nothing of the node or inside it is there to hit.
-    if let Some(path) = tree.props.get(&node).and_then(|p| p.clip_path.as_ref())
-        && !crate::display_list::shape_contains(path, w, h, lx, ly)
-    {
-        return false;
+    region.constrain(m, [x, y, w, h], px, py, false);
+    // Use the resolved shape's bounds, not the element's: an oversized
+    // circle or an inset with negative edges can clip overflowing children.
+    if let Some(path) = tree.props.get(&node).and_then(|p| p.clip_path.as_ref()) {
+        let inside = if region.valid {
+            let (inside, bounds) = crate::display_list::shape_hit_test(path, w, h, lx, ly, true);
+            if let Some([sx, sy, sw, sh]) = bounds {
+                region.constrain(m, [x + sx, y + sy, sw, sh], px, py, true);
+            } else {
+                region.valid = false;
+            }
+            inside
+        } else {
+            crate::display_list::shape_contains(path, w, h, lx, ly)
+        };
+        if !inside {
+            return false;
+        }
     }
 
     let overflow = tree.layout.get_style(node).map(|s| s.overflow);
@@ -613,5 +619,40 @@ mod tests {
         }));
         assert_eq!(test_region(&tree, root, 80.0, 80.0).1.bounds, [0.0; 4]);
         assert!(verify(&tree, root) > 300);
+    }
+    #[test]
+    fn oversized_clip_paths_do_not_cache_changing_hits_past_the_layout_box() {
+        let mut tree = Tree::new();
+        let root = box_at(&mut tree, 0.0, 0.0, 200.0, 200.0);
+        let clipper = box_at(&mut tree, 40.0, 40.0, 80.0, 80.0);
+        let overflow = box_at(&mut tree, 60.0, 0.0, 160.0, 60.0);
+        tree.add_child(root, clipper);
+        tree.add_child(clipper, overflow);
+        tree.props.insert(
+            clipper,
+            RenderProps {
+                clip_path: Some(ClipPath::Circle {
+                    radius: Some(ClipLength::Px(120.0)),
+                    center: (ClipLength::Percent(50.0), ClipLength::Percent(50.0)),
+                }),
+                ..Default::default()
+            },
+        );
+        layout(&mut tree, root);
+        assert_eq!(test(&tree, root, 150.0, 60.0)[0].node, overflow);
+        assert_ne!(
+            test(&tree, root, 199.0, 60.0).first().map(|h| h.node),
+            Some(overflow)
+        );
+        assert_eq!(test_region(&tree, root, 150.0, 60.0).1.bounds, [0.0; 4]);
+        assert!(verify(&tree, root) > 0);
+        tree.props.get_mut(&clipper).unwrap().clip_path = Some(ClipPath::Inset {
+            top: ClipLength::Px(-20.0),
+            right: ClipLength::Px(-90.0),
+            bottom: ClipLength::Px(-20.0),
+            left: ClipLength::Px(-20.0),
+            round: Some(30.0),
+        });
+        assert!(verify(&tree, root) > 0);
     }
 }
