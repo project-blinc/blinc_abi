@@ -1,12 +1,14 @@
 //! A [`Cascade`] applied to a [`LayoutContext`]: the host sets each
 //! element's names and states, and `restyle` matches what changed and
-//! writes its layout declarations through the property router. What is not
-//! layout, paint and text, stays readable as resolved declarations for the
-//! host to draw with.
+//! writes its layout declarations through the property router and reads its
+//! paint declarations as typed writes for the host to apply to its own store.
+//! What is neither, text for one, stays readable as resolved declarations.
 
 use super::cascade::{Cascade, Computed, Element, States, Tree};
 use super::layout::{Units, is_layout_property, layout_writes};
-use super::{Atom, MediaEnvironment};
+use super::paint::{PaintWrite, is_paint_property, paint_writes};
+use super::quantity::PaintUnits;
+use super::{Atom, MediaEnvironment, color};
 use crate::context::{LayoutContext, Node};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
@@ -56,6 +58,23 @@ pub struct Styles {
     everything: bool,
     /// How many nodes the last `restyle` styled.
     styled: usize,
+    /// What each node's paint was read from when last handed to the host, to
+    /// write an unset for what it no longer has.
+    paint_applied: FxHashMap<u64, PaintApplied>,
+    /// Paint writes since the host last took them, node by node, in order.
+    paint_out: Vec<(Node, Vec<PaintWrite>)>,
+    /// Whether paint is read at all: a host that draws from the resolved
+    /// declarations itself never takes the writes.
+    paint_output: bool,
+}
+
+/// The inputs of a node's paint writes: its declarations, and what relative
+/// lengths and `currentcolor` in them mean.
+#[derive(PartialEq)]
+struct PaintApplied {
+    declarations: Vec<(Atom, String)>,
+    font_size: f64,
+    color: Option<String>,
 }
 
 impl Default for Styles {
@@ -78,6 +97,9 @@ impl Styles {
             stale: FxHashSet::default(),
             everything: true,
             styled: 0,
+            paint_applied: FxHashMap::default(),
+            paint_out: Vec::new(),
+            paint_output: false,
         }
     }
 
@@ -158,7 +180,32 @@ impl Styles {
         self.elements.remove(&raw);
         self.computed.remove(&raw);
         self.applied.remove(&raw);
+        self.paint_applied.remove(&raw);
         self.untrack(raw);
+    }
+
+    /// Read paint declarations as typed writes, for [`Styles::take_paint`];
+    /// off by default. Turning it on restyles every node.
+    pub fn set_paint_output(&mut self, on: bool) {
+        if self.paint_output != on {
+            self.paint_output = on;
+            self.paint_applied.clear();
+            self.paint_out.clear();
+            self.everything = true;
+        }
+    }
+
+    /// Writes `node`'s paint again at the next `restyle`, though its
+    /// declarations did not change: what was drawn over it is gone.
+    pub fn repaint(&mut self, node: Node) {
+        self.paint_applied.remove(&node.raw());
+        self.stale.insert(node.raw());
+    }
+
+    /// The paint writes `restyle` has made since this was last called, by
+    /// node, each node's in the order to apply them. Unsets are among them.
+    pub fn take_paint(&mut self) -> Vec<(Node, Vec<PaintWrite>)> {
+        std::mem::take(&mut self.paint_out)
     }
 
     /// What applies to `node` beyond layout, `var()`s resolved: paint and text declarations, by property name.
@@ -319,6 +366,7 @@ impl Styles {
             }
             self.applied
                 .insert(raw, now.iter().map(|(k, _)| *k).collect());
+            self.read_paint(n, &computed, units, &mut errors);
             // What its children inherit changed: they are restyled too, after it.
             let inherits = |k: &Atom| self.cascade.inherits(*k);
             let passes_same = self.computed.get(&raw).is_some_and(|old| {
@@ -335,6 +383,82 @@ impl Styles {
             self.computed.insert(raw, computed);
         }
         errors
+    }
+}
+
+impl Styles {
+    /// `node`'s paint as typed writes, if it differs from what was handed to
+    /// the host: each declaration it has now, and an unset for each it had.
+    fn read_paint(
+        &mut self,
+        node: Node,
+        computed: &Computed,
+        units: Units,
+        errors: &mut Vec<String>,
+    ) {
+        if !self.paint_output {
+            return;
+        }
+        let raw = node.raw();
+        let declared: Vec<(&str, &str)> = computed
+            .resolved
+            .iter()
+            .map(|(k, v)| (self.cascade.str(*k), v.as_str()))
+            .filter(|(k, _)| is_paint_property(k))
+            .collect();
+        let own_color = computed
+            .values
+            .iter()
+            .find(|(k, _)| self.cascade.str(*k) == "color")
+            .map(|(_, v)| v.clone());
+        let now = PaintApplied {
+            declarations: computed
+                .resolved
+                .iter()
+                .filter(|(k, _)| is_paint_property(self.cascade.str(*k)))
+                .cloned()
+                .collect(),
+            font_size: computed.font_size,
+            color: own_color.clone(),
+        };
+        let before = self.paint_applied.get(&raw);
+        if before == Some(&now) || (before.is_none() && now.declarations.is_empty()) {
+            return;
+        }
+        let paint_units = PaintUnits {
+            font_size: units.font_size,
+            root_font_size: units.root_font_size,
+            viewport_width: units.viewport_width,
+            viewport_height: units.viewport_height,
+            color: own_color.and_then(|c| color::parse(&c, None).ok()),
+            declared: &declared,
+        };
+        let mut writes = Vec::new();
+        if let Some(old) = before {
+            for (k, _) in &old.declarations {
+                let name = self.cascade.str(*k);
+                if !declared.iter().any(|(n, _)| *n == name)
+                    && let Some(Ok(w)) = paint_writes(name, None, &paint_units)
+                {
+                    writes.extend(w);
+                }
+            }
+        }
+        for (name, value) in &declared {
+            match paint_writes(name, Some(value), &paint_units) {
+                Some(Ok(w)) => writes.extend(w),
+                Some(Err(e)) => errors.push(format!("{name}: {value}: {e}")),
+                None => {}
+            }
+        }
+        if now.declarations.is_empty() {
+            self.paint_applied.remove(&raw);
+        } else {
+            self.paint_applied.insert(raw, now);
+        }
+        if !writes.is_empty() {
+            self.paint_out.push((node, writes));
+        }
     }
 }
 

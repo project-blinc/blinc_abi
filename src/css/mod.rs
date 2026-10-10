@@ -11,13 +11,21 @@
 //! vectors, and a node names its children by a [`Span`] of one of them. The
 //! compiled form is those vectors as they are.
 
+pub mod border;
 pub mod cascade;
+pub mod color;
 pub mod compiled;
+pub mod filter;
+pub mod gradient;
 pub mod json;
 pub mod layout;
 pub mod media;
+pub mod paint;
 mod parser;
+pub mod quantity;
+pub mod shadow;
 pub mod styled;
+pub mod transform;
 mod tree;
 pub mod value;
 
@@ -854,5 +862,7 @@ fn combinator_str(c: Combinator) -> &'static str {
 mod tests;
 #[cfg(test)]
 mod tests_cascade;
+#[cfg(test)]
+mod tests_paint;
 #[cfg(test)]
 mod tests_styled;

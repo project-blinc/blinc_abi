@@ -1,6 +1,7 @@
 //! CSS layout declarations as property router writes: what the cascade
 //! applies to a `LayoutContext`, through the same ids its setters use.
 
+use super::value::split;
 use crate::context::PropValue;
 
 /// Property router ids. A `*_PERCENT` id takes a fraction of the parent, 0 to 1.
@@ -225,6 +226,18 @@ fn text_id(name: &str) -> Option<i32> {
     })
 }
 
+/// The sides, by index from top, that a border shorthand writes.
+fn border_shorthand(name: &str) -> Option<&'static [usize]> {
+    Some(match name {
+        "border" => &[0, 1, 2, 3],
+        "border-top" => &[0],
+        "border-right" => &[1],
+        "border-bottom" => &[2],
+        "border-left" => &[3],
+        _ => return None,
+    })
+}
+
 /// A four-sided shorthand's longhands, top, right, bottom, left.
 fn sides(name: &str) -> Option<[&'static str; 4]> {
     Some(match name {
@@ -248,7 +261,9 @@ fn sides(name: &str) -> Option<[&'static str; 4]> {
 
 /// Whether `name` is a layout property: one `layout_writes` reads.
 pub fn is_layout_property(name: &str) -> bool {
-    length_ids(name).is_some()
+    border_shorthand(name).is_some()
+        || name == "border-style"
+        || length_ids(name).is_some()
         || enum_id(name).is_some()
         || text_id(name).is_some()
         || sides(name).is_some()
@@ -269,6 +284,11 @@ fn number(text: &str, name: &str) -> Result<f64, String> {
 /// A length's pixel id and pixels, or its percentage id and fraction; `auto` is NaN.
 fn length(name: &str, text: &str, units: &Units) -> Result<(i32, f64), String> {
     let (px_id, percent_id) = length_ids(name).expect("a length property");
+    if (id::BORDER_TOP_WIDTH..=id::BORDER_LEFT_WIDTH).contains(&px_id) {
+        return super::border::width(text, units)
+            .map(|w| (px_id, w))
+            .map_err(|_| format!("invalid value for {name}: {text}"));
+    }
     let t = text.trim().to_ascii_lowercase();
     if t == "auto" {
         return Ok((px_id, f64::NAN));
@@ -304,6 +324,43 @@ pub fn layout_writes<'a>(
 ) -> Option<Result<Writes<'a>, String>> {
     use id::*;
     let num = |id: i32, v: f64| (id, PropValue::Number(v as f32));
+    // A border's width is layout, and its colour is paint: this reads the width.
+    if let Some(which) = border_shorthand(name) {
+        return Some(match value {
+            None => Ok(which
+                .iter()
+                .map(|&i| (BORDER_TOP_WIDTH + i as i32, PropValue::Unset))
+                .collect()),
+            Some(v) => super::border::parse(v, units, false).map(|b| {
+                which
+                    .iter()
+                    .map(|&i| num(BORDER_TOP_WIDTH + i as i32, b.drawn()))
+                    .collect()
+            }),
+        });
+    }
+    if name == "border-style" {
+        return Some(match value {
+            None => Ok((0..4)
+                .map(|i| (BORDER_TOP_WIDTH + i, PropValue::Unset))
+                .collect()),
+            Some(v) => {
+                let none = split(v, ' ')
+                    .iter()
+                    .map(|s| matches!(s.to_ascii_lowercase().as_str(), "none" | "hidden"))
+                    .collect();
+                // Only whether there is a border: a side with none has no width.
+                super::quantity::box_sides(none, name).map(|sides| {
+                    sides
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, none)| **none)
+                        .map(|(i, _)| num(BORDER_TOP_WIDTH + i as i32, 0.0))
+                        .collect()
+                })
+            }
+        });
+    }
     if let Some(side) = sides(name) {
         let Some(value) = value else {
             return Some(Ok(side

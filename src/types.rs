@@ -19,7 +19,7 @@ pub enum Value {
     ClipPath(blinc_core::ClipPath),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct GlassEffects {
     pub aberration: f32,
     pub bevel: f32,
