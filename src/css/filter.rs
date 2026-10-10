@@ -90,3 +90,49 @@ pub fn parse(text: &str, units: &PaintUnits) -> Result<Filter, String> {
     }
     Ok(filter)
 }
+
+/// A `backdrop-filter`: the blur of what is behind a node, and colour filters over it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Backdrop {
+    /// Standard deviation in pixels; 0 for colour filters alone.
+    pub blur: f32,
+    /// Brightness, contrast, grayscale, hue-rotate in degrees, invert, saturate, sepia.
+    pub colors: [f32; 7],
+}
+
+/// What each colour filter is when it does nothing, in [`Backdrop::colors`]'s order.
+pub const BACKDROP_IDENTITY: [f32; 7] = [1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+
+/// `none`, or `blur()` and the colour filters; a filter that is not one a backdrop takes is an error.
+pub fn parse_backdrop(text: &str, units: &PaintUnits) -> Result<Option<Backdrop>, String> {
+    if text.trim().eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+    let filter = parse(text, units).map_err(|e| {
+        if e.contains("opacity()") {
+            "backdrop-filter takes blur() and the colour filters, not opacity()".to_string()
+        } else {
+            e
+        }
+    })?;
+    if filter.drop_shadow.is_some() {
+        return Err(
+            "backdrop-filter takes blur() and the colour filters, not drop-shadow()".into(),
+        );
+    }
+    if filter.blur < 0.0 {
+        return Err("expected a nonnegative blur".into());
+    }
+    Ok(Some(Backdrop {
+        blur: filter.blur,
+        colors: [
+            filter.brightness,
+            filter.contrast,
+            filter.grayscale,
+            filter.hue_rotate,
+            filter.invert,
+            filter.saturate,
+            filter.sepia,
+        ],
+    }))
+}

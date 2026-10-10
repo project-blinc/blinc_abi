@@ -571,6 +571,140 @@ fn overflow_fade_takes_a_distance_for_each_side() {
 }
 
 #[test]
+fn backdrop_filters_read_blur_and_colour_filters() {
+    let units = PaintUnits::default();
+    let b = filter::parse_backdrop(
+        "blur(10px) brightness(1.2) saturate(1.8) hue-rotate(90deg)",
+        &units,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(b.blur, 10.0);
+    assert!(near(b.colors[0], 1.2) && near(b.colors[5], 1.8) && near(b.colors[3], 90.0));
+    assert_eq!(
+        (b.colors[1], b.colors[2], b.colors[4], b.colors[6]),
+        (1.0, 0.0, 0.0, 0.0)
+    );
+    let only = filter::parse_backdrop("grayscale(1)", &units)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (only.blur, only.colors[2]),
+        (0.0, 1.0),
+        "colour filters alone blur nothing"
+    );
+    assert!(filter::parse_backdrop("none", &units).unwrap().is_none());
+    for (bad, why) in [
+        ("opacity(0.5)", "not opacity()"),
+        ("drop-shadow(1px 1px)", "not drop-shadow()"),
+        ("url(#f)", "not a filter"),
+        ("blur(-2px)", "nonnegative"),
+    ] {
+        let e = filter::parse_backdrop(bad, &units).unwrap_err();
+        assert!(e.contains(why), "{bad}: {e}");
+    }
+}
+
+#[test]
+fn a_backdrop_blur_fills_the_node_or_sits_under_its_colour() {
+    use super::filter::BACKDROP_IDENTITY;
+    let alone = [("backdrop-filter", "blur(8px) invert(1)")];
+    let units = PaintUnits {
+        declared: &alone,
+        ..PaintUnits::default()
+    };
+    let writes = paint_writes("backdrop-filter", Some("blur(8px) invert(1)"), &units)
+        .unwrap()
+        .unwrap();
+    match writes.as_slice() {
+        [
+            PaintWrite::BackdropFilter(f),
+            PaintWrite::Background(Background::Blur(style)),
+        ] => {
+            assert_eq!(f[4], 1.0);
+            assert_eq!((style.radius, style.tint.is_none()), (8.0, true));
+        }
+        other => panic!("{other:?}"),
+    }
+    // A background colour of its own is the blur's tint, whichever declaration is read first.
+    let both = [
+        ("backdrop-filter", "blur(8px)"),
+        ("background", "rgba(255, 255, 255, 0.25)"),
+    ];
+    let units = PaintUnits {
+        declared: &both,
+        ..PaintUnits::default()
+    };
+    let filter_writes = paint_writes("backdrop-filter", Some("blur(8px)"), &units)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        filter_writes.as_slice(),
+        [PaintWrite::BackdropFilter(_)]
+    ));
+    let fill = paint_writes("background", Some("rgba(255, 255, 255, 0.25)"), &units)
+        .unwrap()
+        .unwrap();
+    match fill.as_slice() {
+        [PaintWrite::Background(Background::Blur(style))] => {
+            assert_eq!(style.radius, 8.0);
+            assert!(near(style.tint.unwrap().a, 0.25));
+        }
+        other => panic!("{other:?}"),
+    }
+    // A gradient is not blurred under; without a backdrop-filter a colour is a colour.
+    let gradient = paint_writes("background", Some("linear-gradient(red, blue)"), &units)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        gradient.as_slice(),
+        [PaintWrite::Background(Background::Gradient(_))]
+    ));
+    let plain = paint_writes("background", Some("red"), &PaintUnits::default())
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        plain.as_slice(),
+        [PaintWrite::Background(Background::Solid(_))]
+    ));
+    // Unset, the filters go back and a node with no background of its own is not filled.
+    let unset = paint_writes("backdrop-filter", None, &PaintUnits::default())
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        unset.as_slice(),
+        [PaintWrite::BackdropFilter(f), PaintWrite::Background(Background::None)] if *f == BACKDROP_IDENTITY
+    ));
+    let kept = [("background", "red")];
+    let unset = paint_writes(
+        "backdrop-filter",
+        None,
+        &PaintUnits {
+            declared: &kept,
+            ..PaintUnits::default()
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert!(matches!(unset.as_slice(), [PaintWrite::BackdropFilter(_)]));
+    let none = paint_writes("backdrop-filter", Some("none"), &PaintUnits::default())
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        none.as_slice(),
+        [
+            PaintWrite::BackdropFilter(_),
+            PaintWrite::Background(Background::None)
+        ]
+    ));
+    assert!(
+        paint_writes("backdrop-filter", Some("opacity(1)"), &units)
+            .unwrap()
+            .is_err()
+    );
+}
+
+#[test]
 fn shadows_split_into_outer_and_inset_layers_in_order() {
     let units = PaintUnits::default();
     let (outer, inner) = shadow::parse(

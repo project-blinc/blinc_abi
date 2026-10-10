@@ -5,14 +5,14 @@
 
 use super::border;
 use super::clip_path::{self, Clip};
-use super::filter::{self, Filter};
+use super::filter::{self, BACKDROP_IDENTITY, Filter};
 use super::layout::Units;
 use super::quantity::{PaintUnits, amount, box_sides, length};
 use super::transform;
 use super::value::{call, dimension, number, split};
 use super::{color, gradient, shadow};
 use crate::types::GlassEffects;
-use blinc_core::layer::{Affine2D, GlassStyle, Gradient};
+use blinc_core::layer::{Affine2D, BlurStyle, GlassStyle, Gradient};
 use blinc_core::{Color, Shadow};
 
 /// What fills a node's box.
@@ -23,6 +23,9 @@ pub enum Background {
     Gradient(Gradient),
     /// Blurred backdrop, with the effects that sit beside the style.
     Glass(GlassStyle, GlassEffects),
+    /// What is behind the box, blurred, with the fill colour over it: the fill of a node with a
+    /// `backdrop-filter`.
+    Blur(BlurStyle),
 }
 
 /// One paint field and the value it takes. Unsetting a property writes the
@@ -67,6 +70,9 @@ pub enum PaintWrite {
     /// How far content fades out at each edge of a clipping node, top, right, bottom, left, in
     /// pixels; 0 is a hard edge.
     OverflowFade([f32; 4]),
+    /// The colour filters over what is behind the node: brightness, contrast, grayscale,
+    /// hue-rotate in degrees, invert, saturate, sepia.
+    BackdropFilter([f32; 7]),
 }
 
 const GLASS: &[&str] = &[
@@ -112,6 +118,7 @@ pub fn is_paint_property(name: &str) -> bool {
             | "mask-image"
             | "clip-path"
             | "overflow-fade"
+            | "backdrop-filter"
             | "-webkit-mask-image"
     ) || GLASS.contains(&name)
 }
@@ -194,14 +201,65 @@ pub fn paint_writes(
         ("mask-image" | "-webkit-mask-image", Some(v)) => one(mask(v, units).map(Mask)),
         ("clip-path", None) => Ok(vec![ClipPath(None)]),
         ("clip-path", Some(v)) => one(clip_path::parse(v, units).map(ClipPath)),
+        ("backdrop-filter", None) => Ok(backdrop(None, units)),
+        ("backdrop-filter", Some(v)) => {
+            filter::parse_backdrop(v, units).map(|b| backdrop(b, units))
+        }
         ("overflow-fade", None) => Ok(vec![OverflowFade([0.0; 4])]),
         ("overflow-fade", Some(v)) => one(overflow_fade(v, units).map(OverflowFade)),
         _ => return None,
     })
 }
 
-/// A `background`: `glass`, `none`, a gradient or a colour.
+/// The writes of a `backdrop-filter`: its colour filters, and, for a node with no background of
+/// its own, the blur that fills it.
+fn backdrop(filter: Option<filter::Backdrop>, units: &PaintUnits) -> Vec<PaintWrite> {
+    let mut writes = vec![PaintWrite::BackdropFilter(
+        filter.map_or(BACKDROP_IDENTITY, |b| b.colors),
+    )];
+    if !has_background(units) {
+        writes.push(PaintWrite::Background(blurred(
+            Background::None,
+            filter.map(|b| b.blur),
+        )));
+    }
+    writes
+}
+
+fn has_background(units: &PaintUnits) -> bool {
+    ["background", "background-color", "background-image"]
+        .iter()
+        .any(|name| units.declaration(name).is_some())
+}
+
+/// `fill` over a backdrop blurred by `blur`; a gradient, glass or image is left as it is.
+fn blurred(fill: Background, blur: Option<f32>) -> Background {
+    let Some(radius) = blur else {
+        return fill;
+    };
+    let tint = match &fill {
+        Background::Solid(c) => Some(*c),
+        Background::None => None,
+        _ => return fill,
+    };
+    Background::Blur(BlurStyle {
+        radius,
+        tint,
+        ..BlurStyle::default()
+    })
+}
+
+/// A `background`: `glass`, `none`, a gradient or a colour, over the blur of the node's
+/// `backdrop-filter` if it has one.
 fn background(value: &str, units: &PaintUnits) -> Result<Background, String> {
+    let blur = units
+        .declaration("backdrop-filter")
+        .and_then(|v| filter::parse_backdrop(v, units).ok().flatten())
+        .map(|b| b.blur);
+    fill(value, units).map(|f| blurred(f, blur))
+}
+
+fn fill(value: &str, units: &PaintUnits) -> Result<Background, String> {
     let text = value.trim();
     let lower = text.to_ascii_lowercase();
     if lower == "glass" {
