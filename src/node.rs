@@ -119,6 +119,7 @@ fn forget(tree: &mut Tree, nodes: &[LayoutNodeId]) {
         tree.even_odd.remove(node);
         tree.backdrop_filters.remove(node);
         tree.text_decorations.remove(node);
+        tree.image_uses.remove(node);
         tree.glass_effects.remove(node);
     }
 }

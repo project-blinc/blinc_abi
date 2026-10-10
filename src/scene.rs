@@ -77,13 +77,31 @@ impl LayoutContext {
     }
     pub fn set_properties(&mut self, node: Node, props: RenderProps) -> Result<()> {
         let id = self.check(node)?;
-        self.tree
-            .as_mut()
-            .ok_or("Layout context is disposed")?
-            .props
-            .insert(id, props);
+        let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
+        let source = |p: &RenderProps| match &p.background {
+            Some(blinc_core::Brush::Image(i)) => Some(i.source.clone()),
+            _ => None,
+        };
+        let now = source(&props);
+        if tree.props.get(&id).and_then(source) != now {
+            tree.image_uses.insert(id, now);
+        }
+        tree.props.insert(id, props);
         self.revision += 1;
         Ok(())
+    }
+    /// The nodes whose background image source has changed since this was last called, each once
+    /// with the source it names now, or none when it names no image any more; a node removed
+    /// since is not listed. In no particular order.
+    pub fn take_image_uses(&mut self) -> Vec<(Node, Option<String>)> {
+        let Some(tree) = self.tree.as_mut() else {
+            return Vec::new();
+        };
+        let context = self.id;
+        std::mem::take(&mut tree.image_uses)
+            .into_iter()
+            .map(|(id, source)| (Node { context, id }, source))
+            .collect()
     }
     pub fn create_text(
         &mut self,
@@ -613,6 +631,54 @@ mod tests {
             flex_shrink: 0.0,
             ..Default::default()
         }
+    }
+    #[test]
+    fn a_background_image_source_is_noted_when_it_changes() {
+        let mut tree = LayoutContext::new();
+        let node = tree.create_node(style(10.0, 10.0)).unwrap();
+        let image = |source: &str| RenderProps {
+            background: Some(Brush::Image(blinc_core::ImageBrush::new(source))),
+            ..Default::default()
+        };
+        let uses = |tree: &mut LayoutContext| {
+            tree.take_image_uses()
+                .into_iter()
+                .map(|(n, s)| (n.raw() == node.raw(), s))
+                .collect::<Vec<_>>()
+        };
+        tree.set_properties(node, image("a.png")).unwrap();
+        assert_eq!(uses(&mut tree), [(true, Some("a.png".to_string()))]);
+        // The same source again, or another paint field, is no change.
+        tree.set_properties(node, image("a.png")).unwrap();
+        let mut other = image("a.png");
+        other.opacity = 0.5;
+        tree.set_properties(node, other).unwrap();
+        assert!(uses(&mut tree).is_empty());
+        tree.set_properties(node, image("b.png")).unwrap();
+        assert_eq!(uses(&mut tree), [(true, Some("b.png".to_string()))]);
+        // Another kind of background is no image at all.
+        let solid = RenderProps {
+            background: Some(Brush::Solid(Color::BLACK)),
+            ..Default::default()
+        };
+        tree.set_properties(node, solid).unwrap();
+        assert_eq!(uses(&mut tree), [(true, None)]);
+        // Taken, they are not told twice.
+        assert!(uses(&mut tree).is_empty());
+        // A node that changes several times between takes is listed once, as it ended.
+        for source in ["c.png", "d.png", "e.png"] {
+            tree.set_properties(node, image(source)).unwrap();
+        }
+        assert_eq!(uses(&mut tree), [(true, Some("e.png".to_string()))]);
+        // One removed before they are taken is not listed at all.
+        let other = tree.create_node(style(10.0, 10.0)).unwrap();
+        tree.set_properties(node, image("f.png")).unwrap();
+        tree.set_properties(other, image("g.png")).unwrap();
+        tree.remove(node).unwrap();
+        let left = tree.take_image_uses();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].0.raw(), other.raw());
+        assert!(tree.take_image_uses().is_empty());
     }
     #[test]
     fn a_box_is_in_view_where_it_is_drawn() {
