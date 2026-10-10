@@ -486,6 +486,7 @@ pub unsafe extern "C" fn hl_blinc_tree_flush(h: *mut c_void) -> bool {
     }
     let mut needs_layout = false;
     let mut painted = false;
+    let mut bordered = Vec::new();
     for update in take_pending_partial_prop_updates() {
         let Some(mut style) = tree.layout.get_style(update.node_id) else {
             continue;
@@ -498,6 +499,29 @@ pub unsafe extern "C" fn hl_blinc_tree_flush(h: *mut c_void) -> bool {
         if let Some(write) = update.render_write {
             write(tree.props.entry(update.node_id).or_default());
             painted = true;
+            if update.property == blinc_layout::property::PropertyId::BorderWidth {
+                bordered.push(update.node_id);
+            }
+        }
+    }
+    // A border takes layout space: each side's width, as painted, insets the box's content.
+    for node in bordered {
+        let (Some(props), Some(mut style)) = (tree.props.get(&node), tree.layout.get_style(node))
+        else {
+            continue;
+        };
+        let [top, right, bottom, left] =
+            crate::display_list::border_sides(props).map(taffy::prelude::LengthPercentage::length);
+        let border = taffy::Rect {
+            left,
+            right,
+            top,
+            bottom,
+        };
+        if style.border != border {
+            style.border = border;
+            tree.layout.set_style(node, style);
+            needs_layout = true;
         }
     }
     // Recorded by the render writes above, so applied after them.

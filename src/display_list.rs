@@ -1945,7 +1945,7 @@ fn own_box(props: &RenderProps, rect: [f32; 4], m: Affine, shapes: &Shapes) -> C
 
 /// A node's border widths, top, right, bottom, left: each side's own where
 /// one is set, else the border's. An unset side width is negative.
-fn border_sides(props: &RenderProps) -> [f32; 4] {
+pub(crate) fn border_sides(props: &RenderProps) -> [f32; 4] {
     let s = &props.border_sides;
     let bw = props.border_width;
     let of = |side: &Option<blinc_layout::element::BorderSide>| {
