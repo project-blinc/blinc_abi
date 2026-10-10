@@ -175,7 +175,12 @@ fn hit(
     };
     let (lx, ly) = apply(to_layout, px, py);
     let (lx, ly) = (lx - x, ly - y);
-    region.constrain(m, [x, y, w, h], px, py, false);
+    let notch = tree
+        .notches
+        .get(&node)
+        .filter(|n| crate::notch::is_notch(n));
+    // A notch's outline is curved and cut: no region over it is cached.
+    region.constrain(m, [x, y, w, h], px, py, notch.is_some());
     // Use the resolved shape's bounds, not the element's: an oversized
     // circle or an inset with negative edges can clip overflowing children.
     if let Some(path) = tree.props.get(&node).and_then(|p| p.clip_path.as_ref()) {
@@ -240,7 +245,12 @@ fn hit(
             let [rx, ry, rw, rh] = c.rect;
             cx >= rx && cy >= ry && cx < rx + rw && cy < ry + rh
         });
-        found = inside_clips && lx >= 0.0 && ly >= 0.0 && lx < w && ly < h;
+        found = inside_clips
+            && lx >= 0.0
+            && ly >= 0.0
+            && lx < w
+            && ly < h
+            && notch.is_none_or(|n| crate::notch::distance((lx, ly), (w, h), n) < 0.0);
     }
     if found {
         out.push(Hit { node, x: lx, y: ly });
@@ -534,6 +544,26 @@ mod tests {
             }
         }
         cached
+    }
+
+    #[test]
+    fn a_notch_is_hit_by_its_outline() {
+        let mut tree = Tree::new();
+        let root = box_at(&mut tree, 0.0, 0.0, 200.0, 200.0);
+        let dropdown = box_at(&mut tree, 0.0, 0.0, 200.0, 100.0);
+        tree.add_child(root, dropdown);
+        layout(&mut tree, root);
+        // Concave top corners of 20: the body is inset by them, with a flare at each top corner.
+        tree.notches
+            .insert(dropdown, [[-20.0, -20.0, 10.0, 10.0], [0.0; 4], [0.0; 4]]);
+        let top = |x: f32, y: f32| test(&tree, root, x, y).first().map(|h| h.node);
+        assert_eq!(top(100.0, 50.0), Some(dropdown));
+        assert_eq!(top(10.0, 21.0), Some(dropdown));
+        // Above the body and in the flare's cut-out, the press goes to what is beneath.
+        assert_eq!(top(100.0, 10.0), Some(root));
+        assert_eq!(top(2.0, 30.0), Some(root));
+        // No quiet region is cached over the notch.
+        assert!(verify(&tree, root) > 0);
     }
 
     #[test]

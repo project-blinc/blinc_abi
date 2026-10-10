@@ -33,6 +33,8 @@ pub mod layout_props;
 pub mod layout_router;
 #[cfg(feature = "hashlink")]
 pub mod node;
+#[cfg(feature = "scene")]
+mod notch;
 #[cfg(feature = "hashlink")]
 pub mod reactive;
 #[cfg(feature = "scene")]
