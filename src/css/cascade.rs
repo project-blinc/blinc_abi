@@ -454,6 +454,22 @@ impl Cascade {
         Ok(out)
     }
 
+    /// `:root`'s custom property `bare` (no `--`), a later sheet's over an earlier's.
+    pub fn root_variable(&self, bare: &str) -> Option<&str> {
+        self.sheets
+            .iter()
+            .rev()
+            .find_map(|(_, s)| s.sheet.variable(bare))
+    }
+
+    /// The `@keyframes` named `name` and the sheet it is in, a later sheet's over an earlier's.
+    pub fn keyframes(&self, name: &str) -> Option<(&Stylesheet, &super::Keyframes)> {
+        self.sheets
+            .iter()
+            .rev()
+            .find_map(|(_, s)| s.sheet.keyframes_named(name).map(|k| (&s.sheet, k)))
+    }
+
     /// Whether a selector tests `name` on an element other than the one it styles.
     pub fn reaches(&self, name: Atom) -> bool {
         self.sheets.iter().any(|(_, s)| s.reach.contains(&name))
