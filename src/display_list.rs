@@ -68,6 +68,7 @@
 //! corner shape is the node's own; ashui applies its theme's squircle to it
 //! after the walk.
 
+use crate::css::text_decoration::TextDecoration;
 use crate::text;
 use crate::tree::Tree;
 use blinc_core::{Brush, Color, CornerRadius, Gradient, GradientSpace, Transform};
@@ -1915,6 +1916,157 @@ fn text_records(
         }
         clip.local = local_clip.map(|(r, radii)| ([r[0] - at.0, r[1] - at.1, r[2], r[3]], radii));
         p.push(&clip, out);
+    }
+    let decorations = decorations_of(tree, node);
+    if !decorations.is_empty() {
+        let lines = glyph_lines(&prepared.glyphs, k, context.font_size * context.line_height);
+        for d in decorations {
+            let drawn = Decorated {
+                at: (x, y + lead),
+                color: d.color.map_or(color, |c| [c.r, c.g, c.b, c.a * opacity]),
+                m,
+                display,
+                cull,
+            };
+            draw_decoration(&d, context, &lines, &drawn, clips, out);
+        }
+    }
+}
+
+/// The decorations a text node is drawn with, outermost first: its own and those of every
+/// ancestor, which stack as CSS's do; one with no lines is not drawn and undoes none.
+fn decorations_of(tree: &Tree, node: LayoutNodeId) -> Vec<TextDecoration> {
+    if tree.text_decorations.is_empty() {
+        return Vec::new();
+    }
+    let mut found: Vec<TextDecoration> = std::iter::once(node)
+        .chain(tree.layout.ancestors(node))
+        .filter_map(|n| tree.text_decorations.get(&n).copied())
+        .filter(|d| d.lines != 0)
+        .collect();
+    found.reverse();
+    found
+}
+
+/// One line of laid-out glyphs: how many lines below the first it is, and where its glyphs span.
+struct GlyphLine {
+    below: i32,
+    x0: f32,
+    x1: f32,
+}
+
+/// The lines `glyphs` fall on, from the vertical middles of their boxes, which stay within a
+/// fraction of a line of each other on one line; `pitch` is the distance between baselines.
+fn glyph_lines(glyphs: &[blinc_text::GlyphInstance], k: f32, pitch: f32) -> Vec<GlyphLine> {
+    let mut lines: Vec<(f32, usize, GlyphLine)> = Vec::new();
+    for g in glyphs {
+        let [gx, gy, gw, gh] = g.bounds;
+        let middle = (gy + gh / 2.0) / k;
+        let (x0, x1) = (gx / k, (gx + gw) / k);
+        match lines.last_mut() {
+            Some((sum, n, line)) if (middle - *sum / *n as f32).abs() <= pitch / 2.0 => {
+                *sum += middle;
+                *n += 1;
+                line.x0 = line.x0.min(x0);
+                line.x1 = line.x1.max(x1);
+            }
+            _ => lines.push((middle, 1, GlyphLine { below: 0, x0, x1 })),
+        }
+    }
+    let first = lines.first().map_or(0.0, |(sum, n, _)| sum / *n as f32);
+    lines
+        .into_iter()
+        .map(|(sum, n, mut line)| {
+            line.below = ((sum / n as f32 - first) / pitch.max(1e-3)).round() as i32;
+            line
+        })
+        .collect()
+}
+
+/// Where a decoration is drawn: the text's origin, its colour, and how the frame maps it.
+struct Decorated {
+    at: (f32, f32),
+    color: [f32; 4],
+    m: Affine,
+    display: f32,
+    cull: bool,
+}
+
+/// The lines of `d` across each of `lines`, as rects: one band, two, or a row of dots or dashes.
+fn draw_decoration(
+    d: &TextDecoration,
+    context: &blinc_layout::tree::TextMeasureContext,
+    lines: &[GlyphLine],
+    to: &Decorated,
+    clips: &[Clip],
+    out: &mut Vec<f32>,
+) {
+    use crate::css::text_decoration::{LINE_THROUGH, OVERLINE, Style, UNDERLINE};
+    let size = context.font_size;
+    let font = text::decoration_metrics(context, size);
+    // Whole device pixels thick, and at least one.
+    let thick = ((d.thickness.unwrap_or(font.thickness) * to.display).round() / to.display)
+        .max(1.0 / to.display);
+    let pitch = size * context.line_height;
+    // The first baseline is at the font's ascender, below the line box's half leading.
+    let first = to.at.1 + font.ascender;
+    let snap = to.m[1] == 0.0 && to.m[2] == 0.0;
+    let mut band = |x: f32, y: f32, w: f32, h: f32, radius: f32| {
+        let mut p = Primitive::new(PRIM_RECT, [0.0, 0.0, w, h], [radius; 4]);
+        p.color = to.color;
+        p.color2 = to.color;
+        p.place(to.m, to.at.0 + x, y);
+        if snap {
+            p.bounds[0] = (p.bounds[0] * to.display).round() / to.display;
+            p.bounds[1] = (p.bounds[1] * to.display).round() / to.display;
+        }
+        p.push(&clipping(clips, to.m, (to.at.0 + x, y), true, to.cull), out);
+    };
+    for line in lines {
+        let base = first + line.below as f32 * pitch;
+        let (x, len) = (line.x0, line.x1 - line.x0);
+        if len <= 0.0 {
+            continue;
+        }
+        for (bit, top) in [
+            (UNDERLINE, base + d.offset.unwrap_or(font.underline)),
+            (OVERLINE, base - font.ascender),
+            (LINE_THROUGH, base - font.strike - thick / 2.0),
+        ] {
+            if d.lines & bit == 0 {
+                continue;
+            }
+            // A double line is centred on where the single one is.
+            let top = if d.style == Style::Double {
+                top - thick
+            } else {
+                top
+            };
+            match d.style {
+                Style::Solid => band(x, top, len, thick, 0.0),
+                Style::Double => {
+                    band(x, top, len, thick, 0.0);
+                    band(x, top + 2.0 * thick, len, thick, 0.0);
+                }
+                Style::Dotted | Style::Dashed => {
+                    let (on, off, radius) = if d.style == Style::Dotted {
+                        (thick, thick, thick / 2.0)
+                    } else {
+                        (3.0 * thick, 2.0 * thick, 0.0)
+                    };
+                    // A line too long to count in pieces is a solid one.
+                    if len / (on + off) > 4000.0 {
+                        band(x, top, len, thick, 0.0);
+                        continue;
+                    }
+                    let mut at = 0.0;
+                    while at < len {
+                        band(x + at, top, on.min(len - at), thick, radius);
+                        at += on + off;
+                    }
+                }
+            }
+        }
     }
 }
 

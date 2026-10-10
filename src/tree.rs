@@ -63,6 +63,8 @@ pub struct Tree {
     pub(crate) even_odd: HashSet<LayoutNodeId>,
     /// Each node's backdrop colour filters, in `BACKDROP_IDENTITY`'s order; none for the identity.
     pub(crate) backdrop_filters: HashMap<LayoutNodeId, [f32; 7]>,
+    /// How each node decorates its text and its descendants'.
+    pub(crate) text_decorations: HashMap<LayoutNodeId, crate::css::text_decoration::TextDecoration>,
     /// Each liquid glass node's dispersion, bevel strength and curvature.
     pub(crate) glass_effects: HashMap<LayoutNodeId, crate::types::GlassEffects>,
     /// Nodes drawn away from their layout while a layout animation runs:
@@ -186,6 +188,7 @@ impl Tree {
             #[cfg(feature = "scene")]
             even_odd: HashSet::new(),
             backdrop_filters: HashMap::new(),
+            text_decorations: HashMap::new(),
             glass_effects: HashMap::new(),
             visuals: HashMap::new(),
         }
@@ -199,6 +202,7 @@ impl Tree {
         self.pass_through.remove(&id);
         self.notches.remove(&id);
         self.backdrop_filters.remove(&id);
+        self.text_decorations.remove(&id);
         self.glass_effects.remove(&id);
         self.visuals.remove(&id);
     }

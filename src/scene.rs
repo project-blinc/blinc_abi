@@ -225,6 +225,29 @@ impl LayoutContext {
         self.revision += 1;
         Ok(())
     }
+    /// How a node decorates its text and its descendants', drawn beside their ancestors'; none
+    /// takes the node's own away.
+    pub fn set_text_decoration(
+        &mut self,
+        node: Node,
+        decoration: Option<crate::css::text_decoration::TextDecoration>,
+    ) -> Result<()> {
+        let id = self.check(node)?;
+        if decoration.is_some_and(|d| {
+            d.thickness.is_some_and(|t| !t.is_finite() || t < 0.0)
+                || d.offset.is_some_and(|o| !o.is_finite())
+        }) {
+            return Err("Invalid text decoration");
+        }
+        let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
+        if let Some(decoration) = decoration {
+            tree.text_decorations.insert(id, decoration);
+        } else {
+            tree.text_decorations.remove(&id);
+        }
+        self.revision += 1;
+        Ok(())
+    }
     pub fn set_backdrop_filters(&mut self, node: Node, filters: Option<[f32; 7]>) -> Result<()> {
         let id = self.check(node)?;
         if filters.is_some_and(|f| !f.iter().all(|v| v.is_finite())) {

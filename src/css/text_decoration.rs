@@ -20,7 +20,8 @@ pub enum Style {
     Dashed,
 }
 
-/// How an element's text is decorated; no lines is a `none` that its descendants take too.
+/// How an element's text, and its descendants', is decorated. They stack as CSS's do: a descendant's
+/// own decoration is drawn beside its ancestors', and none undoes them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextDecoration {
     /// [`UNDERLINE`], [`OVERLINE`] and [`LINE_THROUGH`] as bits.

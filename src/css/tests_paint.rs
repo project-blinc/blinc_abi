@@ -746,7 +746,7 @@ fn text_decoration_reads_lines_style_colour_and_thickness_in_any_order() {
     assert_eq!((d.color, d.thickness), (None, None));
     let d = decoration("text-decoration", "10% underline", &[]).unwrap();
     assert_eq!(d.thickness, Some(1.6));
-    // A colour or a style alone names no line: none, which an ancestor's decoration does not pass through.
+    // A colour or a style alone names no line: none.
     assert_eq!(decoration("text-decoration", "red", &[]).unwrap().lines, 0);
     assert_eq!(decoration("text-decoration", "none", &[]).unwrap().lines, 0);
 }
@@ -1108,17 +1108,11 @@ fn only_paint_properties_are_paint_writes() {
         "transform",
         "glass-tint",
         "-webkit-mask-image",
+        "text-decoration",
     ] {
         assert!(is_paint_property(name), "{name}");
     }
-    for name in [
-        "width",
-        "font-size",
-        "cursor",
-        "display",
-        "text-decoration",
-        "x",
-    ] {
+    for name in ["width", "font-size", "cursor", "display", "text-align", "x"] {
         assert!(!is_paint_property(name), "{name}");
         assert!(
             paint_writes(name, Some("1"), &PaintUnits::default()).is_none(),

@@ -74,8 +74,7 @@ pub enum PaintWrite {
     /// The colour filters over what is behind the node: brightness, contrast, grayscale,
     /// hue-rotate in degrees, invert, saturate, sepia.
     BackdropFilter([f32; 7]),
-    /// How the node's text, and its descendants' that set none of their own, is decorated; none
-    /// for no declaration, which leaves them to their ancestors'.
+    /// How the node's text, and its descendants', is decorated; none for no declaration.
     TextDecoration(Option<TextDecoration>),
 }
 

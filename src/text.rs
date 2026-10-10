@@ -207,27 +207,65 @@ pub fn prepare(
 /// and descender, at `font_size`. Blinc's layout puts the first baseline at
 /// the ascender, leaving all of that space below the text.
 pub fn half_leading(context: &TextMeasureContext, font_size: f32) -> f32 {
-    let registry = global_font_registry();
-    let Ok(registry) = registry.lock() else {
+    let Some(m) = face_metrics(context) else {
         return 0.0;
     };
+    let line = font_size * context.line_height;
+    (line - (m.ascender_px(font_size) - m.descender_px(font_size))) / 2.0
+}
+
+/// The metrics of the face `context` is drawn in.
+fn face_metrics(context: &TextMeasureContext) -> Option<blinc_text::FontMetrics> {
+    let registry = global_font_registry();
+    let registry = registry.lock().ok()?;
     let generic = match context.generic_font {
         LayoutGeneric::Monospace => GenericFont::Monospace,
         LayoutGeneric::Serif => GenericFont::Serif,
         LayoutGeneric::SansSerif => GenericFont::SansSerif,
         _ => GenericFont::System,
     };
-    let Some(font) = registry.get_for_render_with_style(
-        context.font_name.as_deref(),
-        generic,
-        context.font_weight,
-        context.italic,
-    ) else {
-        return 0.0;
+    registry
+        .get_for_render_with_style(
+            context.font_name.as_deref(),
+            generic,
+            context.font_weight,
+            context.italic,
+        )
+        .map(|font| *font.metrics())
+}
+
+/// Where a font puts its text decorations at `font_size`, in pixels from the baseline: the
+/// underline's top below it, its thickness, the strike-through's middle above it, the top of
+/// the em above it. A font without the figures gets proportions that look like most.
+#[derive(Clone, Copy, Debug)]
+pub struct DecorationMetrics {
+    pub underline: f32,
+    pub thickness: f32,
+    pub strike: f32,
+    pub ascender: f32,
+}
+
+pub fn decoration_metrics(context: &TextMeasureContext, font_size: f32) -> DecorationMetrics {
+    let Some(m) = face_metrics(context) else {
+        return DecorationMetrics {
+            underline: font_size * 0.1,
+            thickness: font_size / 14.0,
+            strike: font_size * 0.3,
+            ascender: font_size * 0.8,
+        };
     };
-    let m = font.metrics();
-    let line = font_size * context.line_height;
-    (line - (m.ascender_px(font_size) - m.descender_px(font_size))) / 2.0
+    DecorationMetrics {
+        underline: m
+            .underline_position
+            .map_or(font_size * 0.1, |p| -m.scale(p, font_size)),
+        thickness: m
+            .underline_thickness
+            .map_or(font_size / 14.0, |t| m.scale(t, font_size)),
+        strike: m
+            .x_height
+            .map_or(font_size * 0.3, |x| m.scale(x, font_size) / 2.0),
+        ascender: m.ascender_px(font_size),
+    }
 }
 
 // ============================================================================
