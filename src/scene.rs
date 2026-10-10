@@ -212,6 +212,19 @@ impl LayoutContext {
         self.revision += 1;
         Ok(())
     }
+    /// Whether a node's clip-path polygon or path is filled by the even-odd rule, the nonzero
+    /// rule otherwise.
+    pub fn set_clip_even_odd(&mut self, node: Node, even_odd: bool) -> Result<()> {
+        let id = self.check(node)?;
+        let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
+        if even_odd {
+            tree.even_odd.insert(id);
+        } else {
+            tree.even_odd.remove(&id);
+        }
+        self.revision += 1;
+        Ok(())
+    }
     pub fn set_backdrop_filters(&mut self, node: Node, filters: Option<[f32; 7]>) -> Result<()> {
         let id = self.check(node)?;
         if filters.is_some_and(|f| !f.iter().all(|v| v.is_finite())) {
