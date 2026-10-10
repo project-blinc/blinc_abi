@@ -866,3 +866,5 @@ pub unsafe extern "C" fn hl_blinc_text_outline(
     }
     n as i32
 }
+#[cfg(feature = "hashlink")]
+define_prim!(hlp_blinc_text_outline, hl_blinc_text_outline, "PBBBBiB_i");
