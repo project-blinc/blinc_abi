@@ -317,6 +317,16 @@ impl Cascade {
 
     /// Adds `sheet` at position `at` among the sheets, `0` first.
     pub fn insert(&mut self, at: usize, sheet: Stylesheet) -> SheetId {
+        let prepared = self.prepare(sheet);
+        let id = SheetId(self.next);
+        self.next += 1;
+        self.sheets
+            .insert(at.min(self.sheets.len()), (id, prepared));
+        id
+    }
+
+    /// `sheet` with its atoms the cascade's, indexed for matching.
+    fn prepare(&mut self, sheet: Stylesheet) -> Sheet {
         let map: Vec<Atom> = (0..sheet.atoms.len() as u32)
             .map(|i| self.atoms.intern(sheet.str(Atom(i))))
             .collect();
@@ -398,24 +408,50 @@ impl Cascade {
                 }
             }
         }
-        let id = SheetId(self.next);
-        self.next += 1;
-        self.sheets.insert(
-            at.min(self.sheets.len()),
-            (
-                id,
-                Sheet {
-                    sheet,
-                    map,
-                    index,
-                    reach,
-                    has,
-                    position,
-                    position_above,
-                },
-            ),
-        );
-        id
+        Sheet {
+            sheet,
+            map,
+            index,
+            reach,
+            has,
+            position,
+            position_above,
+        }
+    }
+
+    /// The elements under `root`, `root` included, that one of the comma-separated
+    /// `selectors` matches, in document order, those a layout added aside left out:
+    /// `querySelectorAll`. An error for selectors that do not read.
+    pub fn select<T: Tree>(
+        &mut self,
+        tree: &T,
+        root: T::Node,
+        selectors: &str,
+    ) -> Result<Vec<T::Node>, String> {
+        let (sheet, span) = super::parser::parse_selectors(selectors)?;
+        let sheet = self.prepare(sheet);
+        let walk = Walk {
+            tree,
+            cascade: self,
+        };
+        let list = &sheet.sheet.selectors[span.range()];
+        let mut out = Vec::new();
+        let mut stack = vec![root];
+        while let Some(n) = stack.pop() {
+            if tree.element(n).is_some_and(|e| !e.anonymous) {
+                let mut deps = Dependencies {
+                    states: Vec::new(),
+                    theme: false,
+                };
+                if list.iter().any(|s| walk.matches(&sheet, s, n, &mut deps)) {
+                    out.push(n);
+                }
+            }
+            let mut children = tree.children(n);
+            children.reverse();
+            stack.extend(children);
+        }
+        Ok(out)
     }
 
     /// Whether a selector tests `name` on an element other than the one it styles.

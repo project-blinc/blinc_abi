@@ -342,6 +342,22 @@ impl Styles {
             .filter(|(k, _)| !is_layout_property(k))
     }
 
+    /// The elements under `root` that `selectors` match, in document order: `querySelectorAll`.
+    pub fn select<H: Host>(
+        &mut self,
+        host: &H,
+        root: impl Key,
+        selectors: &str,
+    ) -> Result<Vec<u64>, String> {
+        let root = root.key();
+        let tree = HostTree {
+            host,
+            elements: &self.elements,
+            root: None,
+        };
+        self.cascade.select(&tree, root, selectors)
+    }
+
     /// How many nodes the last `restyle` styled.
     pub fn last_restyled(&self) -> usize {
         self.styled

@@ -379,6 +379,37 @@ define_prim!(
     "PXblinc_css_BBi_i"
 );
 
+/// The elements under `root` that the comma-separated `selectors` match, in
+/// document order, as 64-bit ids in `out`, at most `capacity`; how many
+/// match, which may be more than it wrote, or -1 for selectors that do not read.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_css_select(
+    h: *mut c_void,
+    t: *mut c_void,
+    root: u64,
+    selectors: *const vbyte,
+    out: *mut vbyte,
+    capacity: i32,
+) -> i32 {
+    let (Some(s), Some(tree)) = (unsafe { styles(h) }, unsafe { crate::node::tree(t) }) else {
+        return -1;
+    };
+    let text = unsafe { string_from(selectors) };
+    let Ok(found) = s.select(&TreeHost(tree), root, &text) else {
+        return -1;
+    };
+    let out = out as *mut u64;
+    for (i, raw) in found.iter().take(capacity.max(0) as usize).enumerate() {
+        unsafe { out.add(i).write_unaligned(*raw) };
+    }
+    found.len() as i32
+}
+define_prim!(
+    hlp_blinc_css_select,
+    hl_blinc_css_select,
+    "PXblinc_css_Xblinc_tree_lBBi_i"
+);
+
 /// `node`'s style: its resolved declarations (`var()`s replaced), its values
 /// (inherited ones and custom properties included), then its font size in
 /// pixels, as three records of name-value pairs split by U+0003.
@@ -511,5 +542,47 @@ mod tests {
         let mut all = vec![top.to_raw(), child.to_raw(), other.to_raw()];
         all.sort();
         assert_eq!(changed, all);
+    }
+
+    #[test]
+    fn select_finds_elements_in_document_order() {
+        let mut tree = Tree::new();
+        let root = tree.layout.create_node(Default::default());
+        let a = tree.layout.create_node(Default::default());
+        let flow = tree.layout.create_node(Default::default());
+        let b = tree.layout.create_node(Default::default());
+        let inner = tree.layout.create_node(Default::default());
+        for n in [a, flow, b] {
+            tree.layout.add_child(root, n);
+        }
+        tree.layout.add_child(a, inner);
+        let mut s = Styles::new();
+        for (n, classes) in [
+            (root, &["list"][..]),
+            (a, &["row"]),
+            (b, &["row"]),
+            (inner, &["row", "deep"]),
+        ] {
+            let e = element(&mut s, &["div"], classes);
+            s.set_element(n.to_raw(), e);
+        }
+        let mut e = element(&mut s, &["div"], &["row"]);
+        e.anonymous = true;
+        s.set_element(flow.to_raw(), e);
+        let host = TreeHost(&tree);
+        let raw = |v: &[LayoutNodeId]| v.iter().map(|n| n.to_raw()).collect::<Vec<_>>();
+        assert_eq!(
+            s.select(&host, root.to_raw(), ".row").unwrap(),
+            raw(&[a, inner, b])
+        );
+        assert_eq!(
+            s.select(&host, root.to_raw(), ".list, .deep").unwrap(),
+            raw(&[root, inner])
+        );
+        assert_eq!(
+            s.select(&host, root.to_raw(), ".row:first-child").unwrap(),
+            raw(&[a, inner])
+        );
+        assert!(s.select(&host, root.to_raw(), ".row >").is_err());
     }
 }
