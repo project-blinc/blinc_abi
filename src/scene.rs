@@ -579,6 +579,42 @@ mod tests {
         }
     }
     #[test]
+    fn a_box_is_in_view_where_it_is_drawn() {
+        let mut tree = LayoutContext::new();
+        let root = tree
+            .create_node(Style {
+                flex_direction: FlexDirection::Column,
+                ..style(100.0, 100.0)
+            })
+            .unwrap();
+        let near = tree.create_node(style(30.0, 20.0)).unwrap();
+        let tall = tree.create_node(style(30.0, 200.0)).unwrap();
+        let far = tree.create_node(style(30.0, 20.0)).unwrap();
+        let empty = tree.create_node(style(0.0, 0.0)).unwrap();
+        tree.set_children(root, &[near, tall, far, empty]).unwrap();
+        tree.compute(root, 100.0, 100.0).unwrap();
+        assert!(tree.in_view(near).unwrap());
+        assert!(!tree.in_view(far).unwrap(), "below the root's edge");
+        // A layout animation drawing it back up brings it into view.
+        tree.set_visual(far, Some([0.0, -150.0, -1.0, 0.0]))
+            .unwrap();
+        assert!(tree.in_view(far).unwrap());
+        tree.set_properties(
+            near,
+            RenderProps {
+                visible: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!tree.in_view(near).unwrap(), "hidden");
+        assert!(
+            !tree.in_view(empty).unwrap(),
+            "nor is a box of no size below the edge"
+        );
+    }
+
+    #[test]
     fn records_hits_visuals_and_stale_buffers() {
         let mut tree = LayoutContext::new();
         let root = tree.create_node(style(100.0, 100.0)).unwrap();

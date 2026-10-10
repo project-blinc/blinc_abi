@@ -53,6 +53,81 @@ impl Default for Tree {
     }
 }
 impl Tree {
+    /// Whether any of `node`'s box is on screen: inside the root and inside
+    /// every ancestor that clips, each scrolled and moved by its layout
+    /// animation as the paint walk places it. Transforms are left out: they
+    /// turn, scale or nudge a box about where layout put it, and an animated
+    /// one would otherwise keep its own node in view. A fragment on the way,
+    /// which has no box, is passed through; a node not laid out yet counts as
+    /// in view, and a hidden or `display: none` ancestor as not. A box of no
+    /// size counts where it stands, so one growing from nothing is seen.
+    pub fn in_view(&self, node: LayoutNodeId) -> bool {
+        let mut path = self.layout.ancestors(node);
+        path.reverse();
+        path.push(node);
+        // The visible rect so far, in the root's coordinates, and where the next node's parent puts its children.
+        let mut clip = [
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            f32::INFINITY,
+        ];
+        let mut origin = (0.0f32, 0.0f32);
+        for (i, &n) in path.iter().enumerate() {
+            // Under display: none, laid out as nothing at the origin, it is not drawn at all.
+            if self
+                .layout
+                .get_style(n)
+                .is_some_and(|s| s.display == taffy::Display::None)
+            {
+                return false;
+            }
+            // A fragment, as <for> and <if> make, has no box: its children are placed as its parent places them.
+            let Some(layout) = self.layout.get_layout(n) else {
+                if i == path.len() - 1 {
+                    return true;
+                }
+                continue;
+            };
+            let mut x = origin.0 + layout.location.x;
+            let mut y = origin.1 + layout.location.y;
+            let (mut w, mut h) = (layout.size.width, layout.size.height);
+            if let Some(v) = self.visuals.get(&n) {
+                x += v[0];
+                y += v[1];
+                if v[2] >= 0.0 {
+                    (w, h) = (v[2], v[3].max(0.0));
+                }
+            }
+            if self.props.get(&n).is_some_and(|p| !p.visible) {
+                return false;
+            }
+            let clips = i == 0
+                || self.layout.get_style(n).is_some_and(|s| {
+                    s.overflow.x != taffy::Overflow::Visible
+                        || s.overflow.y != taffy::Overflow::Visible
+                });
+            if clips {
+                clip = [
+                    clip[0].max(x),
+                    clip[1].max(y),
+                    clip[2].min(x + w),
+                    clip[3].min(y + h),
+                ];
+            }
+            if i == path.len() - 1 {
+                return x <= clip[2]
+                    && x + w >= clip[0]
+                    && y <= clip[3]
+                    && y + h >= clip[1]
+                    && clip[0] <= clip[2]
+                    && clip[1] <= clip[3];
+            }
+            let (sx, sy) = self.scrolls.get(&n).map_or((0.0, 0.0), |s| (s.x, s.y));
+            origin = (x - sx, y - sy);
+        }
+        true
+    }
     pub fn new() -> Self {
         Self {
             layout: LayoutTree::new(),

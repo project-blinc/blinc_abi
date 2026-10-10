@@ -495,6 +495,12 @@ impl LayoutContext {
         Ok(())
     }
 
+    /// Whether any of `node`'s box is on screen after the last layout: `Tree::in_view`.
+    pub fn in_view(&self, node: Node) -> Result<bool> {
+        let id = self.check(node)?;
+        Ok(self.tree.as_ref().is_some_and(|t| t.in_view(id)))
+    }
+
     /// How far what is laid out inside `node` reaches, right and down from
     /// its top-left: past its size when content overflows, which bounds scrolling.
     pub fn content_size(&self, node: Node) -> Result<[f32; 2]> {
