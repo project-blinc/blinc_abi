@@ -28,6 +28,9 @@ pub struct Tree {
     pub(crate) pass_through: std::collections::HashSet<LayoutNodeId>,
     /// Nodes drawn as a notch: signed corner radii, then the top and bottom edges' modifiers.
     pub(crate) notches: HashMap<LayoutNodeId, [[f32; 4]; 3]>,
+    /// Nodes whose clip-path polygon or path fills by the even-odd rule rather than nonzero.
+    #[cfg(feature = "scene")]
+    pub(crate) even_odd: HashSet<LayoutNodeId>,
     /// Each node's backdrop colour filters, in `BACKDROP_IDENTITY`'s order; none for the identity.
     pub(crate) backdrop_filters: HashMap<LayoutNodeId, [f32; 7]>,
     /// Each liquid glass node's dispersion, bevel strength and curvature.
@@ -142,6 +145,8 @@ impl Tree {
             scrolls: HashMap::new(),
             pass_through: HashSet::new(),
             notches: HashMap::new(),
+            #[cfg(feature = "scene")]
+            even_odd: HashSet::new(),
             backdrop_filters: HashMap::new(),
             glass_effects: HashMap::new(),
             visuals: HashMap::new(),

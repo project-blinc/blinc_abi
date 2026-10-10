@@ -15,8 +15,9 @@ pub enum Value {
     Shadow(Vec<Shadow>, Vec<Shadow>),
     /// A corner shape's `n` per corner, and whether the theme may not smooth it.
     CornerShape([f32; 4], bool),
-    /// A CSS `clip-path` shape.
-    ClipPath(blinc_core::ClipPath),
+    /// A CSS `clip-path` shape, and whether a polygon or path of it fills by
+    /// the even-odd rule rather than nonzero.
+    ClipPath(blinc_core::ClipPath, bool),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -39,7 +40,7 @@ impl Default for GlassEffects {
 #[cfg(feature = "hashlink")]
 mod host {
     use super::*;
-    use crate::hl::{handle_mut, into_handle, string_from};
+    use crate::hl::{handle_mut, handle_ref, into_handle, string_from};
     use blinc_core::layer::{
         BlurStyle, Gradient, GradientSpace, GradientSpread, GradientStop, ImageBrush, ImageFit,
         Point, Shadow,
@@ -123,7 +124,7 @@ mod host {
                 round,
             },
         };
-        value(Value::ClipPath(path))
+        value(Value::ClipPath(path, false))
     }
     define_prim!(
         hlp_blinc_clip_path,
@@ -162,12 +163,26 @@ mod host {
                 points: (0..n).map(|i| (len(2 * i), len(2 * i + 1))).collect(),
             }
         };
-        value(Value::ClipPath(clip))
+        value(Value::ClipPath(clip, false))
     }
     define_prim!(
         hlp_blinc_clip_polygon,
         hl_blinc_clip_polygon,
         "PBBib_Xblinc_value_"
+    );
+
+    /// `clip`, a clip-path value, filling by the even-odd rule: a new value.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_clip_even_odd(clip: *mut c_void) -> *mut c_void {
+        match unsafe { handle_ref::<Value>(clip) } {
+            Some(Value::ClipPath(path, _)) => value(Value::ClipPath(path.clone(), true)),
+            _ => std::ptr::null_mut(),
+        }
+    }
+    define_prim!(
+        hlp_blinc_clip_even_odd,
+        hl_blinc_clip_even_odd,
+        "PXblinc_value__Xblinc_value_"
     );
 
     // --- Brushes ---

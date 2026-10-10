@@ -184,8 +184,10 @@ fn hit(
     // Use the resolved shape's bounds, not the element's: an oversized
     // circle or an inset with negative edges can clip overflowing children.
     if let Some(path) = tree.props.get(&node).and_then(|p| p.clip_path.as_ref()) {
+        let even_odd = tree.even_odd.contains(&node);
         let inside = if region.valid {
-            let (inside, bounds) = crate::display_list::shape_hit_test(path, w, h, lx, ly, true);
+            let (inside, bounds) =
+                crate::display_list::shape_hit_test(path, even_odd, w, h, lx, ly, true);
             if let Some([sx, sy, sw, sh]) = bounds {
                 region.constrain(m, [x + sx, y + sy, sw, sh], px, py, true);
             } else {
@@ -193,7 +195,7 @@ fn hit(
             }
             inside
         } else {
-            crate::display_list::shape_contains(path, w, h, lx, ly)
+            crate::display_list::shape_contains(path, even_odd, w, h, lx, ly)
         };
         if !inside {
             return false;
@@ -544,6 +546,41 @@ mod tests {
             }
         }
         cached
+    }
+
+    #[test]
+    fn a_clip_polygon_is_hit_by_its_fill_rule() {
+        let mut tree = Tree::new();
+        let root = box_at(&mut tree, 0.0, 0.0, 200.0, 200.0);
+        let star = box_at(&mut tree, 0.0, 0.0, 100.0, 100.0);
+        tree.add_child(root, star);
+        layout(&mut tree, root);
+        // A pentagram drawn in one stroke: its centre is wound twice.
+        let points = [
+            (50.0, 0.0),
+            (79.0, 90.0),
+            (2.0, 35.0),
+            (98.0, 35.0),
+            (21.0, 90.0),
+        ];
+        tree.props.insert(
+            star,
+            RenderProps {
+                clip_path: Some(blinc_core::ClipPath::Polygon {
+                    points: points
+                        .iter()
+                        .map(|&(x, y)| (ClipLength::Px(x), ClipLength::Px(y)))
+                        .collect(),
+                }),
+                ..Default::default()
+            },
+        );
+        let top = |tree: &Tree, x: f32, y: f32| test(tree, root, x, y).first().map(|h| h.node);
+        assert_eq!(top(&tree, 50.0, 50.0), Some(star));
+        assert_eq!(top(&tree, 50.0, 10.0), Some(star));
+        tree.even_odd.insert(star);
+        assert_eq!(top(&tree, 50.0, 50.0), Some(root));
+        assert_eq!(top(&tree, 50.0, 10.0), Some(star));
     }
 
     #[test]

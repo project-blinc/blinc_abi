@@ -10,7 +10,8 @@
 
 use crate::hl::{handle_mut, into_handle, opt_string_from, string_from, take_handle};
 use crate::layout_router::{
-    BACKDROP_IDENTITY, take_pending_backdrop, take_pending_glass, take_pending_text,
+    BACKDROP_IDENTITY, take_pending_backdrop, take_pending_even_odd, take_pending_glass,
+    take_pending_text,
 };
 use crate::reactive::collect_released;
 use blinc_layout::binding::unregister_node;
@@ -115,6 +116,7 @@ fn forget(tree: &mut Tree, nodes: &[LayoutNodeId]) {
         unregister_node(*node);
         tree.owners.remove(node);
         tree.notches.remove(node);
+        tree.even_odd.remove(node);
         tree.backdrop_filters.remove(node);
         tree.glass_effects.remove(node);
     }
@@ -533,6 +535,14 @@ pub unsafe extern "C" fn hl_blinc_tree_flush(h: *mut c_void) -> bool {
         filters[filter] = value;
         if *filters == BACKDROP_IDENTITY {
             tree.backdrop_filters.remove(&node);
+        }
+        painted = true;
+    }
+    for (node, even_odd) in take_pending_even_odd() {
+        if even_odd {
+            tree.even_odd.insert(node);
+        } else {
+            tree.even_odd.remove(&node);
         }
         painted = true;
     }

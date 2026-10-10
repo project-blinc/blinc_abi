@@ -256,18 +256,20 @@ const SHAPE_RECT: f32 = 2.0;
 /// inside its `path`: the shape the shaders clip to, for the hit test.
 pub(crate) fn shape_contains(
     path: &blinc_core::ClipPath,
+    even_odd: bool,
     w: f32,
     h: f32,
     lx: f32,
     ly: f32,
 ) -> bool {
-    shape_hit_test(path, w, h, lx, ly, false).0
+    shape_hit_test(path, even_odd, w, h, lx, ly, false).0
 }
 
 /// Resolve the exact hit shape once, optionally retaining its conservative
 /// bounds. Clip paths can extend beyond their element's layout box.
 pub(crate) fn shape_hit_test(
     path: &blinc_core::ClipPath,
+    even_odd: bool,
     w: f32,
     h: f32,
     lx: f32,
@@ -275,7 +277,7 @@ pub(crate) fn shape_hit_test(
     track_bounds: bool,
 ) -> (bool, Option<[f32; 4]>) {
     let mut points = Vec::new();
-    let s = shape_clip(path, (0.0, 0.0), w, h, IDENTITY, &mut points);
+    let s = shape_clip(path, (0.0, 0.0), w, h, IDENTITY, &mut points, even_odd);
     let [a, b, c, d] = s.params;
     let mut bounds = None;
     let inside = match s.rest[2] {
@@ -303,7 +305,7 @@ pub(crate) fn shape_hit_test(
         k if k == SHAPE_POLYGON => {
             let (first, count) = (a as usize * 2, b as usize);
             let at = |i: usize| (points[first + 2 * i], points[first + 2 * i + 1]);
-            // The nonzero rule, as CSS's default and the shaders'.
+            // The nonzero rule, CSS's default, or even-odd as the clip asks; the shaders' too.
             let mut winding = 0;
             let mut finite_bounds = true;
             let (mut min_x, mut min_y, mut max_x, mut max_y) =
@@ -333,7 +335,11 @@ pub(crate) fn shape_hit_test(
             if track_bounds && finite_bounds && min_x <= max_x && min_y <= max_y {
                 bounds = Some([min_x, min_y, max_x - min_x, max_y - min_y]);
             }
-            winding != 0
+            if c > 0.5 {
+                winding % 2 != 0
+            } else {
+                winding != 0
+            }
         }
         _ => true,
     };
@@ -365,7 +371,8 @@ fn polygon(points: &mut Vec<f32>, ring: &[(f32, f32)], close: bool) -> (f32, [f3
 
 /// `path` on a box `w` × `h` at `(x, y)` in layout coordinates, drawn under
 /// `m`: CSS's resolution of each shape, a circle's radius against the box's
-/// diagonal over √2 and an unset one reaching the closest side.
+/// diagonal over √2 and an unset one reaching the closest side. A polygon
+/// filled `even_odd` has 1 as its third parameter; nonzero, CSS's default, 0.
 fn shape_clip(
     path: &blinc_core::ClipPath,
     (x, y): (f32, f32),
@@ -373,6 +380,7 @@ fn shape_clip(
     h: f32,
     m: Affine,
     points: &mut Vec<f32>,
+    even_odd: bool,
 ) -> ShapeClip {
     use blinc_core::ClipPath as C;
     let diagonal = (w * w + h * h).sqrt() / std::f32::consts::SQRT_2;
@@ -448,6 +456,10 @@ fn shape_clip(
         }
         C::Path { vertices } => polygon(points, vertices, false),
     };
+    let mut params = params;
+    if even_odd && kind == SHAPE_POLYGON {
+        params[2] = 1.0;
+    }
     let [a, b, c, d, e, f] = m;
     let det = a * d - b * c;
     let (ia, ib, ic, id) = if det.abs() > 1e-12 {
@@ -969,7 +981,15 @@ fn append_inner(
                 frame: m,
                 n: 1.0,
                 fade: [0.0; 4],
-                shape: Some(shape_clip(path, (x, y), w, h, m, &mut glyphs.points)),
+                shape: Some(shape_clip(
+                    path,
+                    (x, y),
+                    w,
+                    h,
+                    m,
+                    &mut glyphs.points,
+                    tree.even_odd.contains(&node),
+                )),
             });
             shaped = true;
         }

@@ -131,6 +131,20 @@ pub fn take_pending_backdrop() -> Vec<(LayoutNodeId, usize, f32)> {
 /// Kept beside render props because Blinc's glass style has no configurable bevel or dispersion.
 static PENDING_GLASS: Mutex<Vec<(LayoutNodeId, Option<GlassEffects>)>> = Mutex::new(Vec::new());
 
+/// Whether a node's clip-path fills even-odd, as its render write sets it.
+static PENDING_EVEN_ODD: Mutex<Vec<(LayoutNodeId, bool)>> = Mutex::new(Vec::new());
+
+fn record_even_odd(node: LayoutNodeId, even_odd: bool) {
+    PENDING_EVEN_ODD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((node, even_odd));
+}
+
+pub fn take_pending_even_odd() -> Vec<(LayoutNodeId, bool)> {
+    std::mem::take(&mut *PENDING_EVEN_ODD.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 fn record_glass(node: LayoutNodeId, effects: Option<GlassEffects>) {
     PENDING_GLASS
         .lock()
@@ -321,7 +335,7 @@ fn filter(p: &mut RenderProps) -> &mut blinc_layout::element_style::CssFilter {
 
 /// ashui's own value properties, numbered after its number ones: the
 /// outline's colour, each border side's, and the clip path.
-fn own_value_write(raw: i32) -> Option<(PropertyId, Write<Value>)> {
+fn own_value_write(node: LayoutNodeId, raw: i32) -> Option<(PropertyId, Write<Value>)> {
     fn color(f: fn(&mut RenderProps, blinc_core::Color)) -> Option<Write<Value>> {
         render(move |p, v| {
             if let Value::Color(c) = v {
@@ -373,11 +387,13 @@ fn own_value_write(raw: i32) -> Option<(PropertyId, Write<Value>)> {
         ),
         75 => (
             PropertyId::Transform,
-            render(|p, v| {
-                p.clip_path = match v {
-                    Value::ClipPath(c) => Some(c),
-                    _ => None,
+            render(move |p, v| {
+                let (clip, even_odd) = match v {
+                    Value::ClipPath(c, even_odd) => (Some(c), even_odd),
+                    _ => (None, false),
                 };
+                p.clip_path = clip;
+                record_even_odd(node, even_odd);
             })?,
         ),
         _ => return None,
@@ -591,7 +607,7 @@ pub unsafe extern "C" fn hl_blinc_apply_value(
     sig: *mut c_void,
     comp: *mut c_void,
 ) {
-    let (prop, write) = if let Some(own) = own_value_write(prop) {
+    let (prop, write) = if let Some(own) = own_value_write(LayoutNodeId::from_raw(node), prop) {
         own
     } else {
         let Some(prop) = property(prop) else { return };
@@ -847,7 +863,13 @@ pub unsafe extern "C" fn hl_blinc_unset(node: u64, raw: i32) {
         72 => ren(P::Opacity, Box::new(|p| p.overflow_fade.right = 0.0)),
         73 => ren(P::Opacity, Box::new(|p| p.overflow_fade.bottom = 0.0)),
         74 => ren(P::Opacity, Box::new(|p| p.overflow_fade.left = 0.0)),
-        75 => ren(P::Transform, Box::new(|p| p.clip_path = None)),
+        75 => ren(
+            P::Transform,
+            Box::new(move |p| {
+                p.clip_path = None;
+                record_even_odd(node, false);
+            }),
+        ),
         // Each colour filter back to its identity.
         76 => ren(P::Filter, Box::new(|p| filter(p).brightness = 1.0)),
         77 => ren(P::Filter, Box::new(|p| filter(p).contrast = 1.0)),
