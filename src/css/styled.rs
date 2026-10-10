@@ -1,4 +1,5 @@
-//! A [`Cascade`] applied to a [`LayoutContext`]: the host sets each
+//! A [`Cascade`] applied to a [`Host`]'s tree, a [`LayoutContext`] or
+//! another: the host sets each
 //! element's names and states, and `restyle` matches what changed and
 //! writes its layout declarations through the property router and reads its
 //! paint declarations as typed writes for the host to apply to its own store.
@@ -9,30 +10,100 @@ use super::layout::{Units, is_layout_property, layout_writes};
 use super::paint::{PaintWrite, is_paint_property, paint_writes};
 use super::quantity::PaintUnits;
 use super::{Atom, MediaEnvironment, color};
-use crate::context::{LayoutContext, Node};
+use crate::context::{LayoutContext, Node, PropValue};
+use blinc_layout::tree::LayoutNodeId;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-/// The cascade's view of a context: its nodes, and the elements the host described.
-struct ContextTree<'a> {
-    ctx: &'a LayoutContext,
-    elements: &'a FxHashMap<u64, Element>,
-    root: Node,
+/// A tree the cascade styles, its nodes by raw id, and where their layout
+/// declarations go.
+pub trait Host {
+    fn live(&self, node: u64) -> bool;
+    fn parent(&self, node: u64) -> Option<u64>;
+    /// Every child, in order.
+    fn children(&self, node: u64) -> Vec<u64>;
+    /// Writes layout declarations through the property router. A host that
+    /// lays out from the resolved declarations itself writes nothing.
+    fn apply_layout(
+        &mut self,
+        node: u64,
+        writes: &[(i32, PropValue<'_>)],
+    ) -> Result<(), &'static str>;
+    /// Whether layout declarations are read and written here; false for a host that applies them itself.
+    fn lays_out(&self) -> bool {
+        true
+    }
+    /// The context `Node`s of `take_paint` belong to; none for a host without one.
+    fn context(&self) -> Option<u64> {
+        None
+    }
 }
 
-impl Tree for ContextTree<'_> {
-    type Node = Node;
-    fn parent(&self, n: Node) -> Option<Node> {
-        self.ctx.parent(n).ok().flatten()
+impl Host for LayoutContext {
+    fn live(&self, node: u64) -> bool {
+        self.node(node).is_ok()
     }
-    fn children(&self, n: Node) -> Vec<Node> {
-        self.ctx.children(n).unwrap_or_default()
+    fn parent(&self, node: u64) -> Option<u64> {
+        let n = self.node(node).ok()?;
+        LayoutContext::parent(self, n).ok().flatten().map(Node::raw)
     }
-    fn element(&self, n: Node) -> Option<&Element> {
-        self.elements.get(&n.raw())
+    fn children(&self, node: u64) -> Vec<u64> {
+        self.node(node)
+            .and_then(|n| LayoutContext::children(self, n))
+            .map(|c| c.into_iter().map(Node::raw).collect())
+            .unwrap_or_default()
     }
-    fn root(&self) -> Option<Node> {
+    fn apply_layout(
+        &mut self,
+        node: u64,
+        writes: &[(i32, PropValue<'_>)],
+    ) -> Result<(), &'static str> {
+        let n = self.node(node)?;
+        let staged: Vec<_> = writes.iter().map(|&(id, v)| (n, id, v)).collect();
+        self.apply(&staged)
+    }
+    fn context(&self) -> Option<u64> {
+        Some(self.id)
+    }
+}
+
+/// A node, by its context `Node` or its raw id.
+pub trait Key {
+    fn key(self) -> u64;
+}
+
+impl Key for Node {
+    fn key(self) -> u64 {
+        self.raw()
+    }
+}
+
+impl Key for u64 {
+    fn key(self) -> u64 {
+        self
+    }
+}
+
+/// The cascade's view of a host: its nodes, and the elements described.
+struct HostTree<'a, H: Host> {
+    host: &'a H,
+    elements: &'a FxHashMap<u64, Element>,
+    root: u64,
+}
+
+impl<H: Host> Tree for HostTree<'_, H> {
+    type Node = u64;
+    fn parent(&self, n: u64) -> Option<u64> {
+        self.host.parent(n)
+    }
+    fn children(&self, n: u64) -> Vec<u64> {
+        self.host.children(n)
+    }
+    fn element(&self, n: u64) -> Option<&Element> {
+        self.elements.get(&n)
+    }
+    fn root(&self) -> Option<u64> {
         Some(self.root)
     }
 }
@@ -62,7 +133,11 @@ pub struct Styles {
     /// write an unset for what it no longer has.
     paint_applied: FxHashMap<u64, PaintApplied>,
     /// Paint writes since the host last took them, node by node, in order.
-    paint_out: Vec<(Node, Vec<PaintWrite>)>,
+    paint_out: Vec<(u64, Vec<PaintWrite>)>,
+    /// The context of the host last restyled, whose `Node`s `take_paint` gives.
+    context: u64,
+    /// Nodes whose computed style changed since the host last took them.
+    changed_out: Vec<u64>,
     /// Whether paint is read at all: a host that draws from the resolved
     /// declarations itself never takes the writes.
     paint_output: bool,
@@ -100,6 +175,8 @@ impl Styles {
             paint_applied: FxHashMap::default(),
             paint_out: Vec::new(),
             paint_output: false,
+            context: 0,
+            changed_out: Vec::new(),
         }
     }
 
@@ -126,8 +203,8 @@ impl Styles {
     /// names no selector tests on another element, or to its own
     /// declarations alone, restyles it alone; what it passes to its children
     /// reaches them if it changed.
-    pub fn set_element(&mut self, node: Node, mut element: Element) {
-        let raw = node.raw();
+    pub fn set_element(&mut self, node: impl Key, mut element: Element) {
+        let raw = node.key();
         match self.elements.get(&raw) {
             None => {
                 self.changed.insert(raw);
@@ -148,26 +225,27 @@ impl Styles {
     /// `node` was placed under a new parent: what it and its descendants
     /// match may change. Give the parent it left to `children_changed`; a
     /// move among the same siblings is `children_changed` alone.
-    pub fn moved(&mut self, node: Node) {
-        self.changed.insert(node.raw());
+    pub fn moved(&mut self, node: impl Key) {
+        self.changed.insert(node.key());
     }
 
     /// A child was placed under `parent` or removed from it: its children's
     /// places among their siblings may change.
-    pub fn children_changed(&mut self, parent: Node) {
-        self.reordered.insert(parent.raw());
+    pub fn children_changed(&mut self, parent: impl Key) {
+        self.reordered.insert(parent.key());
     }
 
     /// Sets `node`'s states; what tested a state that changed is restyled.
-    pub fn set_states(&mut self, node: Node, states: States) {
-        let Some(e) = self.elements.get_mut(&node.raw()) else {
+    pub fn set_states(&mut self, node: impl Key, states: States) {
+        let node = node.key();
+        let Some(e) = self.elements.get_mut(&node) else {
             return;
         };
         let flipped = e.states.0 ^ states.0;
         e.states = states;
         for bit in 0..32 {
             if flipped & (1 << bit) != 0
-                && let Some(who) = self.dependents.get(&(node.raw(), 1 << bit))
+                && let Some(who) = self.dependents.get(&(node, 1 << bit))
             {
                 self.stale.extend(who.iter().copied());
             }
@@ -175,8 +253,8 @@ impl Styles {
     }
 
     /// Forgets `node`, removed from the context.
-    pub fn forget(&mut self, node: Node) {
-        let raw = node.raw();
+    pub fn forget(&mut self, node: impl Key) {
+        let raw = node.key();
         self.elements.remove(&raw);
         self.computed.remove(&raw);
         self.applied.remove(&raw);
@@ -197,21 +275,44 @@ impl Styles {
 
     /// Writes `node`'s paint again at the next `restyle`, though its
     /// declarations did not change: what was drawn over it is gone.
-    pub fn repaint(&mut self, node: Node) {
-        self.paint_applied.remove(&node.raw());
-        self.stale.insert(node.raw());
+    pub fn repaint(&mut self, node: impl Key) {
+        let raw = node.key();
+        self.paint_applied.remove(&raw);
+        self.stale.insert(raw);
     }
 
     /// The paint writes `restyle` has made since this was last called, by
     /// node, each node's in the order to apply them. Unsets are among them.
     pub fn take_paint(&mut self) -> Vec<(Node, Vec<PaintWrite>)> {
+        let context = self.context;
         std::mem::take(&mut self.paint_out)
+            .into_iter()
+            .map(|(raw, w)| {
+                let node = Node {
+                    context,
+                    id: LayoutNodeId::from_raw(raw),
+                };
+                (node, w)
+            })
+            .collect()
+    }
+
+    /// The nodes whose computed style `restyle` changed since this was last
+    /// called, parents before their children: for a host that applies the
+    /// resolved declarations itself.
+    pub fn take_changed(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.changed_out)
+    }
+
+    /// How many nodes `take_changed` would give.
+    pub fn changed_count(&self) -> usize {
+        self.changed_out.len()
     }
 
     /// What applies to `node` beyond layout, `var()`s resolved: paint and text declarations, by property name.
-    pub fn resolved(&self, node: Node) -> impl Iterator<Item = (&str, &str)> {
+    pub fn resolved(&self, node: impl Key) -> impl Iterator<Item = (&str, &str)> {
         self.computed
-            .get(&node.raw())
+            .get(&node.key())
             .into_iter()
             .flat_map(|c| c.resolved.iter())
             .map(|(k, v)| (self.cascade.str(*k), v.as_str()))
@@ -223,8 +324,8 @@ impl Styles {
         self.styled
     }
 
-    pub fn computed(&self, node: Node) -> Option<&Computed> {
-        self.computed.get(&node.raw())
+    pub fn computed(&self, node: impl Key) -> Option<&Computed> {
+        self.computed.get(&node.key())
     }
 
     fn untrack(&mut self, raw: u64) {
@@ -241,21 +342,30 @@ impl Styles {
     /// Restyles what changed under `root`, parents first, and writes its
     /// layout declarations to `ctx`. Returns the declarations it could not
     /// apply, as `property: value: reason`; the rest still apply.
-    pub fn restyle(&mut self, ctx: &mut LayoutContext, root: Node) -> Vec<String> {
+    pub fn restyle(&mut self, ctx: &mut LayoutContext, root: impl Key) -> Vec<String> {
+        self.restyle_host(ctx, root)
+    }
+
+    /// `restyle` over any [`Host`].
+    pub fn restyle_host<H: Host>(&mut self, host: &mut H, root: impl Key) -> Vec<String> {
+        let root = root.key();
         let mut errors = Vec::new();
         self.styled = 0;
+        if let Some(c) = host.context() {
+            self.context = c;
+        }
         let everything = std::mem::replace(&mut self.everything, false);
         let changed = std::mem::take(&mut self.changed);
         let reordered = std::mem::take(&mut self.reordered);
         let stale = std::mem::take(&mut self.stale);
         let mut work = Work::default();
         {
-            let tree = ContextTree {
-                ctx,
+            let tree = HostTree {
+                host: &*host,
                 elements: &self.elements,
                 root,
             };
-            work.depth.insert(root.raw(), 0);
+            work.depth.insert(root, 0);
             if everything {
                 work.subtree(&tree, root);
             } else {
@@ -263,20 +373,22 @@ impl Styles {
                 let above = self.cascade.tests_position_above();
                 let has = self.cascade.uses_has();
                 for raw in stale {
-                    if let Ok(n) = ctx.node(raw) {
-                        work.push(&tree, n);
+                    if host.live(raw) {
+                        work.push(&tree, raw);
                     }
                 }
                 // Parents whose children changed: a changed node's, and those the host named.
-                let mut parents: Vec<Node> = reordered
+                let mut parents: Vec<u64> = reordered
                     .into_iter()
-                    .filter_map(|raw| ctx.node(raw).ok())
+                    .filter(|&raw| host.live(raw))
                     .collect();
                 for raw in changed {
-                    let Ok(n) = ctx.node(raw) else { continue };
-                    work.subtree(&tree, n);
+                    if !host.live(raw) {
+                        continue;
+                    }
+                    work.subtree(&tree, raw);
                     if position || has {
-                        parents.extend(tree.parent(n));
+                        parents.extend(tree.parent(raw));
                     }
                 }
                 for p in parents {
@@ -308,25 +420,25 @@ impl Styles {
 
         // Shallowest first, so a child inherits what its parent has now.
         while let Some(Reverse((depth, raw))) = work.heap.pop() {
-            let Ok(n) = ctx.node(raw) else { continue };
+            if !host.live(raw) {
+                continue;
+            }
             self.styled += 1;
             let (computed, deps) = {
-                let tree = ContextTree {
-                    ctx,
+                let tree = HostTree {
+                    host: &*host,
                     elements: &self.elements,
                     root,
                 };
-                let parent = tree.parent(n).and_then(|p| self.computed.get(&p.raw()));
-                self.cascade.style(&tree, n, parent)
+                let parent = tree.parent(raw).and_then(|p| self.computed.get(&p));
+                self.cascade.style(&tree, raw, parent)
             };
             // What it depends on, afresh.
             self.untrack(raw);
-            let keys: Vec<(u64, u32)> =
-                deps.states.iter().map(|(m, bit)| (m.raw(), *bit)).collect();
-            for &key in &keys {
+            for &key in &deps.states {
                 self.dependents.entry(key).or_default().insert(raw);
             }
-            self.depends_on.insert(raw, keys);
+            self.depends_on.insert(raw, deps.states);
 
             // Its layout declarations, and an unset for each it took before and no longer does.
             let (env, root_font_size) = self.cascade.environment();
@@ -336,10 +448,11 @@ impl Styles {
                 viewport_width: env.width,
                 viewport_height: env.height,
             };
+            let lays_out = host.lays_out();
             let now: Vec<(Atom, &str)> = computed
                 .resolved
                 .iter()
-                .filter(|(k, _)| is_layout_property(self.cascade.str(*k)))
+                .filter(|(k, _)| lays_out && is_layout_property(self.cascade.str(*k)))
                 .map(|(k, v)| (*k, v.as_str()))
                 .collect();
             let before = self.applied.remove(&raw).unwrap_or_default();
@@ -347,16 +460,14 @@ impl Styles {
                 if !now.iter().any(|(k, _)| *k == old)
                     && let Some(Ok(writes)) = layout_writes(self.cascade.str(old), None, &units)
                 {
-                    let staged: Vec<_> = writes.into_iter().map(|(id, v)| (n, id, v)).collect();
-                    let _ = ctx.apply(&staged);
+                    let _ = host.apply_layout(raw, &writes);
                 }
             }
             for &(k, v) in &now {
                 let name = self.cascade.str(k);
                 match layout_writes(name, Some(v), &units) {
                     Some(Ok(writes)) => {
-                        let staged: Vec<_> = writes.into_iter().map(|(id, v)| (n, id, v)).collect();
-                        if let Err(e) = ctx.apply(&staged) {
+                        if let Err(e) = host.apply_layout(raw, &writes) {
                             errors.push(format!("{name}: {v}: {e}"));
                         }
                     }
@@ -366,18 +477,22 @@ impl Styles {
             }
             self.applied
                 .insert(raw, now.iter().map(|(k, _)| *k).collect());
-            self.read_paint(n, &computed, units, &mut errors);
+            self.read_paint(raw, &computed, units, &mut errors);
             // What its children inherit changed: they are restyled too, after it.
             let inherits = |k: &Atom| self.cascade.inherits(*k);
-            let passes_same = self.computed.get(&raw).is_some_and(|old| {
+            let old = self.computed.get(&raw);
+            let passes_same = old.is_some_and(|old| {
                 old.values
                     .iter()
                     .filter(|(k, _)| inherits(k))
                     .eq(computed.values.iter().filter(|(k, _)| inherits(k)))
             });
+            if old != Some(&computed) {
+                self.changed_out.push(raw);
+            }
             if !passes_same {
-                for c in ctx.children(n).unwrap_or_default() {
-                    work.push_at(c.raw(), depth + 1);
+                for c in host.children(raw) {
+                    work.push_at(c, depth + 1);
                 }
             }
             self.computed.insert(raw, computed);
@@ -391,7 +506,7 @@ impl Styles {
     /// the host: each declaration it has now, and an unset for each it had.
     fn read_paint(
         &mut self,
-        node: Node,
+        raw: u64,
         computed: &Computed,
         units: Units,
         errors: &mut Vec<String>,
@@ -399,7 +514,6 @@ impl Styles {
         if !self.paint_output {
             return;
         }
-        let raw = node.raw();
         let declared: Vec<(&str, &str)> = computed
             .resolved
             .iter()
@@ -457,7 +571,7 @@ impl Styles {
             self.paint_applied.insert(raw, now);
         }
         if !writes.is_empty() {
-            self.paint_out.push((node, writes));
+            self.paint_out.push((raw, writes));
         }
     }
 }
@@ -480,35 +594,35 @@ impl Work {
     }
 
     /// `n`'s depth under the root, or none when it is not under it.
-    fn depth_of(&mut self, tree: &ContextTree, n: Node) -> Option<u32> {
+    fn depth_of<T: Tree<Node = u64>>(&mut self, tree: &T, n: u64) -> Option<u32> {
         let mut path = Vec::new();
         let mut at = n;
         let base = loop {
-            if let Some(&d) = self.depth.get(&at.raw()) {
+            if let Some(&d) = self.depth.get(&at) {
                 break d;
             }
-            path.push(at.raw());
+            path.push(at);
             at = tree.parent(at)?;
         };
         for (i, raw) in path.iter().rev().enumerate() {
             self.depth.insert(*raw, base + 1 + i as u32);
         }
-        self.depth.get(&n.raw()).copied()
+        self.depth.get(&n).copied()
     }
 
-    fn push(&mut self, tree: &ContextTree, n: Node) {
+    fn push<T: Tree<Node = u64>>(&mut self, tree: &T, n: u64) {
         if let Some(d) = self.depth_of(tree, n) {
-            self.push_at(n.raw(), d);
+            self.push_at(n, d);
         }
     }
 
-    fn subtree(&mut self, tree: &ContextTree, n: Node) {
+    fn subtree<T: Tree<Node = u64>>(&mut self, tree: &T, n: u64) {
         let Some(d) = self.depth_of(tree, n) else {
             return;
         };
         let mut stack = vec![(n, d)];
         while let Some((x, d)) = stack.pop() {
-            self.push_at(x.raw(), d);
+            self.push_at(x, d);
             stack.extend(tree.children(x).into_iter().map(|c| (c, d + 1)));
         }
     }

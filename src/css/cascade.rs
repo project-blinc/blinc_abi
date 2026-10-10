@@ -232,7 +232,7 @@ struct Sheet {
 
 /// A sheet in the cascade, for removing it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SheetId(u32);
+pub struct SheetId(pub u32);
 
 /// Sheets in order, an atom table the host's names and theirs share, and
 /// what media queries and the theme answer.
