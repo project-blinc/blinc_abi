@@ -976,6 +976,8 @@ fn append_inner(
         let r: CornerRadius = props.border_radius;
         let radii = [r.top_left, r.top_right, r.bottom_right, r.bottom_left];
         let notch = tree.notches.get(&node).copied().unwrap_or([[0.0; 4]; 3]);
+        let notched = tree.notches.contains_key(&node);
+        let mut ring_over_inset: Option<(Primitive, Clipping)> = None;
         // A shadow's local-clip rows hold the shadow itself.
         let shadow_clip = clipping(clips, m, (x, y), false, cull);
         let clip = clipping(clips, m, (x, y), true, cull);
@@ -1128,7 +1130,8 @@ fn append_inner(
             // where its clip's curve and its border's inner edge differ by a
             // fraction of a pixel, a child cannot paint over the border.
             let mut ring_after = None;
-            if clips_children(tree, node) && p.border_color[3] > 0.0 {
+            let clips = clips_children(tree, node);
+            if (clips || notched && !props.inner_shadow.is_empty()) && p.border_color[3] > 0.0 {
                 let mut ring = p.clone();
                 ring.color = [0.0; 4];
                 ring.color2 = [0.0; 4];
@@ -1141,7 +1144,11 @@ fn append_inner(
                 p.push(&clip, out);
             }
             if let Some(ring) = ring_after {
-                after = Some((ring, clip));
+                if clips {
+                    after = Some((ring, clip));
+                } else {
+                    ring_over_inset = Some((ring, clip));
+                }
             }
         }
 
@@ -1154,16 +1161,33 @@ fn append_inner(
             (h - top - bottom).max(0.0),
         ];
         let inner_radii = radii.map(|r| (r - top.max(right).max(bottom).max(left)).max(0.0));
+        // A notched body's inner edge is its outline drawn in by the widest
+        // border side; its border is drawn over the shadows after them.
+        let inset = top.max(right).max(bottom).max(left);
         for s in props.inner_shadow.iter().rev() {
-            let mut p = Primitive::new(PRIM_SHADOW, inner, inner_radii);
+            let mut p = if notched {
+                let mut p = Primitive::new(PRIM_SHADOW, local, radii);
+                p.notch = notch;
+                p
+            } else {
+                Primitive::new(PRIM_SHADOW, inner, inner_radii)
+            };
             p.shape_from(props, &glyphs.shapes);
             p.fill_type = 1.0;
             p.shadow = [s.offset_x, s.offset_y, s.blur, s.spread];
+            if notched {
+                p.shadow[3] += inset;
+                p.place(m, x, y);
+            } else {
+                p.place(m, x + left, y + top);
+            }
             p.shadow_color = rgba(s.color, opacity);
-            p.place(m, x + left, y + top);
             if p.shadow_color[3] > 0.0 {
                 p.push(&shadow_clip, out);
             }
+        }
+        if let Some((ring, clip)) = ring_over_inset {
+            ring.push(&clip, out);
         }
 
         // An outline: a ring outside the box, `offset` away from it, its
