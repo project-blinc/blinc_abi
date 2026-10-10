@@ -8,6 +8,7 @@ use super::clip_path::{self, Clip};
 use super::filter::{self, BACKDROP_IDENTITY, Filter};
 use super::layout::Units;
 use super::quantity::{PaintUnits, amount, box_sides, length};
+use super::text_decoration::{self, TextDecoration};
 use super::transform;
 use super::value::{call, dimension, number, split};
 use super::{color, gradient, shadow};
@@ -73,6 +74,9 @@ pub enum PaintWrite {
     /// The colour filters over what is behind the node: brightness, contrast, grayscale,
     /// hue-rotate in degrees, invert, saturate, sepia.
     BackdropFilter([f32; 7]),
+    /// How the node's text, and its descendants' that set none of their own, is decorated; none
+    /// for no declaration, which leaves them to their ancestors'.
+    TextDecoration(Option<TextDecoration>),
 }
 
 const GLASS: &[&str] = &[
@@ -119,6 +123,12 @@ pub fn is_paint_property(name: &str) -> bool {
             | "clip-path"
             | "overflow-fade"
             | "backdrop-filter"
+            | "text-decoration"
+            | "text-decoration-line"
+            | "text-decoration-style"
+            | "text-decoration-color"
+            | "text-decoration-thickness"
+            | "text-underline-offset"
             | "-webkit-mask-image"
     ) || GLASS.contains(&name)
 }
@@ -205,6 +215,10 @@ pub fn paint_writes(
         ("backdrop-filter", Some(v)) => {
             filter::parse_backdrop(v, units).map(|b| backdrop(b, units))
         }
+        ("text-decoration" | "text-decoration-line", None) => Ok(vec![TextDecoration(None)]),
+        // The rest are read by the line's write, beside it.
+        (n, None) if text_decoration::is_property(n) => Ok(vec![]),
+        (n, Some(v)) if text_decoration::is_property(n) => decoration(n, v, units),
         ("overflow-fade", None) => Ok(vec![OverflowFade([0.0; 4])]),
         ("overflow-fade", Some(v)) => one(overflow_fade(v, units).map(OverflowFade)),
         _ => return None,
@@ -350,6 +364,22 @@ fn border_radius(value: &str, units: &PaintUnits) -> Result<[f32; 4], String> {
         radii.push(length(&part, units)?.max(0.0) as f32);
     }
     Ok([radii[0], radii[1], radii[2], radii[3]])
+}
+
+/// The write of one text decoration property: the decoration the node's declarations make, from
+/// the shorthand or the line's, and nothing from a property that only adjusts it.
+fn decoration(name: &str, value: &str, units: &PaintUnits) -> Result<Vec<PaintWrite>, String> {
+    let made = text_decoration::compose(name, value, units)?;
+    let writes = match name {
+        // With the shorthand declared, it writes what the line adds to it.
+        "text-decoration-line" if units.declaration("text-decoration").is_some() => false,
+        "text-decoration" | "text-decoration-line" => true,
+        _ => false,
+    };
+    Ok(match made {
+        Some(d) if writes => vec![PaintWrite::TextDecoration(Some(d))],
+        _ => vec![],
+    })
 }
 
 /// `none`, or one to four distances as a box's sides take them.

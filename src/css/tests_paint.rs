@@ -5,6 +5,7 @@ use super::gradient;
 use super::paint::{Background, PaintWrite, is_paint_property, paint_writes};
 use super::quantity::PaintUnits;
 use super::shadow;
+use super::text_decoration::{self, LINE_THROUGH, OVERLINE, Style, TextDecoration, UNDERLINE};
 use super::transform;
 use blinc_core::layer::Gradient;
 use blinc_core::{ClipLength, ClipPath, Color};
@@ -702,6 +703,145 @@ fn a_backdrop_blur_fills_the_node_or_sits_under_its_colour() {
             .unwrap()
             .is_err()
     );
+}
+
+fn decoration(name: &str, value: &str, declared: &[(&str, &str)]) -> Option<TextDecoration> {
+    let units = PaintUnits {
+        declared,
+        ..PaintUnits::default()
+    };
+    match paint_writes(name, Some(value), &units)
+        .unwrap()
+        .unwrap()
+        .as_slice()
+    {
+        [] => None,
+        [PaintWrite::TextDecoration(d)] => *d,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn text_decoration_reads_lines_style_colour_and_thickness_in_any_order() {
+    let d = decoration("text-decoration", "underline", &[]).unwrap();
+    assert_eq!(
+        (d.lines, d.style, d.color, d.thickness, d.offset),
+        (UNDERLINE, Style::Solid, None, None, None)
+    );
+    let d = decoration(
+        "text-decoration",
+        "red dotted 2px line-through underline",
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        (d.lines, d.style, d.thickness),
+        (UNDERLINE | LINE_THROUGH, Style::Dotted, Some(2.0))
+    );
+    assert_eq!(d.color.map(|c| (c.r, c.g, c.b)), Some((1.0, 0.0, 0.0)));
+    let d = decoration("text-decoration", "overline double rgb(0 128 0)", &[]).unwrap();
+    assert_eq!((d.lines, d.style), (OVERLINE, Style::Double));
+    assert!(d.color.is_some_and(|c| (c.g - 128.0 / 255.0).abs() < 1e-3));
+    let d = decoration("text-decoration", "underline currentcolor from-font", &[]).unwrap();
+    assert_eq!((d.color, d.thickness), (None, None));
+    let d = decoration("text-decoration", "10% underline", &[]).unwrap();
+    assert_eq!(d.thickness, Some(1.6));
+    // A colour or a style alone names no line: none, which an ancestor's decoration does not pass through.
+    assert_eq!(decoration("text-decoration", "red", &[]).unwrap().lines, 0);
+    assert_eq!(decoration("text-decoration", "none", &[]).unwrap().lines, 0);
+}
+
+#[test]
+fn text_decoration_longhands_stand_over_the_shorthand_and_adjust_the_line() {
+    let beside = [
+        ("text-decoration", "underline solid"),
+        ("text-decoration-color", "blue"),
+        ("text-decoration-style", "dashed"),
+        ("text-decoration-thickness", "3px"),
+        ("text-underline-offset", "4px"),
+    ];
+    // The shorthand writes the whole of it.
+    let d = decoration("text-decoration", "underline solid", &beside).unwrap();
+    assert_eq!(
+        (d.lines, d.style, d.thickness, d.offset),
+        (UNDERLINE, Style::Dashed, Some(3.0), Some(4.0))
+    );
+    assert!(d.color.is_some_and(|c| c.b == 1.0));
+    // With the shorthand there, the line's own declaration writes nothing, and the rest only adjust.
+    assert_eq!(
+        decoration("text-decoration-line", "overline", &beside),
+        None
+    );
+    for (name, value) in &beside[1..] {
+        assert_eq!(decoration(name, value, &beside), None, "{name}");
+    }
+    // Alone, the line is the decoration, taking the others beside it.
+    let longhands = [
+        ("text-decoration-line", "overline"),
+        ("text-decoration-style", "double"),
+        ("text-underline-offset", "0.25em"),
+    ];
+    let d = decoration("text-decoration-line", "overline", &longhands).unwrap();
+    assert_eq!(
+        (d.lines, d.style, d.offset),
+        (OVERLINE, Style::Double, Some(4.0))
+    );
+    // A style without a line draws nothing.
+    assert_eq!(
+        decoration(
+            "text-decoration-style",
+            "dotted",
+            &[("text-decoration-style", "dotted")]
+        ),
+        None
+    );
+    // A longhand that cannot be read is left out beside the line, and reported on its own.
+    let broken = [
+        ("text-decoration-line", "underline"),
+        ("text-decoration-style", "wavy"),
+    ];
+    let d = decoration("text-decoration-line", "underline", &broken).unwrap();
+    assert_eq!(d.style, Style::Solid);
+}
+
+#[test]
+fn text_decoration_that_is_not_understood_says_why() {
+    let units = PaintUnits::default();
+    let error = |name: &str, value: &str| {
+        paint_writes(name, Some(value), &units)
+            .unwrap()
+            .unwrap_err()
+    };
+    assert!(error("text-decoration-line", "sideways").contains("expected none, underline"));
+    assert!(error("text-decoration-line", "blink").contains("not supported"));
+    assert!(error("text-decoration-line", "none underline").contains("stands alone"));
+    assert!(error("text-decoration-style", "wavy").contains("wavy is not supported"));
+    assert!(error("text-decoration-style", "zigzag").contains("expected solid, double"));
+    assert!(error("text-decoration-thickness", "-2px").contains("nonnegative"));
+    assert!(error("text-decoration-thickness", "thick").contains("expected a length"));
+    assert!(error("text-decoration-color", "notacolour").contains("notacolour"));
+    assert!(error("text-underline-offset", "far").contains("expected a length"));
+    assert!(error("text-decoration", "underline overline none").contains("stands alone"));
+    assert!(error("text-decoration", "dotted dashed").contains("one style"));
+    assert!(error("text-decoration", "1px 2px").contains("one thickness"));
+    assert!(error("text-decoration", "red blue").contains("one colour"));
+    // Unset takes the declaration away, which the properties that only adjust it leave alone.
+    for name in ["text-decoration", "text-decoration-line"] {
+        assert!(matches!(
+            paint_writes(name, None, &units)
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            [PaintWrite::TextDecoration(None)]
+        ));
+    }
+    assert!(
+        paint_writes("text-decoration-color", None, &units)
+            .unwrap()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(text_decoration::is_property("text-underline-offset"));
 }
 
 #[test]

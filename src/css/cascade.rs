@@ -81,6 +81,12 @@ pub fn longhands(name: &str) -> &'static [&'static str] {
         "background" => &["background-color", "background-image"],
         "overflow" => &["overflow-x", "overflow-y"],
         "outline" => &["outline-width", "outline-color"],
+        "text-decoration" => &[
+            "text-decoration-line",
+            "text-decoration-style",
+            "text-decoration-color",
+            "text-decoration-thickness",
+        ],
         "border-width" => BORDER_WIDTH,
         "border-color" => BORDER_COLOR,
         "border-top" => &["border-top-width", "border-top-color"],

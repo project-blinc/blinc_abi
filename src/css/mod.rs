@@ -27,6 +27,7 @@ pub mod quantity;
 pub mod shadow;
 pub mod styled;
 mod svg_path;
+pub mod text_decoration;
 pub mod transform;
 mod tree;
 pub mod value;
