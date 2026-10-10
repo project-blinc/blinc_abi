@@ -615,6 +615,95 @@ mod tests {
     }
 
     #[test]
+    fn a_view_answers_as_in_view_does_sharing_its_walk() {
+        let mut tree = LayoutContext::new();
+        let column = |w: f32, h: f32| Style {
+            flex_direction: FlexDirection::Column,
+            ..style(w, h)
+        };
+        let root = tree.create_node(column(100.0, 100.0)).unwrap();
+        let scroller = tree
+            .create_node(Style {
+                overflow: taffy::Point {
+                    x: taffy::Overflow::Hidden,
+                    y: taffy::Overflow::Hidden,
+                },
+                ..column(50.0, 30.0)
+            })
+            .unwrap();
+        let rows: Vec<_> = (0..4)
+            .map(|_| tree.create_node(style(50.0, 20.0)).unwrap())
+            .collect();
+        tree.set_children(scroller, &rows).unwrap();
+        let hidden = tree.create_node(column(30.0, 10.0)).unwrap();
+        let under_hidden = tree.create_node(style(10.0, 5.0)).unwrap();
+        tree.set_children(hidden, &[under_hidden]).unwrap();
+        let gone = tree
+            .create_node(Style {
+                display: Display::None,
+                ..column(30.0, 10.0)
+            })
+            .unwrap();
+        let under_gone = tree.create_node(style(10.0, 5.0)).unwrap();
+        tree.set_children(gone, &[under_gone]).unwrap();
+        let far = tree.create_node(style(30.0, 200.0)).unwrap();
+        let moved = tree.create_node(style(30.0, 10.0)).unwrap();
+        tree.set_children(root, &[scroller, hidden, gone, far, moved])
+            .unwrap();
+        tree.compute(root, 100.0, 100.0).unwrap();
+        tree.set_scroll(
+            scroller,
+            Some(crate::tree::Scroll {
+                x: 0.0,
+                y: 25.0,
+                thumb: [0.0; 4],
+            }),
+        )
+        .unwrap();
+        tree.set_properties(
+            hidden,
+            RenderProps {
+                visible: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        tree.set_visual(moved, Some([0.0, -200.0, -1.0, 0.0]))
+            .unwrap();
+        let all = [
+            vec![
+                root,
+                scroller,
+                hidden,
+                under_hidden,
+                gone,
+                under_gone,
+                far,
+                moved,
+            ],
+            rows.clone(),
+        ]
+        .concat();
+        // Asked leaves first and in reverse, so ancestors are reached through their children.
+        for order in [all.clone(), all.iter().rev().copied().collect()] {
+            let mut view = tree.view().unwrap();
+            for &n in &order {
+                assert_eq!(view.in_view(n).unwrap(), tree.in_view(n).unwrap(), "{n:?}");
+            }
+        }
+        let mut view = tree.view().unwrap();
+        let seen: Vec<bool> = rows.iter().map(|&r| view.in_view(r).unwrap()).collect();
+        assert_eq!(
+            seen,
+            [false, true, true, false],
+            "scrolled by 25 in a 30 tall clip"
+        );
+        assert!(!view.in_view(under_hidden).unwrap());
+        assert!(!view.in_view(under_gone).unwrap());
+        assert!(view.in_view(moved).unwrap(), "drawn back into view");
+    }
+
+    #[test]
     fn records_hits_visuals_and_stale_buffers() {
         let mut tree = LayoutContext::new();
         let root = tree.create_node(style(100.0, 100.0)).unwrap();

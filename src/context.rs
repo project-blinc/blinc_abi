@@ -1,4 +1,5 @@
 //! Owned layout contexts for language adapters. No host GC or process-global tree.
+use crate::tree::{Reach, Step};
 use blinc_layout::element::RenderProps;
 use blinc_layout::tree::{LayoutNodeId, LayoutTree};
 use std::collections::{HashMap, HashSet};
@@ -501,6 +502,18 @@ impl LayoutContext {
         Ok(self.tree.as_ref().is_some_and(|t| t.in_view(id)))
     }
 
+    /// Whether nodes are in view after the last layout, many at once: the walk
+    /// down to each ancestor is made once and shared by every node under it.
+    /// Valid until the tree changes.
+    pub fn view(&self) -> Result<View<'_>> {
+        let tree = self.tree.as_ref().ok_or("Layout context is disposed")?;
+        Ok(View {
+            context: self,
+            tree,
+            reached: HashMap::new(),
+        })
+    }
+
     /// How far what is laid out inside `node` reaches, right and down from
     /// its top-left: past its size when content overflows, which bounds scrolling.
     pub fn content_size(&self, node: Node) -> Result<[f32; 2]> {
@@ -530,6 +543,61 @@ impl LayoutContext {
     }
     pub fn is_disposed(&self) -> bool {
         self.tree.is_none()
+    }
+}
+
+/// Whether nodes are in view, from `LayoutContext::view`.
+pub struct View<'a> {
+    context: &'a LayoutContext,
+    tree: &'a crate::tree::Tree,
+    /// What each ancestor reached leaves its children; none when nothing under it is drawn.
+    reached: HashMap<LayoutNodeId, Option<Reach>>,
+}
+
+impl View<'_> {
+    /// As `LayoutContext::in_view`.
+    pub fn in_view(&mut self, node: Node) -> Result<bool> {
+        let id = self.context.check(node)?;
+        let parent = self.context.parents.get(&id).copied();
+        let reach = match parent {
+            Some(p) => match self.reach(p) {
+                Some(r) => r,
+                None => return Ok(false),
+            },
+            None => Reach::ROOT,
+        };
+        Ok(match self.tree.step(id, reach, parent.is_none()) {
+            Step::Hidden => false,
+            Step::Through => true,
+            Step::Box { seen, .. } => seen,
+        })
+    }
+
+    /// What `node` leaves its children, walked down from the nearest ancestor already reached.
+    fn reach(&mut self, node: LayoutNodeId) -> Option<Reach> {
+        let mut chain = Vec::new();
+        let mut at = node;
+        let (above, rooted) = loop {
+            if let Some(&r) = self.reached.get(&at) {
+                break (r, false);
+            }
+            chain.push(at);
+            match self.context.parents.get(&at) {
+                Some(&p) => at = p,
+                None => break (Some(Reach::ROOT), true),
+            }
+        };
+        let mut reach = above;
+        for (k, &n) in chain.iter().enumerate().rev() {
+            let root = rooted && k == chain.len() - 1;
+            reach = reach.and_then(|r| match self.tree.step(n, r, root) {
+                Step::Hidden => None,
+                Step::Through => Some(r),
+                Step::Box { reach, .. } => Some(reach),
+            });
+            self.reached.insert(n, reach);
+        }
+        reach
     }
 }
 

@@ -4,6 +4,36 @@ use blinc_layout::{
     tree::{LayoutNodeId, LayoutTree},
 };
 use std::collections::{HashMap, HashSet};
+/// What the paint walk knows on reaching a node's children: the visible rect
+/// so far, in the root's coordinates, and where the node puts its children.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Reach {
+    pub(crate) clip: [f32; 4],
+    pub(crate) origin: (f32, f32),
+}
+
+impl Reach {
+    pub(crate) const ROOT: Reach = Reach {
+        clip: [
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            f32::INFINITY,
+        ],
+        origin: (0.0, 0.0),
+    };
+}
+
+/// A node on the paint walk.
+pub(crate) enum Step {
+    /// Not drawn, nor anything under it.
+    Hidden,
+    /// No box of its own: its children are reached as it was.
+    Through,
+    /// Its box: what it leaves its children, and whether any of it is in view.
+    Box { reach: Reach, seen: bool },
+}
+
 pub struct Tree {
     pub(crate) layout: LayoutTree,
     /// Visual properties per node; `LayoutTree` holds only styles.
@@ -68,68 +98,76 @@ impl Tree {
         let mut path = self.layout.ancestors(node);
         path.reverse();
         path.push(node);
-        // The visible rect so far, in the root's coordinates, and where the next node's parent puts its children.
-        let mut clip = [
-            f32::NEG_INFINITY,
-            f32::NEG_INFINITY,
-            f32::INFINITY,
-            f32::INFINITY,
-        ];
-        let mut origin = (0.0f32, 0.0f32);
+        let mut reach = Reach::ROOT;
         for (i, &n) in path.iter().enumerate() {
-            // Under display: none, laid out as nothing at the origin, it is not drawn at all.
-            if self
-                .layout
-                .get_style(n)
-                .is_some_and(|s| s.display == taffy::Display::None)
-            {
-                return false;
+            let last = i == path.len() - 1;
+            match self.step(n, reach, i == 0) {
+                Step::Hidden => return false,
+                Step::Through if last => return true,
+                Step::Through => {}
+                Step::Box { seen, .. } if last => return seen,
+                Step::Box { reach: next, .. } => reach = next,
             }
-            // A fragment, as <for> and <if> make, has no box: its children are placed as its parent places them.
-            let Some(layout) = self.layout.get_layout(n) else {
-                if i == path.len() - 1 {
-                    return true;
-                }
-                continue;
-            };
-            let mut x = origin.0 + layout.location.x;
-            let mut y = origin.1 + layout.location.y;
-            let (mut w, mut h) = (layout.size.width, layout.size.height);
-            if let Some(v) = self.visuals.get(&n) {
-                x += v[0];
-                y += v[1];
-                if v[2] >= 0.0 {
-                    (w, h) = (v[2], v[3].max(0.0));
-                }
-            }
-            if self.props.get(&n).is_some_and(|p| !p.visible) {
-                return false;
-            }
-            let clips = i == 0
-                || self.layout.get_style(n).is_some_and(|s| {
-                    s.overflow.x != taffy::Overflow::Visible
-                        || s.overflow.y != taffy::Overflow::Visible
-                });
-            if clips {
-                clip = [
-                    clip[0].max(x),
-                    clip[1].max(y),
-                    clip[2].min(x + w),
-                    clip[3].min(y + h),
-                ];
-            }
-            if i == path.len() - 1 {
-                return x <= clip[2]
-                    && x + w >= clip[0]
-                    && y <= clip[3]
-                    && y + h >= clip[1]
-                    && clip[0] <= clip[2]
-                    && clip[1] <= clip[3];
-            }
-            let (sx, sy) = self.scrolls.get(&n).map_or((0.0, 0.0), |s| (s.x, s.y));
-            origin = (x - sx, y - sy);
         }
         true
+    }
+
+    /// One node on the paint walk down to a node asked about: `reach` is what
+    /// its parent left it, and `root` is whether it is the first on the path,
+    /// which clips to its own box.
+    pub(crate) fn step(&self, n: LayoutNodeId, reach: Reach, root: bool) -> Step {
+        // Under display: none, laid out as nothing at the origin, it is not drawn at all.
+        if self
+            .layout
+            .get_style(n)
+            .is_some_and(|s| s.display == taffy::Display::None)
+        {
+            return Step::Hidden;
+        }
+        // A fragment, as <for> and <if> make, has no box: its children are placed as its parent places them.
+        let Some(layout) = self.layout.get_layout(n) else {
+            return Step::Through;
+        };
+        let mut x = reach.origin.0 + layout.location.x;
+        let mut y = reach.origin.1 + layout.location.y;
+        let (mut w, mut h) = (layout.size.width, layout.size.height);
+        if let Some(v) = self.visuals.get(&n) {
+            x += v[0];
+            y += v[1];
+            if v[2] >= 0.0 {
+                (w, h) = (v[2], v[3].max(0.0));
+            }
+        }
+        if self.props.get(&n).is_some_and(|p| !p.visible) {
+            return Step::Hidden;
+        }
+        let clips = root
+            || self.layout.get_style(n).is_some_and(|s| {
+                s.overflow.x != taffy::Overflow::Visible || s.overflow.y != taffy::Overflow::Visible
+            });
+        let mut clip = reach.clip;
+        if clips {
+            clip = [
+                clip[0].max(x),
+                clip[1].max(y),
+                clip[2].min(x + w),
+                clip[3].min(y + h),
+            ];
+        }
+        let seen = x <= clip[2]
+            && x + w >= clip[0]
+            && y <= clip[3]
+            && y + h >= clip[1]
+            && clip[0] <= clip[2]
+            && clip[1] <= clip[3];
+        let (sx, sy) = self.scrolls.get(&n).map_or((0.0, 0.0), |s| (s.x, s.y));
+        Step::Box {
+            reach: Reach {
+                clip,
+                origin: (x - sx, y - sy),
+            },
+            seen,
+        }
     }
     pub fn new() -> Self {
         Self {
