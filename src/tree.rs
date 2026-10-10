@@ -48,7 +48,7 @@ pub struct Tree {
     pub(crate) images: HashMap<LayoutNodeId, i32>,
     /// Image-brush sources resolved by the host, with one prepared slot per fit.
     #[cfg(feature = "scene")]
-    pub(crate) image_sources: HashMap<String, [Option<i32>; 3]>,
+    pub(crate) image_sources: HashMap<String, [Option<i32>; 4]>,
     /// Nodes that paint with the GPU themselves in their content box, named
     /// by a slot the caller resolves while the frame is drawn.
     pub(crate) canvases: HashMap<LayoutNodeId, i32>,

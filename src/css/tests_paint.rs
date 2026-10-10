@@ -8,6 +8,7 @@ use super::shadow;
 use super::text_decoration::{self, LINE_THROUGH, OVERLINE, Style, TextDecoration, UNDERLINE};
 use super::transform;
 use blinc_core::layer::Gradient;
+use blinc_core::layer::ImageFit;
 use blinc_core::{ClipLength, ClipPath, Color};
 
 fn bytes(c: Color) -> [u32; 4] {
@@ -844,6 +845,123 @@ fn text_decoration_that_is_not_understood_says_why() {
     assert!(text_decoration::is_property("text-underline-offset"));
 }
 
+fn image_background(
+    name: &str,
+    value: &str,
+    declared: &[(&str, &str)],
+) -> Result<(String, ImageFit), String> {
+    let units = PaintUnits {
+        declared,
+        ..PaintUnits::default()
+    };
+    match paint_writes(name, Some(value), &units).unwrap()?.as_slice() {
+        [PaintWrite::Background(Background::Image { source, fit })] => Ok((source.clone(), *fit)),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn url_backgrounds_name_a_source_and_how_it_fills() {
+    let fit = |value: &str, declared: &[(&str, &str)]| {
+        image_background("background-image", value, declared)
+            .unwrap()
+            .1
+    };
+    let (source, f) = image_background("background-image", "url(photo.png)", &[]).unwrap();
+    assert_eq!(
+        (source.as_str(), f),
+        ("photo.png", ImageFit::Tile),
+        "its own size, repeated"
+    );
+    for quoted in ["url(\"a b.png\")", "url('a b.png')", "url( a b.png )"] {
+        assert_eq!(
+            image_background("background", quoted, &[]).unwrap().0,
+            "a b.png",
+            "{quoted}"
+        );
+    }
+    let size = |v: &'static str| [("background-size", v)];
+    assert_eq!(fit("url(x)", &size("cover")), ImageFit::Cover);
+    assert_eq!(fit("url(x)", &size("Contain")), ImageFit::Contain);
+    assert_eq!(fit("url(x)", &size("100%  100%")), ImageFit::Fill);
+    assert_eq!(fit("url(x)", &size("auto")), ImageFit::Tile);
+    // The shorthand carries its own, with a position and a repeat, the slash touching or not.
+    assert_eq!(fit("url(x) center / cover no-repeat", &[]), ImageFit::Cover);
+    assert_eq!(fit("url(x) center/contain", &[]), ImageFit::Contain);
+    assert_eq!(
+        fit("url(x) 50% 50% / 100% 100% no-repeat", &[]),
+        ImageFit::Fill
+    );
+    assert_eq!(fit("url(x) repeat", &[]), ImageFit::Tile);
+    // Its size and repeat are the shorthand's over the longhands beside it.
+    assert_eq!(fit("url(x) / contain", &size("cover")), ImageFit::Contain);
+    // A cover or a contain is one image, whatever repeats.
+    assert_eq!(
+        fit(
+            "url(x)",
+            &[
+                ("background-size", "cover"),
+                ("background-repeat", "repeat")
+            ]
+        ),
+        ImageFit::Cover
+    );
+}
+
+#[test]
+fn url_backgrounds_that_cannot_be_drawn_say_why() {
+    let error = |value: &str, declared: &[(&str, &str)]| {
+        image_background("background-image", value, declared).unwrap_err()
+    };
+    assert!(error("url()", &[]).contains("names no image"));
+    assert!(error("url('')", &[]).contains("names no image"));
+    assert!(error("url(x) no-repeat", &[]).contains("background-repeat no-repeat"));
+    assert!(error("url(x) repeat-x", &[]).contains("background-repeat repeat-x"));
+    assert!(error("url(x)", &[("background-repeat", "space")]).contains("background-repeat space"));
+    assert!(
+        error("url(x)", &[("background-size", "40px 40px")]).contains("background-size 40px 40px")
+    );
+    assert!(error("url(x) / 50%", &[]).contains("background-size 50%"));
+    assert!(error("url(x) top left", &[]).contains("only the centre"));
+    assert!(error("url(x)", &[("background-position", "10px 10px")]).contains("only the centre"));
+    // The properties that only adjust an image background write nothing themselves.
+    let units = PaintUnits::default();
+    for name in [
+        "background-size",
+        "background-repeat",
+        "background-position",
+    ] {
+        assert!(
+            paint_writes(name, Some("cover"), &units)
+                .unwrap()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            paint_writes(name, None, &units)
+                .unwrap()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    // An image is not blurred under, and a colour is not an image.
+    let blurred = [("backdrop-filter", "blur(4px)")];
+    assert!(matches!(
+        paint_writes(
+            "background",
+            Some("url(x) / cover"),
+            &PaintUnits {
+                declared: &blurred,
+                ..PaintUnits::default()
+            }
+        )
+        .unwrap()
+        .unwrap()
+        .as_slice(),
+        [PaintWrite::Background(Background::Image { .. })]
+    ));
+}
+
 #[test]
 fn shadows_split_into_outer_and_inset_layers_in_order() {
     let units = PaintUnits::default();
@@ -928,7 +1046,7 @@ fn a_background_is_a_colour_none_a_gradient_or_glass() {
             .unwrap()
             .unwrap_err()
     };
-    assert!(reason("url(a.png)").contains("url()"));
+    assert!(reason("url()").contains("names no image"));
     assert!(reason("not a colour").contains("expected a colour"));
     assert!(reason("currentcolor").contains("currentcolor"));
 }

@@ -1030,7 +1030,7 @@ fn append_inner(
                     blinc_core::layer::ImageFit::Cover => slots[0],
                     blinc_core::layer::ImageFit::Contain => slots[1],
                     blinc_core::layer::ImageFit::Fill => slots[2],
-                    _ => None,
+                    blinc_core::layer::ImageFit::Tile => slots[3],
                 })
                 .or_else(|| {
                     i.source

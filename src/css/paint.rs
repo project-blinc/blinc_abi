@@ -13,7 +13,7 @@ use super::transform;
 use super::value::{call, dimension, number, split};
 use super::{color, gradient, shadow};
 use crate::types::GlassEffects;
-use blinc_core::layer::{Affine2D, BlurStyle, GlassStyle, Gradient};
+use blinc_core::layer::{Affine2D, BlurStyle, GlassStyle, Gradient, ImageFit};
 use blinc_core::{Color, Shadow};
 
 /// What fills a node's box.
@@ -27,6 +27,12 @@ pub enum Background {
     /// What is behind the box, blurred, with the fill colour over it: the fill of a node with a
     /// `backdrop-filter`.
     Blur(BlurStyle),
+    /// An image the host loads by its `source`, drawn as `fit` fills the box: `Tile` repeats it at
+    /// its own size.
+    Image {
+        source: String,
+        fit: ImageFit,
+    },
 }
 
 /// One paint field and the value it takes. Unsetting a property writes the
@@ -121,6 +127,8 @@ pub fn is_paint_property(name: &str) -> bool {
             | "mask-image"
             | "clip-path"
             | "overflow-fade"
+            | "background-repeat"
+            | "background-position"
             | "backdrop-filter"
             | "text-decoration"
             | "text-decoration-line"
@@ -170,7 +178,8 @@ pub fn paint_writes(
         return Some(writes);
     }
     Some(match (name, value) {
-        ("background-size", _) => Ok(vec![]),
+        // Read by an image background, beside it.
+        ("background-size" | "background-repeat" | "background-position", _) => Ok(vec![]),
         (n, None) if GLASS.contains(&n) => Ok(vec![]),
         (n, Some(v)) if GLASS.contains(&n) => validate_glass(n, v, units).map(|_| vec![]),
         ("background" | "background-color" | "background-image", None) => {
@@ -281,8 +290,12 @@ fn fill(value: &str, units: &PaintUnits) -> Result<Background, String> {
     if lower == "none" {
         return Ok(Background::None);
     }
-    if call(text).is_some_and(|(name, _)| name == "url") {
-        return Err("url() backgrounds are not supported".into());
+    if split(text, ' ')
+        .first()
+        .and_then(|w| call(w))
+        .is_some_and(|(name, _)| name == "url")
+    {
+        return image(text, units);
     }
     if gradient::is_gradient(text) {
         return Ok(Background::Gradient(
@@ -295,6 +308,86 @@ fn fill(value: &str, units: &PaintUnits) -> Result<Background, String> {
         } else {
             Background::Solid(c)
         }
+    })
+}
+
+/// `url(source)`, with what the shorthand adds to it and the node's `background-size`,
+/// `-repeat` and `-position`: covered, contained or stretched to the box, or at its own size,
+/// repeated. Anything else an image background can say is an error.
+fn image(text: &str, units: &PaintUnits) -> Result<Background, String> {
+    // A `/` between the position and the size may touch them: `center/cover`.
+    let (head, rest) = match text.find(')') {
+        Some(i) => text.split_at(i + 1),
+        None => (text, ""),
+    };
+    let mut words = split(head, ' ');
+    words.extend(split(&rest.replace('/', " / "), ' '));
+    let (_, arg) = call(&words[0]).ok_or_else(|| format!("expected url(), not \"{text}\""))?;
+    let source = arg.trim();
+    let source = source
+        .strip_prefix(['"', '\''])
+        .and_then(|s| s.strip_suffix(['"', '\'']))
+        .unwrap_or(source)
+        .trim();
+    if source.is_empty() {
+        return Err("url() names no image".into());
+    }
+    let mut size = units.declaration("background-size").map(str::to_string);
+    let mut repeat = units.declaration("background-repeat").map(str::to_string);
+    let mut position = units.declaration("background-position").map(str::to_string);
+    let (mut after_slash, mut size_words, mut position_words) = (false, Vec::new(), Vec::new());
+    for word in &words[1..] {
+        match word.to_ascii_lowercase().as_str() {
+            "/" => after_slash = true,
+            "repeat" | "no-repeat" | "repeat-x" | "repeat-y" | "space" | "round" => {
+                repeat = Some(word.clone());
+            }
+            _ if after_slash => size_words.push(word.clone()),
+            _ => position_words.push(word.clone()),
+        }
+    }
+    if !size_words.is_empty() {
+        size = Some(size_words.join(" "));
+    }
+    if !position_words.is_empty() {
+        position = Some(position_words.join(" "));
+    }
+    if let Some(p) = &position {
+        let centred = split(&p.to_ascii_lowercase(), ' ')
+            .iter()
+            .all(|w| matches!(w.as_str(), "center" | "50%"));
+        if !centred {
+            return Err(format!(
+                "background-position {p}: only the centre is supported"
+            ));
+        }
+    }
+    let size = size.unwrap_or_else(|| "auto".into());
+    let fit = match split(&size.to_ascii_lowercase(), ' ').join(" ").as_str() {
+        "cover" => ImageFit::Cover,
+        "contain" => ImageFit::Contain,
+        "100% 100%" => ImageFit::Fill,
+        "auto" | "auto auto" => {
+            let repeat = repeat.unwrap_or_else(|| "repeat".into());
+            match repeat.trim().to_ascii_lowercase().as_str() {
+                "repeat" | "repeat repeat" => ImageFit::Tile,
+                other => {
+                    return Err(format!(
+                        "background-repeat {other} is not supported for an image at its own size; \
+                         tile it with repeat, or use background-size: cover, contain or 100% 100%"
+                    ));
+                }
+            }
+        }
+        other => {
+            return Err(format!(
+                "background-size {other} is not supported; use cover, contain, 100% 100% or auto"
+            ));
+        }
+    };
+    Ok(Background::Image {
+        source: source.to_string(),
+        fit,
     })
 }
 

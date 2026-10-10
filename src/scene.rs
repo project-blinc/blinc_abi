@@ -44,11 +44,11 @@ pub struct Hit {
 }
 
 impl LayoutContext {
-    /// Bind a prepared renderer image to a brush source and fit (cover/contain/fill).
+    /// Bind a prepared renderer image to a brush source and fit (cover/contain/fill/tile).
     pub fn set_image_source(&mut self, source: String, fit: i32, slot: Option<i32>) -> Result<()> {
         let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
         if source.is_empty()
-            || !(0..=2).contains(&fit)
+            || !(0..=3).contains(&fit)
             || slot.is_some_and(|v| !(0..=16_777_215).contains(&v))
         {
             return Err("Invalid image source, fit or slot");
