@@ -502,41 +502,14 @@ impl Cascade {
         self.sheets.len() != before
     }
 
-    /// `node`'s style, from its parent's (none at the top), and what its match depended on.
-    pub fn style<T: Tree>(
+    /// The declarations of every rule that matches `element` at `node`, in cascade order: the winner of each property last.
+    fn matching<T: Tree>(
         &self,
-        tree: &T,
+        walk: &Walk<T>,
+        element: &Element,
         node: T::Node,
-        parent: Option<&Computed>,
-    ) -> (Computed, Dependencies<T::Node>) {
-        let mut deps = Dependencies {
-            states: Vec::new(),
-            theme: false,
-        };
-        let Some(element) = tree.element(node) else {
-            return (
-                Computed {
-                    font_size: parent.map_or(self.root_font_size, |p| p.font_size),
-                    ..Default::default()
-                },
-                deps,
-            );
-        };
-        let walk = Walk {
-            tree,
-            cascade: self,
-        };
-
-        // The declarations of every rule that matches, in cascade order.
-        struct Matched {
-            important: bool,
-            specificity: u32,
-            sheet: usize,
-            order: u32,
-            index: usize,
-            name: Atom,
-            value: Atom,
-        }
+        deps: &mut Dependencies<T::Node>,
+    ) -> Vec<Matched> {
         let mut matched = Vec::new();
         for (s, (_, sheet)) in self.sheets.iter().enumerate() {
             let mut entries: Vec<Entry> = sheet.index.rest.clone();
@@ -563,7 +536,7 @@ impl Cascade {
                     continue;
                 }
                 let selector = &sheet.sheet.selectors[e.selector as usize];
-                if !walk.matches(sheet, selector, node, &mut deps) {
+                if !walk.matches(sheet, selector, node, deps) {
                     continue;
                 }
                 for (i, d) in sheet.sheet.rule_declarations(rule).iter().enumerate() {
@@ -573,6 +546,8 @@ impl Cascade {
                         sheet: s,
                         order: rule.order,
                         index: i,
+                        rule: e.rule,
+                        selector: e.selector,
                         name: sheet.map[d.name.0 as usize],
                         value: sheet.map[d.value.0 as usize],
                     });
@@ -580,6 +555,104 @@ impl Cascade {
             }
         }
         matched.sort_by_key(|m| (m.important, m.specificity, m.sheet, m.order, m.index));
+        matched
+    }
+
+    /// Every declaration that applies to `node` itself, in cascade order:
+    /// each rule's that matches, then its own as `style` gives them, ahead of
+    /// the `!important` ones. A declaration a later one or a shorthand
+    /// overrode is there, not winning. Inherited values are not listed.
+    pub fn explain<T: Tree>(&self, tree: &T, node: T::Node) -> Vec<Origin> {
+        let Some(element) = tree.element(node) else {
+            return Vec::new();
+        };
+        let walk = Walk {
+            tree,
+            cascade: self,
+        };
+        let mut deps = Dependencies {
+            states: Vec::new(),
+            theme: false,
+        };
+        let matched = self.matching(&walk, element, node, &mut deps);
+        let mut out = Vec::new();
+        let own = |out: &mut Vec<Origin>| {
+            for (k, v) in &element.inline {
+                out.push(Origin {
+                    name: self.str(*k).to_string(),
+                    value: v.clone(),
+                    sheet: None,
+                    selector: String::new(),
+                    line: 0,
+                    important: false,
+                    wins: false,
+                });
+            }
+        };
+        let mut inlined = false;
+        for m in &matched {
+            if m.important && !inlined {
+                inlined = true;
+                own(&mut out);
+            }
+            let (id, sheet) = &self.sheets[m.sheet];
+            let rule = &sheet.sheet.rules[m.rule as usize];
+            out.push(Origin {
+                name: self.str(m.name).to_string(),
+                value: self.str(m.value).to_string(),
+                sheet: Some(*id),
+                selector: sheet
+                    .sheet
+                    .selector_text(&sheet.sheet.selectors[m.selector as usize]),
+                line: rule.line,
+                important: m.important,
+                wins: false,
+            });
+        }
+        if !inlined {
+            own(&mut out);
+        }
+        // The survivors of the cascade's own pass: a later declaration of a name, or a shorthand covering it, replaces it.
+        let mut standing: Vec<usize> = Vec::new();
+        for i in 0..out.len() {
+            let covered = longhands(&out[i].name);
+            standing.retain(|&j| {
+                out[j].name != out[i].name && !covered.contains(&out[j].name.as_str())
+            });
+            standing.push(i);
+        }
+        for i in standing {
+            out[i].wins = true;
+        }
+        out
+    }
+
+    /// `node`'s style, from its parent's (none at the top), and what its match depended on.
+    pub fn style<T: Tree>(
+        &self,
+        tree: &T,
+        node: T::Node,
+        parent: Option<&Computed>,
+    ) -> (Computed, Dependencies<T::Node>) {
+        let mut deps = Dependencies {
+            states: Vec::new(),
+            theme: false,
+        };
+        let Some(element) = tree.element(node) else {
+            return (
+                Computed {
+                    font_size: parent.map_or(self.root_font_size, |p| p.font_size),
+                    ..Default::default()
+                },
+                deps,
+            );
+        };
+        let walk = Walk {
+            tree,
+            cascade: self,
+        };
+
+        let matched = self.matching(&walk, element, node, &mut deps);
 
         // The element's own declarations stand over every rule but an !important one, which the sort put last.
         let mut own: Vec<(Atom, &str)> = Vec::new();
@@ -746,6 +819,35 @@ impl Cascade {
 }
 
 /// Matching selectors against the host's tree.
+/// Where a declaration that applies to an element came from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Origin {
+    pub name: String,
+    pub value: String,
+    /// The sheet of the rule it is in; none for the element's own declarations.
+    pub sheet: Option<SheetId>,
+    /// The selector that matched, as written; empty for its own.
+    pub selector: String,
+    /// The rule's line in its sheet; 0 for its own.
+    pub line: u32,
+    pub important: bool,
+    /// Whether it is the value the cascade gave its property.
+    pub wins: bool,
+}
+
+/// One declaration of a rule that matches an element, with what orders it in the cascade.
+struct Matched {
+    important: bool,
+    specificity: u32,
+    sheet: usize,
+    order: u32,
+    index: usize,
+    rule: u32,
+    selector: u32,
+    name: Atom,
+    value: Atom,
+}
+
 struct Walk<'t, T: Tree> {
     tree: &'t T,
     cascade: &'t Cascade,

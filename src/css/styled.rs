@@ -358,6 +358,16 @@ impl Styles {
         self.cascade.select(&tree, root, selectors)
     }
 
+    /// Every declaration that applies to `node` and where it came from; see `Cascade::explain`.
+    pub fn explain<H: Host>(&self, host: &H, node: impl Key) -> Vec<super::cascade::Origin> {
+        let tree = HostTree {
+            host,
+            elements: &self.elements,
+            root: None,
+        };
+        self.cascade.explain(&tree, node.key())
+    }
+
     /// How many nodes the last `restyle` styled.
     pub fn last_restyled(&self) -> usize {
         self.styled

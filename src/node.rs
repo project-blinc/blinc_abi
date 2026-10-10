@@ -746,6 +746,37 @@ define_prim!(
     "PXblinc_tree_lB_b"
 );
 
+/// `node`'s box model as layout resolved it, in layout units: its padding,
+/// border and margin, each top, right, bottom and left, as twelve `f32`s in
+/// `out`. False before it has been laid out.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_tree_get_box(h: *mut c_void, node: u64, out: *mut vbyte) -> bool {
+    let Some(tree) = (unsafe { tree(h) }) else {
+        return false;
+    };
+    let Some(l) = tree.layout.get_layout(id(node)) else {
+        return false;
+    };
+    if out.is_null() {
+        return false;
+    }
+    let out = out as *mut f32;
+    let sides = |r: taffy::Rect<f32>| [r.top, r.right, r.bottom, r.left];
+    for (i, v) in [sides(l.padding), sides(l.border), sides(l.margin)]
+        .concat()
+        .into_iter()
+        .enumerate()
+    {
+        unsafe { out.add(i).write_unaligned(v) };
+    }
+    true
+}
+define_prim!(
+    hlp_blinc_tree_get_box,
+    hl_blinc_tree_get_box,
+    "PXblinc_tree_lB_b"
+);
+
 /// Whether any of `node`'s box is on screen: `Tree::in_view`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_tree_in_view(h: *mut c_void, node: u64) -> bool {

@@ -86,6 +86,45 @@ fn specificity_then_order_then_important_and_inline() {
 }
 
 #[test]
+fn explain_says_where_each_declaration_came_from_and_which_wins() {
+    let mut c = Cascade::new();
+    let first = c.push(sheet(".a { color: red; width: 1px }\ndiv { color: blue }\n.a.b { color: green }\n.a { padding-top: 1px; height: 2px !important }"));
+    let second = c.push(sheet(".b { padding: 4px }"));
+    let mut doc = Doc::default();
+    let mut e = el(&mut c, &["div"], &["a", "b"]);
+    let w = c.intern("width");
+    e.inline = vec![(w, "9px".into())];
+    doc.add(None, e);
+    let origins = c.explain(&doc, 0);
+    let winner = |name: &str| origins.iter().find(|o| o.name == name && o.wins).cloned();
+    let green = winner("color").unwrap();
+    assert_eq!(
+        (
+            green.value.as_str(),
+            green.selector.as_str(),
+            green.line,
+            green.sheet
+        ),
+        ("green", ".a.b", 3, Some(first))
+    );
+    // Overridden ones are listed, not winning: the type rule's and the first class rule's colour.
+    assert_eq!(
+        origins
+            .iter()
+            .filter(|o| o.name == "color" && !o.wins)
+            .count(),
+        2
+    );
+    // Its own declaration over the rules, with no sheet; an !important rule over it.
+    let width = winner("width").unwrap();
+    assert_eq!((width.value.as_str(), width.sheet), ("9px", None));
+    assert!(winner("height").unwrap().important);
+    // A later shorthand replaces an earlier longhand.
+    assert!(winner("padding-top").is_none());
+    assert_eq!(winner("padding").unwrap().sheet, Some(second));
+}
+
+#[test]
 fn a_later_sheet_wins_a_tie() {
     let mut c = Cascade::new();
     c.push(sheet(".a { color: red }"));

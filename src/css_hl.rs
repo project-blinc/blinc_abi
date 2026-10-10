@@ -596,6 +596,44 @@ define_prim!(
     "PXblinc_css_Xblinc_tree_lBBi_i"
 );
 
+/// Every declaration that applies to `node` and where it came from, in
+/// cascade order: a record each, split by U+0001, of name, value, sheet id
+/// (-1 for the element's own), selector, line, whether `!important` and
+/// whether it wins, split by U+0002.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_css_explain(
+    h: *mut c_void,
+    t: *mut c_void,
+    node: u64,
+) -> *mut vbyte {
+    let (Some(s), Some(tree)) = (unsafe { styles(h) }, unsafe { crate::node::tree(t) }) else {
+        return string_to_hl("");
+    };
+    let mut out = String::new();
+    for o in s.explain(&TreeHost(tree), node) {
+        if !out.is_empty() {
+            out.push(RECORD);
+        }
+        let sheet = o.sheet.map_or(-1, |id| id.0 as i64);
+        let fields = [
+            o.name,
+            o.value,
+            sheet.to_string(),
+            o.selector,
+            o.line.to_string(),
+            (o.important as u8).to_string(),
+            (o.wins as u8).to_string(),
+        ];
+        out.push_str(&fields.join(&PAIR.to_string()));
+    }
+    string_to_hl(&out)
+}
+define_prim!(
+    hlp_blinc_css_explain,
+    hl_blinc_css_explain,
+    "PXblinc_css_Xblinc_tree_l_B"
+);
+
 /// `node`'s style: its resolved declarations (`var()`s replaced), its values
 /// (inherited ones and custom properties included), then its font size in
 /// pixels, as three records of name-value pairs split by U+0003.
