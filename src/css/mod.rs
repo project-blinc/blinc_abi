@@ -13,6 +13,7 @@
 
 pub mod border;
 pub mod cascade;
+pub mod clip_path;
 pub mod color;
 pub mod compiled;
 pub mod filter;
@@ -25,6 +26,7 @@ mod parser;
 pub mod quantity;
 pub mod shadow;
 pub mod styled;
+mod svg_path;
 pub mod transform;
 mod tree;
 pub mod value;

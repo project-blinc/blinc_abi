@@ -1,3 +1,4 @@
+use super::clip_path::{self, Clip};
 use super::color;
 use super::filter;
 use super::gradient;
@@ -5,8 +6,8 @@ use super::paint::{Background, PaintWrite, is_paint_property, paint_writes};
 use super::quantity::PaintUnits;
 use super::shadow;
 use super::transform;
-use blinc_core::Color;
 use blinc_core::layer::Gradient;
+use blinc_core::{ClipLength, ClipPath, Color};
 
 fn bytes(c: Color) -> [u32; 4] {
     [c.r, c.g, c.b, c.a].map(|v| (v * 255.0).round() as u32)
@@ -310,6 +311,228 @@ fn filters_become_one_value_and_the_last_function_wins() {
         filter::parse("drop-shadow(inset 1px 2px)", &units)
             .unwrap_err()
             .contains("inset is for box-shadow")
+    );
+}
+
+fn clip(text: &str) -> Clip {
+    clip_path::parse(text, &PaintUnits::default())
+        .unwrap()
+        .unwrap()
+}
+
+fn clip_error(text: &str) -> String {
+    clip_path::parse(text, &PaintUnits::default()).unwrap_err()
+}
+
+#[test]
+fn clip_paths_read_each_shape() {
+    use ClipLength::{Percent, Px};
+    assert!(
+        clip_path::parse("none", &PaintUnits::default())
+            .unwrap()
+            .is_none()
+    );
+    match clip("circle(40% at left top)").path {
+        ClipPath::Circle { radius, center } => {
+            assert_eq!(radius, Some(Percent(40.0)));
+            assert_eq!(center, (Percent(0.0), Percent(0.0)));
+        }
+        other => panic!("{other:?}"),
+    }
+    // A radius left out, or closest-side, reaches the closest side; the centre is the box's.
+    for text in ["circle()", "circle(closest-side)"] {
+        match clip(text).path {
+            ClipPath::Circle { radius, center } => {
+                assert_eq!(radius, None);
+                assert_eq!(center, (Percent(50.0), Percent(50.0)));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    match clip("circle(2em at 10px 25%)").path {
+        ClipPath::Circle { radius, center } => {
+            assert_eq!(radius, Some(Px(32.0)));
+            assert_eq!(center, (Px(10.0), Percent(25.0)));
+        }
+        other => panic!("{other:?}"),
+    }
+    match clip("ellipse(50% 30% at bottom right)").path {
+        ClipPath::Ellipse { rx, ry, center } => {
+            assert_eq!((rx, ry), (Some(Percent(50.0)), Some(Percent(30.0))));
+            assert_eq!(center, (Percent(100.0), Percent(100.0)));
+        }
+        other => panic!("{other:?}"),
+    }
+    match clip("inset(8px 12px round 16px)").path {
+        ClipPath::Inset {
+            top,
+            right,
+            bottom,
+            left,
+            round,
+        } => {
+            assert_eq!(
+                (top, right, bottom, left),
+                (Px(8.0), Px(12.0), Px(8.0), Px(12.0))
+            );
+            assert_eq!(round, Some(16.0));
+        }
+        other => panic!("{other:?}"),
+    }
+    match clip("inset(1px 2px 3px)").path {
+        ClipPath::Inset { left, .. } => assert_eq!(left, Px(2.0), "left copies right"),
+        other => panic!("{other:?}"),
+    }
+    match clip("rect(0 50% 100% 10px)").path {
+        ClipPath::Rect {
+            top,
+            right,
+            bottom,
+            left,
+            round,
+        } => {
+            assert_eq!(
+                (top, right, bottom, left),
+                (Px(0.0), Percent(50.0), Percent(100.0), Px(10.0))
+            );
+            assert_eq!(round, None);
+        }
+        other => panic!("{other:?}"),
+    }
+    match clip("xywh(10px 20px 30% 40% round 4px)").path {
+        ClipPath::Xywh { x, y, w, h, round } => {
+            assert_eq!(
+                (x, y, w, h),
+                (Px(10.0), Px(20.0), Percent(30.0), Percent(40.0))
+            );
+            assert_eq!(round, Some(4.0));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn clip_polygons_and_paths_carry_their_fill_rule() {
+    use ClipLength::{Percent, Px};
+    let triangle = clip("polygon(50% 0, 100% 100%, 0 100%)");
+    assert!(!triangle.even_odd);
+    match triangle.path {
+        ClipPath::Polygon { points } => assert_eq!(
+            points,
+            vec![
+                (Percent(50.0), Px(0.0)),
+                (Percent(100.0), Percent(100.0)),
+                (Px(0.0), Percent(100.0)),
+            ]
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert!(!clip("polygon(nonzero, 0 0, 10px 0, 0 10px)").even_odd);
+    let star = clip("polygon(evenodd, 0 0, 10px 0, 0 10px)");
+    assert!(star.even_odd);
+    assert!(matches!(star.path, ClipPath::Polygon { points } if points.len() == 3));
+
+    match clip("path(\"M 0 0 H 10 V 10 H 0 Z\")").path {
+        ClipPath::Path { vertices } => assert_eq!(
+            vertices,
+            vec![
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0)
+            ]
+        ),
+        other => panic!("{other:?}"),
+    }
+    // Rings are told apart by a vertex at 1e30; the rule precedes the data.
+    let two = clip("path(evenodd, 'M0,0h4v4h-4zM1 1h2v2h-2z')");
+    assert!(two.even_odd);
+    match two.path {
+        ClipPath::Path { vertices } => {
+            let breaks: Vec<_> = vertices.iter().filter(|v| v.0 >= 1e29).collect();
+            assert_eq!(breaks.len(), 1);
+            assert_eq!(vertices.len(), 5 + 1 + 5);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn clip_path_curves_and_arcs_are_cut_into_steps_ending_where_they_say() {
+    for data in [
+        "M0 0 C 10 0 20 10 20 20 S 0 40 0 20 Z",
+        "M0 0 Q 10 0 10 10 T 20 20 Z",
+        "M0 10 A 10 10 0 0 1 20 10 A 10 10 0 0 1 0 10 Z",
+        "m0 0 l10 0 0 10 -10 0 z",
+    ] {
+        let ClipPath::Path { vertices } = clip(&format!("path(\"{data}\")")).path else {
+            panic!("{data}");
+        };
+        assert!(vertices.len() > 4, "{data}");
+        assert_eq!(vertices.first(), vertices.last(), "closed: {data}");
+    }
+    // A half circle of radius 10 reaches its far end and bulges by its radius.
+    let ClipPath::Path { vertices } = clip("path('M0 0 A 10 10 0 0 1 20 0 Z')").path else {
+        panic!();
+    };
+    assert!(
+        vertices
+            .iter()
+            .any(|v| (v.0 - 20.0).abs() < 1e-3 && v.1.abs() < 1e-3)
+    );
+    let deepest = vertices.iter().map(|v| v.1.abs()).fold(0.0, f32::max);
+    assert!((deepest - 10.0).abs() < 0.1, "{deepest}");
+}
+
+#[test]
+fn clip_path_values_that_are_not_shapes_say_why() {
+    assert!(clip_error("blur(2px)").contains("not circle, ellipse"));
+    assert!(clip_error("red").contains("expected none or a shape function"));
+    assert!(clip_error("circle(1px 2px)").contains("takes one radius"));
+    assert!(clip_error("circle(-4px)").contains("not negative"));
+    assert!(clip_error("circle(farthest-side)").contains("farthest-side is not supported"));
+    assert!(clip_error("circle(10px at 1px 2px 3px)").contains("one or two values"));
+    assert!(clip_error("ellipse(10px)").contains("two radii or none"));
+    assert!(clip_error("inset()").contains("one to four lengths"));
+    assert!(clip_error("inset(1px 2px 3px 4px 5px)").contains("one to four lengths"));
+    assert!(clip_error("inset(10 20)").contains("needs a unit"));
+    assert!(clip_error("inset(1px round 10%)").contains("length in pixels"));
+    assert!(clip_error("inset(1px round 1px 2px)").contains("one length"));
+    assert!(clip_error("rect(1px 2px 3px)").contains("rect() takes four lengths"));
+    assert!(clip_error("xywh(1px 2px)").contains("xywh() takes four lengths"));
+    assert!(clip_error("polygon()").contains("needs points"));
+    assert!(clip_error("polygon(0 0, 10px)").contains("two lengths"));
+    assert!(clip_error("path(M0 0)").contains("quoted string"));
+    assert!(clip_error("path(\"\")").contains("holds no shape"));
+    assert!(clip_error("path(\"L 0 0\")").contains("starts with M"));
+    assert!(clip_error("path(\"M 0\")").contains("middle of a command"));
+    assert!(clip_error("path(\"M 0 0 A 1 1 0 2 0 5 5\")").contains("arc flag"));
+    assert!(clip_error("path(evenodd nonzero, 'M0 0')").contains("fill rule"));
+}
+
+#[test]
+fn clip_path_is_a_paint_property_and_none_unsets_it() {
+    use super::paint::is_paint_property;
+    assert!(is_paint_property("clip-path"));
+    let units = PaintUnits::default();
+    let set = paint_writes("clip-path", Some("inset(4px)"), &units)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(set.as_slice(), [PaintWrite::ClipPath(Some(_))]));
+    for unset in [
+        paint_writes("clip-path", None, &units),
+        paint_writes("clip-path", Some("none"), &units),
+    ] {
+        assert!(matches!(
+            unset.unwrap().unwrap().as_slice(),
+            [PaintWrite::ClipPath(None)]
+        ));
+    }
+    assert!(
+        paint_writes("clip-path", Some("circle(zz)"), &units)
+            .unwrap()
+            .is_err()
     );
 }
 

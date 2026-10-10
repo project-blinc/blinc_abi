@@ -4,6 +4,7 @@
 //! where paint lives.
 
 use super::border;
+use super::clip_path::{self, Clip};
 use super::filter::{self, Filter};
 use super::layout::Units;
 use super::quantity::{PaintUnits, amount, box_sides, length};
@@ -61,6 +62,8 @@ pub enum PaintWrite {
     Transform(Affine2D),
     Filter(Filter),
     Mask(Option<Gradient>),
+    /// The shape the node and what it holds are clipped to; none for no clip.
+    ClipPath(Option<Clip>),
 }
 
 const GLASS: &[&str] = &[
@@ -104,6 +107,7 @@ pub fn is_paint_property(name: &str) -> bool {
             | "transform"
             | "filter"
             | "mask-image"
+            | "clip-path"
             | "-webkit-mask-image"
     ) || GLASS.contains(&name)
 }
@@ -184,6 +188,8 @@ pub fn paint_writes(
         ("filter", Some(v)) => one(filter::parse(v, units).map(Filter)),
         ("mask-image" | "-webkit-mask-image", None) => Ok(vec![Mask(None)]),
         ("mask-image" | "-webkit-mask-image", Some(v)) => one(mask(v, units).map(Mask)),
+        ("clip-path", None) => Ok(vec![ClipPath(None)]),
+        ("clip-path", Some(v)) => one(clip_path::parse(v, units).map(ClipPath)),
         _ => return None,
     })
 }
