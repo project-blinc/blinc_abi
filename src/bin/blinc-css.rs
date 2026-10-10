@@ -3,6 +3,7 @@
 //!
 //! ```text
 //! blinc-css <in.css> [-o out.bcss] [--json] [--classes] [--manifest]
+//! blinc-css --selector <selectors>
 //! ```
 //!
 //! Diagnostics go to stderr as `file:line:column: severity: message`, and
@@ -10,6 +11,8 @@
 //! `--json` prints the parsed sheet as JSON; `--classes` prints the class
 //! names its selectors use, one a line; `--manifest` prints, as JSON, the
 //! files it imported and those class names: what a build tracks and checks.
+//! `--selector` checks a comma-separated selector list, as a query names
+//! one, and prints why it does not read.
 
 use blinc_abi::css;
 use std::path::Path;
@@ -17,6 +20,19 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--selector") {
+        let Some(text) = args.get(1) else {
+            eprintln!("blinc-css --selector <selectors>");
+            return ExitCode::from(2);
+        };
+        return match css::parse_selectors(text) {
+            Ok(_) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let (mut input, mut output, mut json, mut classes, mut manifest) =
         (None, None, false, false, false);
     let mut i = 0;
