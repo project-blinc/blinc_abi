@@ -147,6 +147,22 @@ fn inheritance_reaches_text_and_variables_resolve() {
 }
 
 #[test]
+fn a_value_outside_a_rule_resolves_as_an_element_would() {
+    let mut c = Cascade::new();
+    c.set_theme(&[("primary", "#0af")]);
+    c.push(sheet(":root { --gap: 8px } .box { --ink: red }"));
+    let mut doc = Doc::default();
+    let b = el(&mut c, &["div"], &["box"]);
+    let box_ = doc.add(None, b);
+    let styles = style_all(&c, &doc);
+    let values = &styles[box_].values;
+    assert_eq!(c.resolve_vars("var(--ink) var(--gap)", values), "red 8px");
+    assert_eq!(c.resolve_vars("var(--primary)", values), "#0af");
+    assert_eq!(c.resolve_vars("var(--missing, 3px)", values), "3px");
+    assert_eq!(c.resolve_vars("1px solid", &[]), "1px solid");
+}
+
+#[test]
 fn combinators_structure_and_has() {
     let mut c = Cascade::new();
     c.push(sheet(

@@ -658,6 +658,14 @@ impl Cascade {
         )
     }
 
+    /// `value` with its `var()`s resolved as in a declaration of an element
+    /// whose computed values are `values`: its custom properties, then the
+    /// sheets' `:root` variables, then the theme's. For values read outside
+    /// a rule, such as a `@keyframes` block's.
+    pub fn resolve_vars(&self, value: &str, values: &[(Atom, String)]) -> String {
+        self.substitute(value, values, &mut false)
+    }
+
     /// `value` with each `var(--name, fallback)` replaced, ten passes deep at most, so a variable naming itself ends.
     fn substitute(&self, value: &str, values: &[(Atom, String)], theme_read: &mut bool) -> String {
         let mut value = value.to_string();
