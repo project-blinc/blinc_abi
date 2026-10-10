@@ -265,6 +265,105 @@ mod tests {
         assert_eq!(at(8, 1), 0, "clear above the band");
         assert_eq!(at(8, 8), 255, "the band drawn");
     }
+
+    const PNG_1X1: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xfc,
+        0xcf, 0xc0, 0x50, 0x0f, 0x00, 0x04, 0x85, 0x01, 0x80, 0x84, 0xa9, 0x8c, 0x21, 0x00, 0x00,
+        0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    #[test]
+    fn load_tells_svg_from_raster_by_the_bytes() {
+        match load(PNG_1X1).unwrap() {
+            Loaded::Raster(b) => assert_eq!((b.width, b.height), (1, 1)),
+            Loaded::Svg { .. } => panic!("a PNG is not markup"),
+        }
+        let svg = |markup: &str| match load(markup.as_bytes()).unwrap() {
+            Loaded::Svg { width, height, .. } => (width, height),
+            Loaded::Raster(_) => panic!("markup is not a raster image"),
+        };
+        let open = r#"xmlns="http://www.w3.org/2000/svg""#;
+        assert_eq!(
+            svg(&format!(r#"<svg {open} width="60" height="30"></svg>"#)),
+            (60, 30)
+        );
+        // A viewBox gives the size when the sides are not given, and one side gives the other.
+        assert_eq!(
+            svg(&format!(r#"<svg {open} viewBox="0 0 24 12"></svg>"#)),
+            (24, 12)
+        );
+        assert_eq!(
+            svg(&format!(
+                r#"<svg {open} width="48" viewBox="0 0 24 12"></svg>"#
+            )),
+            (48, 24)
+        );
+        // A declaration, a comment, a byte order mark and whitespace may come first.
+        let wrapped = format!(
+            "\u{feff}  <?xml version=\"1.0\"?><!-- icon --><svg {open} width=\"5\" height=\"7\"/>"
+        );
+        assert_eq!(svg(&wrapped), (5, 7));
+        // Sizes that are not whole round up, never to nothing.
+        assert_eq!(
+            svg(&format!(r#"<svg {open} width="10.2" height="0.3"></svg>"#)),
+            (11, 1)
+        );
+    }
+
+    #[test]
+    fn load_says_what_is_wrong_with_what_it_cannot_read() {
+        assert!(load(b"").is_err());
+        assert!(load(&[1, 2, 3, 4]).is_err(), "not an image at all");
+        assert!(
+            load(b"<svg this is not xml").is_err(),
+            "markup that does not parse"
+        );
+        assert!(load(&PNG_1X1[..20]).is_err(), "a truncated PNG");
+    }
+}
+
+/// What the bytes of an image file are, read.
+pub enum Loaded {
+    Raster(Bitmap),
+    /// SVG, which is drawn by rasterizing it at the size it covers; this is the size it says it is.
+    Svg {
+        markup: String,
+        width: u32,
+        height: u32,
+    },
+}
+
+/// Whether `bytes` are markup rather than a raster image: text that opens with an XML
+/// declaration, a comment, a doctype or an `<svg`.
+fn is_markup(bytes: &[u8]) -> bool {
+    let head = &bytes[..bytes.len().min(512)];
+    let head = head.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(head);
+    let text = String::from_utf8_lossy(head);
+    let text = text.trim_start().to_ascii_lowercase();
+    ["<?xml", "<svg", "<!doctype svg", "<!--"]
+        .iter()
+        .any(|open| text.starts_with(open))
+}
+
+/// An image file's bytes, SVG or one of the raster formats, read; the format is what the bytes
+/// say, not what they were called.
+pub fn load(bytes: &[u8]) -> Result<Loaded, String> {
+    if !is_markup(bytes) {
+        return Bitmap::decode(bytes).map(Loaded::Raster);
+    }
+    // An XML declaration must open the document, so what comes before it is dropped.
+    let markup = std::str::from_utf8(bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes))
+        .map_err(|_| "SVG is not UTF-8".to_string())?
+        .trim_start()
+        .to_string();
+    let (width, height) = crate::svg::size(&markup)?;
+    Ok(Loaded::Svg {
+        markup,
+        width,
+        height,
+    })
 }
 
 impl Bitmap {
