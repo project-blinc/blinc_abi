@@ -89,7 +89,8 @@ impl Key for u64 {
 struct HostTree<'a, H: Host> {
     host: &'a H,
     elements: &'a FxHashMap<u64, Element>,
-    root: u64,
+    /// What `:root` names; none for a forest, where it is any node with no parent.
+    root: Option<u64>,
 }
 
 impl<H: Host> Tree for HostTree<'_, H> {
@@ -104,7 +105,7 @@ impl<H: Host> Tree for HostTree<'_, H> {
         self.elements.get(&n)
     }
     fn root(&self) -> Option<u64> {
-        Some(self.root)
+        self.root
     }
 }
 
@@ -138,6 +139,8 @@ pub struct Styles {
     context: u64,
     /// Nodes whose computed style changed since the host last took them.
     changed_out: Vec<u64>,
+    /// States of nodes a selector began to test, since the host last took them.
+    watched_out: Vec<(u64, u32)>,
     /// Whether paint is read at all: a host that draws from the resolved
     /// declarations itself never takes the writes.
     paint_output: bool,
@@ -177,6 +180,7 @@ impl Styles {
             paint_output: false,
             context: 0,
             changed_out: Vec::new(),
+            watched_out: Vec::new(),
         }
     }
 
@@ -304,6 +308,25 @@ impl Styles {
         std::mem::take(&mut self.changed_out)
     }
 
+    /// As `take_changed`, at most `n` of them; the rest wait for the next call.
+    pub fn take_changed_upto(&mut self, n: usize) -> Vec<u64> {
+        let n = n.min(self.changed_out.len());
+        self.changed_out.drain(..n).collect()
+    }
+
+    /// The states of nodes that selectors began to test since this was last
+    /// called, as node and state bit: a host that tracks states lazily
+    /// reports a change to one of these through `set_states`.
+    pub fn take_watched(&mut self) -> Vec<(u64, u32)> {
+        std::mem::take(&mut self.watched_out)
+    }
+
+    /// As `take_watched`, at most `n` of them; the rest wait for the next call.
+    pub fn take_watched_upto(&mut self, n: usize) -> Vec<(u64, u32)> {
+        let n = n.min(self.watched_out.len());
+        self.watched_out.drain(..n).collect()
+    }
+
     /// How many nodes `take_changed` would give.
     pub fn changed_count(&self) -> usize {
         self.changed_out.len()
@@ -346,9 +369,10 @@ impl Styles {
         self.restyle_host(ctx, root)
     }
 
-    /// `restyle` over any [`Host`].
+    /// `restyle` over any [`Host`]. A `root` of 0 restyles a forest: each node
+    /// with no parent is a root.
     pub fn restyle_host<H: Host>(&mut self, host: &mut H, root: impl Key) -> Vec<String> {
-        let root = root.key();
+        let root = Some(root.key()).filter(|&r| r != 0);
         let mut errors = Vec::new();
         self.styled = 0;
         if let Some(c) = host.context() {
@@ -365,9 +389,21 @@ impl Styles {
                 elements: &self.elements,
                 root,
             };
-            work.depth.insert(root, 0);
+            work.forest = root.is_none();
+            if let Some(r) = root {
+                work.depth.insert(r, 0);
+            }
             if everything {
-                work.subtree(&tree, root);
+                match root {
+                    Some(r) => work.subtree(&tree, r),
+                    None => {
+                        for &raw in self.elements.keys() {
+                            if host.live(raw) {
+                                work.push(&tree, raw);
+                            }
+                        }
+                    }
+                }
             } else {
                 let position = self.cascade.tests_position();
                 let above = self.cascade.tests_position_above();
@@ -436,7 +472,11 @@ impl Styles {
             // What it depends on, afresh.
             self.untrack(raw);
             for &key in &deps.states {
-                self.dependents.entry(key).or_default().insert(raw);
+                let who = self.dependents.entry(key).or_default();
+                if who.is_empty() {
+                    self.watched_out.push(key);
+                }
+                who.insert(raw);
             }
             self.depends_on.insert(raw, deps.states);
 
@@ -583,6 +623,8 @@ struct Work {
     queued: FxHashSet<u64>,
     /// Depth under the root, of the nodes met so far.
     depth: FxHashMap<u64, u32>,
+    /// No one root: a node with no parent is at depth 0.
+    forest: bool,
 }
 
 impl Work {
@@ -601,8 +643,17 @@ impl Work {
             if let Some(&d) = self.depth.get(&at) {
                 break d;
             }
-            path.push(at);
-            at = tree.parent(at)?;
+            match tree.parent(at) {
+                Some(p) => {
+                    path.push(at);
+                    at = p;
+                }
+                None if self.forest => {
+                    self.depth.insert(at, 0);
+                    break 0;
+                }
+                None => return None,
+            }
         };
         for (i, raw) in path.iter().rev().enumerate() {
             self.depth.insert(*raw, base + 1 + i as u32);

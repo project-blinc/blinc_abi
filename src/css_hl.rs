@@ -151,10 +151,10 @@ define_prim!(
 );
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_css_remove(h: *mut c_void, id: i32) -> bool {
-    unsafe { styles(h) }.is_some_and(|s| s.cascade_mut().remove(SheetId(id as u32)))
+pub unsafe extern "C" fn hl_blinc_css_remove(h: *mut c_void, id: i32) -> i32 {
+    unsafe { styles(h) }.is_some_and(|s| s.cascade_mut().remove(SheetId(id as u32))) as i32
 }
-define_prim!(hlp_blinc_css_remove, hl_blinc_css_remove, "PXblinc_css_i_b");
+define_prim!(hlp_blinc_css_remove, hl_blinc_css_remove, "PXblinc_css_i_i");
 
 /// The theme's variables, `name` without `--` paired with its value, which
 /// `var()` reads after the sheets'.
@@ -183,7 +183,7 @@ pub unsafe extern "C" fn hl_blinc_css_set_environment(
     h: *mut c_void,
     width: f64,
     height: f64,
-    dark: bool,
+    dark: i32,
     root_font_size: f64,
 ) {
     let Some(s) = (unsafe { styles(h) }) else {
@@ -192,14 +192,14 @@ pub unsafe extern "C" fn hl_blinc_css_set_environment(
     s.set_environment(MediaEnvironment {
         width,
         height,
-        dark,
+        dark: dark != 0,
     });
     s.cascade_mut().set_root_font_size(root_font_size);
 }
 define_prim!(
     hlp_blinc_css_set_environment,
     hl_blinc_css_set_environment,
-    "PXblinc_css_ddbd_v"
+    "PXblinc_css_ddid_v"
 );
 
 /// Describes `node`: its types (own first), id, classes, attributes and
@@ -324,7 +324,7 @@ define_prim!(
 );
 
 /// Writes the nodes whose styles changed, parents first, to `out`, at most
-/// `capacity`, and forgets them.
+/// `capacity`, and forgets those; the rest wait for the next call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_css_take_changed(
     h: *mut c_void,
@@ -334,8 +334,8 @@ pub unsafe extern "C" fn hl_blinc_css_take_changed(
     let Some(s) = (unsafe { styles(h) }) else {
         return 0;
     };
-    let changed = s.take_changed();
-    let n = changed.len().min(capacity.max(0) as usize);
+    let changed = s.take_changed_upto(capacity.max(0) as usize);
+    let n = changed.len();
     let out = out as *mut u64;
     for (i, raw) in changed.iter().take(n).enumerate() {
         unsafe { out.add(i).write_unaligned(*raw) };
@@ -346,6 +346,37 @@ define_prim!(
     hlp_blinc_css_take_changed,
     hl_blinc_css_take_changed,
     "PXblinc_css_Bi_i"
+);
+
+/// Writes the states selectors began to test since this was last called,
+/// as node and state-bit pairs, at most `capacity`, and forgets those (the
+/// rest wait for the next call): the host
+/// tells `set_states` when one of these changes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_css_take_watched(
+    h: *mut c_void,
+    nodes: *mut vbyte,
+    bits: *mut vbyte,
+    capacity: i32,
+) -> i32 {
+    let Some(s) = (unsafe { styles(h) }) else {
+        return 0;
+    };
+    let watched = s.take_watched_upto(capacity.max(0) as usize);
+    let n = watched.len();
+    let (nodes, bits) = (nodes as *mut u64, bits as *mut i32);
+    for (i, (node, bit)) in watched.iter().take(n).enumerate() {
+        unsafe {
+            nodes.add(i).write_unaligned(*node);
+            bits.add(i).write_unaligned(*bit as i32);
+        }
+    }
+    n as i32
+}
+define_prim!(
+    hlp_blinc_css_take_watched,
+    hl_blinc_css_take_watched,
+    "PXblinc_css_BBi_i"
 );
 
 /// `node`'s style: its resolved declarations (`var()`s replaced), its values
@@ -445,5 +476,40 @@ mod tests {
         // Nothing changed: nothing listed.
         s.restyle_host(&mut TreeHost(&tree), root.to_raw());
         assert!(s.take_changed().is_empty());
+    }
+
+    #[test]
+    fn a_forest_is_styled_from_each_top_node() {
+        let mut tree = Tree::new();
+        let top = tree.layout.create_node(Default::default());
+        let child = tree.layout.create_node(Default::default());
+        let other = tree.layout.create_node(Default::default());
+        tree.layout.add_child(top, child);
+        let mut s = Styles::new();
+        let mut load = |_: &str, _: Option<&str>| None;
+        s.cascade_mut().push(css::parse(
+            ":root { color: red } div div { color: blue }",
+            None,
+            &mut load,
+        ));
+        for n in [top, child, other] {
+            let e = element(&mut s, &["div"], &[]);
+            s.set_element(n.to_raw(), e);
+        }
+        s.restyle_host(&mut TreeHost(&tree), 0u64);
+        let color = s.intern("color");
+        let value = |s: &Styles, n: LayoutNodeId| {
+            s.computed(n.to_raw())
+                .and_then(|c| c.value(color))
+                .map(str::to_string)
+        };
+        assert_eq!(value(&s, top).as_deref(), Some("red"));
+        assert_eq!(value(&s, other).as_deref(), Some("red"));
+        assert_eq!(value(&s, child).as_deref(), Some("blue"));
+        let mut changed = s.take_changed();
+        changed.sort();
+        let mut all = vec![top.to_raw(), child.to_raw(), other.to_raw()];
+        all.sort();
+        assert_eq!(changed, all);
     }
 }
