@@ -64,6 +64,9 @@ pub enum PaintWrite {
     Mask(Option<Gradient>),
     /// The shape the node and what it holds are clipped to; none for no clip.
     ClipPath(Option<Clip>),
+    /// How far content fades out at each edge of a clipping node, top, right, bottom, left, in
+    /// pixels; 0 is a hard edge.
+    OverflowFade([f32; 4]),
 }
 
 const GLASS: &[&str] = &[
@@ -108,6 +111,7 @@ pub fn is_paint_property(name: &str) -> bool {
             | "filter"
             | "mask-image"
             | "clip-path"
+            | "overflow-fade"
             | "-webkit-mask-image"
     ) || GLASS.contains(&name)
 }
@@ -190,6 +194,8 @@ pub fn paint_writes(
         ("mask-image" | "-webkit-mask-image", Some(v)) => one(mask(v, units).map(Mask)),
         ("clip-path", None) => Ok(vec![ClipPath(None)]),
         ("clip-path", Some(v)) => one(clip_path::parse(v, units).map(ClipPath)),
+        ("overflow-fade", None) => Ok(vec![OverflowFade([0.0; 4])]),
+        ("overflow-fade", Some(v)) => one(overflow_fade(v, units).map(OverflowFade)),
         _ => return None,
     })
 }
@@ -286,6 +292,22 @@ fn border_radius(value: &str, units: &PaintUnits) -> Result<[f32; 4], String> {
         radii.push(length(&part, units)?.max(0.0) as f32);
     }
     Ok([radii[0], radii[1], radii[2], radii[3]])
+}
+
+/// `none`, or one to four distances as a box's sides take them.
+fn overflow_fade(value: &str, units: &PaintUnits) -> Result<[f32; 4], String> {
+    if value.trim().eq_ignore_ascii_case("none") {
+        return Ok([0.0; 4]);
+    }
+    let mut fades = Vec::new();
+    for part in box_sides(split(value, ' '), "overflow-fade")? {
+        let distance = length(&part, units)?;
+        if !distance.is_finite() || distance < 0.0 {
+            return Err(format!("expected a nonnegative length, not \"{part}\""));
+        }
+        fades.push(distance as f32);
+    }
+    Ok([fades[0], fades[1], fades[2], fades[3]])
 }
 
 fn corner_shape(value: &str) -> Result<PaintWrite, String> {

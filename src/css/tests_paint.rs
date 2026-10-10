@@ -537,6 +537,40 @@ fn clip_path_is_a_paint_property_and_none_unsets_it() {
 }
 
 #[test]
+fn overflow_fade_takes_a_distance_for_each_side() {
+    let units = PaintUnits::default();
+    let fade = |v: &str| match paint_writes("overflow-fade", Some(v), &units)
+        .unwrap()
+        .unwrap()
+        .as_slice()
+    {
+        [PaintWrite::OverflowFade(f)] => *f,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(fade("12px"), [12.0; 4]);
+    assert_eq!(fade("0 20px"), [0.0, 20.0, 0.0, 20.0]);
+    assert_eq!(fade("1px 2px 3px"), [1.0, 2.0, 3.0, 2.0]);
+    assert_eq!(fade("1px 2px 3px 4px"), [1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(fade("2em"), [32.0; 4]);
+    assert_eq!(fade("none"), [0.0; 4]);
+    for (bad, why) in [
+        ("-4px", "nonnegative"),
+        ("10%", "percentage"),
+        ("1px 2px 3px 4px 5px", "one to four"),
+        ("big", "expected a length"),
+    ] {
+        let e = paint_writes("overflow-fade", Some(bad), &units)
+            .unwrap()
+            .unwrap_err();
+        assert!(e.contains(why), "{bad}: {e}");
+    }
+    assert!(matches!(
+        paint_writes("overflow-fade", None, &units).unwrap().unwrap().as_slice(),
+        [PaintWrite::OverflowFade(f)] if *f == [0.0; 4]
+    ));
+}
+
+#[test]
 fn shadows_split_into_outer_and_inset_layers_in_order() {
     let units = PaintUnits::default();
     let (outer, inner) = shadow::parse(
