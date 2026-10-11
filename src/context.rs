@@ -250,6 +250,10 @@ impl LayoutContext {
                         entry.sticky = Some(v == STICKY);
                         crate::layout_props::set_i32(&mut entry.style, raw, v)
                     }
+                    PropValue::Unset if raw == POSITION => {
+                        entry.sticky = Some(false);
+                        crate::layout_props::unset(&mut entry.style, raw)
+                    }
                     PropValue::Enum(v) => crate::layout_props::set_i32(&mut entry.style, raw, v),
                     PropValue::Text(v) => crate::layout_props::set_string(&mut entry.style, raw, v),
                     PropValue::Unset => crate::layout_props::unset(&mut entry.style, raw),
@@ -262,52 +266,7 @@ impl LayoutContext {
         let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
         let mut reordered = Vec::new();
         for mut entry in staged {
-            // Held in place, a sticky node is laid out where it would be without insets.
-            let held = tree.sticky.get(&entry.id).copied();
-            let sticky = entry.sticky.unwrap_or(held.is_some());
-            if sticky {
-                let mut insets = held.unwrap_or_default();
-                if held.is_none() {
-                    // Just made sticky: the insets already on its style are where it is held.
-                    use taffy::style::CompactLength;
-                    let px = |v: taffy::style::LengthPercentageAuto| {
-                        let c = v.into_raw();
-                        (c.tag() == CompactLength::LENGTH_TAG).then_some(c.value())
-                    };
-                    let [t, r, b, l] = [
-                        entry.style.inset.top,
-                        entry.style.inset.right,
-                        entry.style.inset.bottom,
-                        entry.style.inset.left,
-                    ]
-                    .map(px);
-                    insets = [t, r, b, l];
-                }
-                for (slot, write) in insets.iter_mut().zip(entry.insets) {
-                    if let Some(v) = write {
-                        *slot = v;
-                    }
-                }
-                tree.sticky.insert(entry.id, insets);
-                let auto = taffy::style::LengthPercentageAuto::auto();
-                entry.style.inset.top = auto;
-                entry.style.inset.right = auto;
-                entry.style.inset.bottom = auto;
-                entry.style.inset.left = auto;
-            } else if let Some(insets) = held {
-                // No longer sticky: its insets offset it, as a relative node's do.
-                tree.sticky.remove(&entry.id);
-                let at = |v: Option<f32>| {
-                    v.map_or(
-                        taffy::style::LengthPercentageAuto::auto(),
-                        taffy::style::LengthPercentageAuto::length,
-                    )
-                };
-                entry.style.inset.top = at(insets[0]);
-                entry.style.inset.right = at(insets[1]);
-                entry.style.inset.bottom = at(insets[2]);
-                entry.style.inset.left = at(insets[3]);
-            }
+            tree.sync_sticky(entry.id, &mut entry.style, entry.sticky, entry.insets);
             if let Some(z) = entry.z_index {
                 match z {
                     Some(z) => tree.z_index.insert(entry.id, z),

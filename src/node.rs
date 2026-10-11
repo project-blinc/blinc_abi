@@ -10,8 +10,8 @@
 
 use crate::hl::{handle_mut, into_handle, opt_string_from, string_from, take_handle};
 use crate::layout_router::{
-    BACKDROP_IDENTITY, take_pending_backdrop, take_pending_even_odd, take_pending_glass,
-    take_pending_text, take_pending_text_decoration, take_pending_text_shadow,
+    BACKDROP_IDENTITY, TreeWrite, take_pending_backdrop, take_pending_even_odd, take_pending_glass,
+    take_pending_text, take_pending_text_decoration, take_pending_text_shadow, take_pending_tree,
 };
 use crate::reactive::collect_released;
 use blinc_layout::binding::unregister_node;
@@ -120,6 +120,11 @@ fn forget(tree: &mut Tree, nodes: &[LayoutNodeId]) {
         tree.backdrop_filters.remove(node);
         tree.text_decorations.remove(node);
         tree.text_shadows.remove(node);
+        tree.text_overflows.remove(node);
+        tree.line_clamps.remove(node);
+        tree.clamped.remove(node);
+        tree.sticky.remove(node);
+        tree.z_index.remove(node);
         tree.image_uses.remove(node);
         tree.glass_effects.remove(node);
     }
@@ -509,6 +514,61 @@ pub unsafe extern "C" fn hl_blinc_tree_flush(h: *mut c_void) -> bool {
             }
         }
     }
+    // Sticky constraints and text/stacking effects use the existing native tree implementation.
+    #[derive(Default)]
+    struct StickyUpdate {
+        position: Option<bool>,
+        insets: [Option<Option<f32>>; 4],
+    }
+    let mut sticky: std::collections::HashMap<LayoutNodeId, StickyUpdate> =
+        std::collections::HashMap::new();
+    let writes = take_pending_tree();
+    // Ordinary relative/absolute boxes keep their existing fast path: only sticky nodes
+    // need constraint staging, even when an inset was queued before their position.
+    for (node, write) in &writes {
+        if let TreeWrite::Position(on) = write
+            && (*on || tree.sticky.contains_key(node) || sticky.contains_key(node))
+        {
+            sticky.entry(*node).or_default().position = Some(*on);
+        }
+    }
+    for (node, write) in writes {
+        match write {
+            TreeWrite::Position(_) => {}
+            TreeWrite::Inset(i, v) => {
+                if sticky.contains_key(&node) || tree.sticky.contains_key(&node) {
+                    sticky.entry(node).or_default().insets[i] = Some(v);
+                }
+            }
+            TreeWrite::ZIndex(v) => {
+                match v {
+                    Some(v) => tree.z_index.insert(node, v),
+                    None => tree.z_index.remove(&node),
+                };
+            }
+            TreeWrite::TextOverflow(v) => {
+                match v {
+                    Some(v) => tree.text_overflows.insert(node, v),
+                    None => tree.text_overflows.remove(&node),
+                };
+            }
+            TreeWrite::LineClamp(v) => {
+                match v {
+                    Some(v) => tree.line_clamps.insert(node, v),
+                    None => tree.line_clamps.remove(&node),
+                };
+                needs_layout = true;
+            }
+        }
+        painted = true;
+    }
+    for (node, update) in sticky {
+        if let Some(mut style) = tree.layout.get_style(node) {
+            tree.sync_sticky(node, &mut style, update.position, update.insets);
+            tree.layout.set_style(node, style);
+            needs_layout = true;
+        }
+    }
     // A border takes layout space: each side's width, as painted, insets the box's content.
     for node in bordered {
         let (Some(props), Some(mut style)) = (tree.props.get(&node), tree.layout.get_style(node))
@@ -594,6 +654,7 @@ pub unsafe extern "C" fn hl_blinc_tree_compute_layout(
             width: AvailableSpace::Definite(width),
             height: AvailableSpace::Definite(height),
         };
+        tree.sync_line_clamps();
         tree.layout.compute_layout(id(root), space);
     }
 }
@@ -601,6 +662,43 @@ define_prim!(
     hlp_blinc_tree_compute_layout,
     hl_blinc_tree_compute_layout,
     "PXblinc_tree_lff_v"
+);
+
+/// Text limits of this node or its nearest declaring ancestor: line count (0 for none)
+/// and text-overflow (-1 undeclared, 0 clip, 1 ellipsis). Inline-flow hosts read these.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_tree_text_limits(h: *mut c_void, node: u64, out: *mut vbyte) {
+    if out.is_null() {
+        return;
+    }
+    let mut lines = None;
+    let mut overflow = None;
+    if let Some(tree) = unsafe { tree(h) }
+        && (!tree.line_clamps.is_empty() || !tree.text_overflows.is_empty())
+    {
+        for n in std::iter::once(id(node)).chain(tree.layout.ancestors(id(node))) {
+            if lines.is_none() {
+                lines = tree.line_clamps.get(&n).copied();
+            }
+            if overflow.is_none() {
+                overflow = tree.text_overflows.get(&n).copied();
+            }
+            if lines.is_some() && overflow.is_some() {
+                break;
+            }
+        }
+    }
+    unsafe {
+        (out as *mut i32).write_unaligned(lines.unwrap_or(0) as i32);
+        (out as *mut i32)
+            .add(1)
+            .write_unaligned(overflow.map_or(-1, i32::from));
+    }
+}
+define_prim!(
+    hlp_blinc_tree_text_limits,
+    hl_blinc_tree_text_limits,
+    "PXblinc_tree_lB_v"
 );
 
 /// Pack the primitives to draw under `root` into `out` (see `display_list`), at
