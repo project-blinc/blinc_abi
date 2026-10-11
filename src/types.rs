@@ -318,9 +318,12 @@ mod host {
             return;
         }
         if let Some(value) = unsafe { handle_mut::<Value>(brush) } {
-            let image = match value {
-                Value::Brush(Brush::Image(image)) | Value::Image(image, _) => image.clone(),
-                _ => return,
+            let image = match std::mem::take(value) {
+                Value::Brush(Brush::Image(image)) | Value::Image(image, _) => image,
+                other => {
+                    *value = other;
+                    return;
+                }
             };
             *value = Value::Image(
                 image,
