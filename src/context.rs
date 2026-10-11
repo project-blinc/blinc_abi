@@ -537,16 +537,15 @@ impl LayoutContext {
         if self.parents.contains_key(&id) {
             return Err("Layout root must have no parent");
         }
-        self.tree
-            .as_mut()
-            .ok_or("Layout context is disposed")?
-            .compute_layout(
-                id,
-                Size {
-                    width: AvailableSpace::Definite(width),
-                    height: AvailableSpace::Definite(height),
-                },
-            );
+        let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
+        tree.sync_line_clamps();
+        tree.compute_layout(
+            id,
+            Size {
+                width: AvailableSpace::Definite(width),
+                height: AvailableSpace::Definite(height),
+            },
+        );
         self.revision += 1;
         // Resolve absolute coordinates once, not once per queried node and ancestor.
         let tree = self.tree.as_ref().ok_or("Layout context is disposed")?;

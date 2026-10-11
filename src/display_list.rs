@@ -1945,6 +1945,24 @@ fn text_records(
         ),
         None => prepared,
     };
+    // More lines than the container's clamp shows end with an ellipsis on the last of them.
+    let prepared = match line_clamp_of(tree, node) {
+        Some(lines) => clamped(
+            glyphs.renderer,
+            context,
+            w,
+            props.and_then(|p| p.text_align),
+            props
+                .and_then(|p| p.letter_spacing)
+                .unwrap_or(context.letter_spacing),
+            color,
+            k,
+            subpixel,
+            lines,
+            prepared,
+        ),
+        None => prepared,
+    };
     // Glyphs start half the extra leading below the line box's top, as in CSS.
     let lead = text::half_leading(context, context.font_size * k);
     let decorations = decorations_of(tree, node);
@@ -2135,6 +2153,64 @@ fn ellipsis_room(tree: &Tree, node: LayoutNodeId, width: f32) -> Option<f32> {
         child = a;
     }
     None
+}
+
+/// How many lines the nearest container above a text node, with a line clamp, shows; none where
+/// there is none or it is `none`.
+fn line_clamp_of(tree: &Tree, node: LayoutNodeId) -> Option<u32> {
+    if tree.line_clamps.is_empty() {
+        return None;
+    }
+    tree.layout
+        .ancestors(node)
+        .into_iter()
+        .find_map(|a| tree.line_clamps.get(&a).copied())
+}
+
+/// `prepared` when it is no more than `lines` lines; else the longest start of the text with an
+/// ellipsis after it that is, found by halving as the lines only grow with the text.
+#[allow(clippy::too_many_arguments)]
+fn clamped(
+    renderer: &mut TextRenderer,
+    context: &blinc_layout::tree::TextMeasureContext,
+    width: f32,
+    align: Option<blinc_layout::div::TextAlign>,
+    spacing: f32,
+    color: [f32; 4],
+    k: f32,
+    subpixel: Option<SubpixelX>,
+    lines: u32,
+    prepared: blinc_text::PreparedText,
+) -> blinc_text::PreparedText {
+    let pitch = context.font_size * context.line_height;
+    let count = |p: &blinc_text::PreparedText| glyph_lines(&p.glyphs, k, pitch).len() as u32;
+    if count(&prepared) <= lines {
+        return prepared;
+    }
+    let ends: Vec<usize> = context
+        .content
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(context.content.len()))
+        .collect();
+    let mut shape = |end: usize| {
+        let mut shown = context.clone();
+        shown.content = format!("{}\u{2026}", context.content[..end].trim_end());
+        text::prepare(renderer, &shown, width, align, spacing, color, k, subpixel).ok()
+    };
+    let (mut lo, mut hi) = (0, ends.len() - 1);
+    let mut best = None;
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        match shape(ends[mid]) {
+            Some(p) if count(&p) <= lines => {
+                best = Some(p);
+                lo = mid;
+            }
+            _ => hi = mid - 1,
+        }
+    }
+    best.or_else(|| shape(ends[lo])).unwrap_or(prepared)
 }
 
 /// `prepared`, the shaped line, when it fits `room` layout units; else the longest start of the

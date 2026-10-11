@@ -73,6 +73,10 @@ pub struct Tree {
     pub(crate) text_shadows: HashMap<LayoutNodeId, Vec<blinc_core::Shadow>>,
     /// Each block container's `text-overflow`: true for an ellipsis, false for clip.
     pub(crate) text_overflows: HashMap<LayoutNodeId, bool>,
+    /// Each block container's `line-clamp`: how many lines its text shows.
+    pub(crate) line_clamps: HashMap<LayoutNodeId, u32>,
+    /// The text nodes whose height a line clamp is holding, so it can let go of them.
+    pub(crate) clamped: HashSet<LayoutNodeId>,
     /// Each liquid glass node's dispersion, bevel strength and curvature.
     pub(crate) glass_effects: HashMap<LayoutNodeId, crate::types::GlassEffects>,
     /// The insets of each `position: sticky` node, top, right, bottom and left: how far in from the
@@ -318,6 +322,49 @@ impl Tree {
         children
     }
 
+    /// Hold the text under each line-clamped container to that many lines: a text node's height is
+    /// capped at its lines' pitch times the clamp, and let go again when the clamp is. Before layout.
+    pub(crate) fn sync_line_clamps(&mut self) {
+        if self.line_clamps.is_empty() && self.clamped.is_empty() {
+            return;
+        }
+        let mut want: HashMap<LayoutNodeId, f32> = HashMap::new();
+        for (&container, &lines) in &self.line_clamps {
+            if lines == 0 {
+                continue;
+            }
+            let mut stack = self.layout.children(container);
+            while let Some(n) = stack.pop() {
+                // A container of its own clamps what it holds.
+                if self.line_clamps.contains_key(&n) {
+                    continue;
+                }
+                if let Some(context) = self.layout.text_context(n) {
+                    want.insert(n, lines as f32 * context.font_size * context.line_height);
+                } else {
+                    stack.extend(self.layout.children(n));
+                }
+            }
+        }
+        let set = |tree: &mut Tree, n: LayoutNodeId, height: taffy::LengthPercentageAuto| {
+            if let Some(mut style) = tree.layout.get_style(n)
+                && style.max_size.height != height
+            {
+                style.max_size.height = height;
+                tree.layout.set_style(n, style);
+            }
+        };
+        for (&n, &h) in &want {
+            set(self, n, taffy::LengthPercentageAuto::length(h));
+        }
+        for n in std::mem::take(&mut self.clamped) {
+            if !want.contains_key(&n) {
+                set(self, n, taffy::LengthPercentageAuto::auto());
+            }
+        }
+        self.clamped = want.into_keys().collect();
+    }
+
     pub fn new() -> Self {
         Self {
             layout: LayoutTree::new(),
@@ -338,6 +385,8 @@ impl Tree {
             text_decorations: HashMap::new(),
             text_shadows: HashMap::new(),
             text_overflows: HashMap::new(),
+            line_clamps: HashMap::new(),
+            clamped: HashSet::new(),
             image_uses: HashMap::new(),
             glass_effects: HashMap::new(),
             visuals: HashMap::new(),
@@ -357,6 +406,8 @@ impl Tree {
         self.text_decorations.remove(&id);
         self.text_shadows.remove(&id);
         self.text_overflows.remove(&id);
+        self.line_clamps.remove(&id);
+        self.clamped.remove(&id);
         self.image_uses.remove(&id);
         self.glass_effects.remove(&id);
         self.visuals.remove(&id);

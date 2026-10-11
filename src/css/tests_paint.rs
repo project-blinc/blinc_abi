@@ -1842,6 +1842,35 @@ mod bordered_restyle {
 }
 
 #[test]
+fn line_clamp_is_a_line_count_or_none() {
+    for name in ["line-clamp", "-webkit-line-clamp"] {
+        assert!(matches!(
+            writes(name, "3").as_slice(),
+            [PaintWrite::LineClamp(Some(3))]
+        ));
+        assert!(matches!(
+            writes(name, "none").as_slice(),
+            [PaintWrite::LineClamp(Some(0))]
+        ));
+        assert!(matches!(
+            paint_writes(name, None, &PaintUnits::default())
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            [PaintWrite::LineClamp(None)]
+        ));
+        for bad in ["0", "-1", "1.5", "auto"] {
+            assert!(
+                paint_writes(name, Some(bad), &PaintUnits::default())
+                    .unwrap()
+                    .is_err(),
+                "{bad}"
+            );
+        }
+    }
+}
+
+#[test]
 fn text_overflow_is_clip_or_ellipsis() {
     assert!(matches!(
         writes("text-overflow", "ellipsis").as_slice(),

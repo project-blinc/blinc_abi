@@ -245,6 +245,20 @@ impl LayoutContext {
     }
     /// How a node decorates its text and its descendants', drawn beside their ancestors'; none
     /// takes the node's own away.
+    /// How many lines of text `node`, a block container, shows before the last ends with an
+    /// ellipsis; 0 shows all, and none takes the setting away.
+    pub fn set_line_clamp(&mut self, node: Node, lines: Option<u32>) -> Result<()> {
+        let id = self.check(node)?;
+        let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
+        match lines {
+            Some(n) if n > 0 => tree.line_clamps.insert(id, n),
+            _ => tree.line_clamps.remove(&id),
+        };
+        self.bounds.clear();
+        self.revision += 1;
+        Ok(())
+    }
+
     /// What `node`, a block container, does with the text that overflows it: true ends it with an
     /// ellipsis, false clips it, and none takes the setting away.
     pub fn set_text_overflow(&mut self, node: Node, ellipsis: Option<bool>) -> Result<()> {
@@ -1218,6 +1232,76 @@ mod tests {
         tree.set_text_overflow(container, Some(true)).unwrap();
         assert_eq!(glyphs(&tree).0, two, "a line that fits has no ellipsis");
         assert!(tree.set_text_overflow(container, None).is_ok());
+    }
+
+    #[test]
+    fn a_line_clamp_holds_text_to_that_many_lines_with_an_ellipsis() {
+        use crate::display_list::RECORD_FLOATS;
+        let mut tree = LayoutContext::new();
+        let container = tree
+            .create_node(Style {
+                flex_direction: FlexDirection::Column,
+                ..style(100.0, 200.0)
+            })
+            .unwrap();
+        let text = tree
+            .create_text(
+                Style::default(),
+                TextMeasureContext {
+                    content: "one two three four five six seven eight nine ten eleven twelve"
+                        .into(),
+                    font_size: 16.0,
+                    line_height: 1.2,
+                    letter_spacing: 0.0,
+                    wrap: true,
+                    font_name: None,
+                    generic_font: blinc_layout::div::GenericFont::SansSerif,
+                    font_weight: 400,
+                    italic: false,
+                },
+            )
+            .unwrap();
+        tree.set_children(container, &[text]).unwrap();
+        tree.compute(container, 100.0, 200.0).unwrap();
+        let measure = |tree: &LayoutContext| -> (f32, usize, usize) {
+            let mut at = [0.0; 4];
+            tree.read_bounds(&[text], &mut at).unwrap();
+            let mut encoder = SceneEncoder::new();
+            let info = encoder
+                .prepare(tree, container, PaintOptions::default())
+                .unwrap();
+            let mut data = vec![0.0; info.floats];
+            encoder.read(tree, &mut data).unwrap();
+            let mut tops: Vec<i32> = data
+                .chunks(RECORD_FLOATS)
+                .map(|r| (r[1] / 19.2).floor() as i32)
+                .collect();
+            let glyphs = tops.len();
+            tops.dedup();
+            (at[3], tops.len(), glyphs)
+        };
+        let (natural, lines, glyphs) = measure(&tree);
+        assert!(lines >= 5, "it wraps to several lines: {lines}");
+        tree.set_line_clamp(container, Some(2)).unwrap();
+        tree.compute(container, 100.0, 200.0).unwrap();
+        let (held, shown, cut) = measure(&tree);
+        assert!(held < natural, "the box is shorter: {held} for {natural}");
+        assert!((held - 2.0 * 19.2).abs() < 1.5, "two lines of 19.2: {held}");
+        assert_eq!(shown, 2, "two lines are drawn");
+        assert!(cut < glyphs, "of fewer glyphs: {cut} of {glyphs}");
+        // A larger clamp than the text has changes nothing; none lets go of the height.
+        tree.set_line_clamp(container, Some(40)).unwrap();
+        tree.compute(container, 100.0, 200.0).unwrap();
+        assert_eq!(measure(&tree), (natural, lines, glyphs));
+        tree.set_line_clamp(container, Some(2)).unwrap();
+        tree.compute(container, 100.0, 200.0).unwrap();
+        tree.set_line_clamp(container, None).unwrap();
+        tree.compute(container, 100.0, 200.0).unwrap();
+        assert_eq!(
+            measure(&tree),
+            (natural, lines, glyphs),
+            "taken away, as it was"
+        );
     }
 
     #[test]

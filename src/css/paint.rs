@@ -88,6 +88,9 @@ pub enum PaintWrite {
     /// What a block container does with the text that overflows its box: true ends it with an
     /// ellipsis, false clips it; none for no declaration.
     TextOverflow(Option<bool>),
+    /// How many lines of text a block container shows before it ends the last with an ellipsis;
+    /// 0 for `none`, which shows all, and none for no declaration.
+    LineClamp(Option<u32>),
 }
 
 const GLASS: &[&str] = &[
@@ -138,6 +141,8 @@ pub fn is_paint_property(name: &str) -> bool {
             | "backdrop-filter"
             | "text-shadow"
             | "text-overflow"
+            | "line-clamp"
+            | "-webkit-line-clamp"
             | "text-decoration"
             | "text-decoration-line"
             | "text-decoration-style"
@@ -230,6 +235,18 @@ pub fn paint_writes(
         ("backdrop-filter", None) => Ok(backdrop(None, units)),
         ("backdrop-filter", Some(v)) => {
             filter::parse_backdrop(v, units).map(|b| backdrop(b, units))
+        }
+        ("line-clamp" | "-webkit-line-clamp", None) => Ok(vec![LineClamp(None)]),
+        ("line-clamp" | "-webkit-line-clamp", Some(v)) => {
+            let word = v.trim();
+            if word.eq_ignore_ascii_case("none") {
+                Ok(vec![LineClamp(Some(0))])
+            } else {
+                match word.parse::<u32>() {
+                    Ok(n) if n >= 1 => Ok(vec![LineClamp(Some(n))]),
+                    _ => Err(format!("line-clamp is a number of lines or none, not {v}")),
+                }
+            }
         }
         ("text-overflow", None) => Ok(vec![TextOverflow(None)]),
         ("text-overflow", Some(v)) => match v.trim().to_ascii_lowercase().as_str() {
