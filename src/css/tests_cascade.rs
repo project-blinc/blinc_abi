@@ -337,3 +337,26 @@ fn font_math_is_computed_once_and_inherited_as_pixels() {
         assert_eq!(styles[inherited].font_size, 20.0);
     }
 }
+
+#[test]
+fn variables_leave_quoted_literals_and_quoted_fallback_parentheses_intact() {
+    let mut cascade = Cascade::new();
+    cascade.set_theme(&[("size", "20px"), ("label", "'Ready'")]);
+    for literal in [
+        "'var(--size)'",
+        "\"var(--missing)\"",
+        "'it\\'s var(--size)'",
+        "url('var(--size)')",
+    ] {
+        assert_eq!(cascade.resolve_vars(literal, &[]), literal);
+    }
+    assert_eq!(
+        cascade.resolve_vars("calc(var(--size) + 2px)", &[]),
+        "calc(20px + 2px)"
+    );
+    assert_eq!(
+        cascade.resolve_vars("var(--missing, 'a ) b')", &[]),
+        "'a ) b'"
+    );
+    assert_eq!(cascade.resolve_vars("var(--label)", &[]), "'Ready'");
+}

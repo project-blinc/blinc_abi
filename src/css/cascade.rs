@@ -768,22 +768,26 @@ impl Cascade {
     fn substitute(&self, value: &str, values: &[(Atom, String)], theme_read: &mut bool) -> String {
         let mut value = value.to_string();
         let mut depth = 0;
-        while value.contains("var(") && depth < 10 {
+        while unquoted(&value).any(|(i, c)| c == 'v' && value[i..].starts_with("var("))
+            && depth < 10
+        {
             depth += 1;
             let mut out = String::new();
             let mut from = 0;
-            while let Some(rel) = value[from..].find("var(") {
+            while let Some(rel) = unquoted(&value[from..])
+                .find_map(|(i, c)| (c == 'v' && value[from + i..].starts_with("var(")).then_some(i))
+            {
                 let at = from + rel;
                 let (mut nesting, mut end) = (0, at + 4);
-                let bytes = value.as_bytes();
-                while end < bytes.len() {
-                    match bytes[end] {
-                        b'(' => nesting += 1,
-                        b')' if nesting == 0 => break,
-                        b')' => nesting -= 1,
+                for (rel, c) in unquoted(&value[at + 4..]) {
+                    end = at + 4 + rel;
+                    match c {
+                        '(' => nesting += 1,
+                        ')' if nesting == 0 => break,
+                        ')' => nesting -= 1,
                         _ => {}
                     }
-                    end += 1;
+                    end = value.len();
                 }
                 let args = &value[at + 4..end.min(value.len())];
                 let (name, fallback) = match args.find(',') {
@@ -1154,6 +1158,31 @@ impl<T: Tree> Walk<'_, T> {
         }
         out
     }
+}
+
+/// Characters outside CSS strings, keeping byte offsets for slicing the original value.
+fn unquoted(text: &str) -> impl Iterator<Item = (usize, char)> {
+    let mut quote = None;
+    let mut escaped = false;
+    text.char_indices().filter(move |&(_, c)| {
+        if escaped {
+            escaped = false;
+            return false;
+        }
+        if let Some(q) = quote {
+            if c == '\\' {
+                escaped = true;
+            } else if c == q {
+                quote = None;
+            }
+            return false;
+        }
+        if matches!(c, '\'' | '"') {
+            quote = Some(c);
+            return false;
+        }
+        true
+    })
 }
 
 /// Whether an attribute's value (none when it has none) passes the test (none for `[name]`).
