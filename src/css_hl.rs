@@ -58,7 +58,9 @@ unsafe fn styles<'a>(h: *mut c_void) -> Option<&'a mut Styles> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_blinc_css_new() -> *mut c_void {
-    into_handle(Styles::new())
+    let mut styles = Styles::new();
+    styles.set_paint_output(true);
+    into_handle(styles)
 }
 define_prim!(hlp_blinc_css_new, hl_blinc_css_new, "P_Xblinc_css_");
 
@@ -502,6 +504,18 @@ pub unsafe extern "C" fn hl_blinc_css_restyle(h: *mut c_void, t: *mut c_void, ro
         return 0;
     };
     s.restyle_host(&mut TreeHost(tree), root);
+    // Pattern storage belongs to the native display-list system. HashLink
+    // continues to apply its other layout and paint declarations itself.
+    for (node, writes) in s.take_paint() {
+        let id = LayoutNodeId::from_raw(node.raw());
+        if tree.layout.node_exists(id) {
+            for write in writes {
+                if let css::paint::PaintWrite::BorderStyle { side, style } = write {
+                    tree.set_border_style(id, side, style);
+                }
+            }
+        }
+    }
     s.changed_count() as i32
 }
 define_prim!(

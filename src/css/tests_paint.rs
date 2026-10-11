@@ -1707,7 +1707,7 @@ mod borders {
                 "{name}"
             );
         }
-        assert!(is_layout_property("border-style") && !is_paint_property("border-style"));
+        assert!(is_layout_property("border-style") && is_paint_property("border-style"));
         assert!(!is_layout_property("border-color") && is_paint_property("border-color"));
         assert!(is_paint_property("outline") && !is_layout_property("outline"));
     }
@@ -1725,13 +1725,13 @@ mod borders {
     #[test]
     fn border_colours_are_shared_or_per_side() {
         assert!(
-            matches!(&paint("border", Some("1px solid red"))[..], [PaintWrite::BorderColor(Some(c))] if bytes(*c) == [255, 0, 0, 255])
+            matches!(&paint("border", Some("1px solid red"))[..], [PaintWrite::BorderColor(Some(c)), ..] if bytes(*c) == [255, 0, 0, 255])
         );
         assert!(
-            matches!(&paint("border-color", Some("blue"))[..], [PaintWrite::BorderColor(Some(c))] if bytes(*c) == [0, 0, 255, 255])
+            matches!(&paint("border-color", Some("blue"))[..], [PaintWrite::BorderColor(Some(c)), ..] if bytes(*c) == [0, 0, 255, 255])
         );
         assert!(
-            matches!(&paint("border-left", Some("3px solid lime"))[..], [PaintWrite::BorderSideColor { side: 3, color: Some(c) }] if bytes(*c) == [0, 255, 0, 255])
+            matches!(&paint("border-left", Some("3px solid lime"))[..], [PaintWrite::BorderSideColor { side: 3, color: Some(c) }, ..] if bytes(*c) == [0, 255, 0, 255])
         );
         assert!(matches!(
             &paint("border-top-color", Some("red"))[..],
@@ -1768,9 +1768,9 @@ mod borders {
         let w = paint_writes("border", Some("2px solid"), &own)
             .unwrap()
             .unwrap();
-        assert!(matches!(&w[..], [PaintWrite::BorderColor(Some(c))] if c.g == 1.0));
+        assert!(matches!(&w[..], [PaintWrite::BorderColor(Some(c)), ..] if c.g == 1.0));
         assert!(
-            matches!(&paint("border", Some("2px solid"))[..], [PaintWrite::BorderColor(Some(c))] if bytes(*c) == [0, 0, 0, 255])
+            matches!(&paint("border", Some("2px solid"))[..], [PaintWrite::BorderColor(Some(c)), ..] if bytes(*c) == [0, 0, 0, 255])
         );
     }
 
@@ -1778,7 +1778,7 @@ mod borders {
     fn unsetting_a_border_colour_takes_it_back() {
         assert!(matches!(
             &paint("border", None)[..],
-            [PaintWrite::BorderColor(None)]
+            [PaintWrite::BorderColor(None), ..]
         ));
         assert!(matches!(
             &paint("border-color", None)[..],
@@ -1786,10 +1786,13 @@ mod borders {
         ));
         assert!(matches!(
             &paint("border-bottom", None)[..],
-            [PaintWrite::BorderSideColor {
-                side: 2,
-                color: None
-            }]
+            [
+                PaintWrite::BorderSideColor {
+                    side: 2,
+                    color: None
+                },
+                ..
+            ]
         ));
         assert!(matches!(
             &paint("border-right-color", None)[..],
@@ -2041,6 +2044,72 @@ fn text_shadow_is_a_list_of_offsets_blur_and_colour_or_none() {
                 .unwrap()
                 .is_err(),
             "{bad}"
+        );
+    }
+}
+
+#[test]
+fn border_patterns_retain_side_styles_and_reset_shorthands() {
+    use super::border::Style as BorderStyle;
+    let styles = |name, value| {
+        paint_writes(name, value, &PaintUnits::default())
+            .unwrap()
+            .unwrap()
+            .into_iter()
+            .filter_map(|w| match w {
+                PaintWrite::BorderStyle { side, style } => Some((side, style)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        styles("border-style", Some("dashed dotted solid none")),
+        vec![
+            (0, BorderStyle::Dashed),
+            (1, BorderStyle::Dotted),
+            (2, BorderStyle::Solid),
+            (3, BorderStyle::None),
+        ]
+    );
+    assert_eq!(
+        styles("border-style", Some("dotted dashed")),
+        vec![
+            (0, BorderStyle::Dotted),
+            (1, BorderStyle::Dashed),
+            (2, BorderStyle::Dotted),
+            (3, BorderStyle::Dashed),
+        ]
+    );
+    assert_eq!(
+        styles("border-right", Some("red 3px dashed")),
+        vec![(1, BorderStyle::Dashed)]
+    );
+    assert_eq!(
+        styles("border-left-style", Some("DOTTED")),
+        vec![(3, BorderStyle::Dotted)]
+    );
+    assert_eq!(
+        styles("border-top-style", None),
+        vec![(0, BorderStyle::Solid)]
+    );
+    assert_eq!(
+        styles("border", None),
+        (0..4).map(|i| (i, BorderStyle::Solid)).collect::<Vec<_>>()
+    );
+    assert!(
+        styles("border-color", Some("red")).is_empty(),
+        "colour preserves patterns"
+    );
+    for (name, value) in [
+        ("border-style", "wobbly"),
+        ("border-style", ""),
+        ("border-top-style", "solid dotted"),
+        ("border-style", "solid solid solid solid solid"),
+    ] {
+        assert!(
+            paint_writes(name, Some(value), &PaintUnits::default())
+                .unwrap()
+                .is_err()
         );
     }
 }

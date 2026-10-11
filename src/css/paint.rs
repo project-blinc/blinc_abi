@@ -60,6 +60,11 @@ pub enum PaintWrite {
         side: usize,
         color: Option<Color>,
     },
+    /// One side's pattern, top first, clockwise.
+    BorderStyle {
+        side: usize,
+        style: border::Style,
+    },
     OutlineWidth(f32),
     OutlineColor(Option<Color>),
     /// The gap between the border and the outline, in pixels.
@@ -116,6 +121,11 @@ pub fn is_paint_property(name: &str) -> bool {
             | "visibility"
             | "border-radius"
             | "corner-shape"
+            | "border-style"
+            | "border-top-style"
+            | "border-right-style"
+            | "border-bottom-style"
+            | "border-left-style"
             | "border-color"
             | "border"
             | "border-top"
@@ -166,6 +176,41 @@ pub fn paint_writes(
         return None;
     }
     let one = |w: Result<PaintWrite, String>| w.map(|w| vec![w]);
+    let style_side = match name {
+        "border-top-style" => Some(0),
+        "border-right-style" => Some(1),
+        "border-bottom-style" => Some(2),
+        "border-left-style" => Some(3),
+        _ => None,
+    };
+    if name == "border-style" || style_side.is_some() {
+        return Some((|| {
+            let styles = match value {
+                None => [border::Style::Solid; 4],
+                Some(v) => {
+                    let parsed = split(v, ' ')
+                        .iter()
+                        .map(|v| border::Style::parse(v))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if style_side.is_some() && parsed.len() != 1 {
+                        return Err(format!("{name} takes one style"));
+                    }
+                    box_sides(parsed, name)?
+                }
+            };
+            Ok(match style_side {
+                Some(side) => vec![BorderStyle {
+                    side,
+                    style: styles[0],
+                }],
+                None => styles
+                    .into_iter()
+                    .enumerate()
+                    .map(|(side, style)| BorderStyle { side, style })
+                    .collect(),
+            })
+        })());
+    }
     if name == "border" || border_side(name).is_some() {
         // A shorthand names its colour among a width and a style; a longhand is the colour.
         let side = border_side(name);
@@ -173,12 +218,33 @@ pub fn paint_writes(
             Some(side) => BorderSideColor { side, color },
             None => BorderColor(color),
         };
+        let shorthand = !name.ends_with("-color");
+        let styles = |style| match side {
+            Some(side) => vec![BorderStyle { side, style }],
+            None => (0..4).map(|side| BorderStyle { side, style }).collect(),
+        };
         return Some(match value {
-            None => Ok(vec![write(None)]),
+            None => {
+                let mut result = vec![write(None)];
+                if shorthand {
+                    result.extend(styles(border::Style::Solid));
+                }
+                Ok(result)
+            }
             Some(v) if name.ends_with("-color") => {
                 color::parse(v, units.color).map(|c| vec![write(Some(c))])
             }
-            Some(v) => border::color(v, units, false).map(|c| vec![write(Some(c))]),
+            Some(v) => border::color(v, units, false).and_then(|c| {
+                let layout = Units {
+                    font_size: units.font_size,
+                    root_font_size: units.root_font_size,
+                    viewport_width: units.viewport_width,
+                    viewport_height: units.viewport_height,
+                };
+                let mut result = vec![write(Some(c))];
+                result.extend(styles(border::parse(v, &layout, false)?.style));
+                Ok(result)
+            }),
         });
     }
     if name == "border-color" {

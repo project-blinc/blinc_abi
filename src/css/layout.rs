@@ -239,7 +239,7 @@ fn text_id(name: &str) -> Option<i32> {
 }
 
 /// The sides, by index from top, that a border shorthand writes.
-fn border_shorthand(name: &str) -> Option<&'static [usize]> {
+pub(crate) fn border_shorthand(name: &str) -> Option<&'static [usize]> {
     Some(match name {
         "border" => &[0, 1, 2, 3],
         "border-top" => &[0],
@@ -275,6 +275,10 @@ fn sides(name: &str) -> Option<[&'static str; 4]> {
 pub fn is_layout_property(name: &str) -> bool {
     border_shorthand(name).is_some()
         || name == "border-style"
+        || matches!(
+            name,
+            "border-top-style" | "border-right-style" | "border-bottom-style" | "border-left-style"
+        )
         || length_ids(name).is_some()
         || enum_id(name).is_some()
         || text_id(name).is_some()
@@ -412,6 +416,27 @@ pub fn layout_writes<'a>(
             }),
         });
     }
+    if matches!(
+        name,
+        "border-top-style" | "border-right-style" | "border-bottom-style" | "border-left-style"
+    ) {
+        let side = match name {
+            "border-top-style" => 0,
+            "border-right-style" => 1,
+            "border-bottom-style" => 2,
+            _ => 3,
+        };
+        return Some(match value {
+            None => Ok(vec![(BORDER_TOP_WIDTH + side, PropValue::Unset)]),
+            Some(v) => super::border::Style::parse(v).map(|s| {
+                if s == super::border::Style::None {
+                    vec![num(BORDER_TOP_WIDTH + side, 0.0)]
+                } else {
+                    vec![]
+                }
+            }),
+        });
+    }
     if name == "border-style" {
         return Some(match value {
             None => Ok((0..4)
@@ -420,17 +445,20 @@ pub fn layout_writes<'a>(
             Some(v) => {
                 let none = split(v, ' ')
                     .iter()
-                    .map(|s| matches!(s.to_ascii_lowercase().as_str(), "none" | "hidden"))
-                    .collect();
+                    .map(|s| {
+                        super::border::Style::parse(s).map(|s| s == super::border::Style::None)
+                    })
+                    .collect::<Result<Vec<_>, _>>();
                 // Only whether there is a border: a side with none has no width.
-                super::quantity::box_sides(none, name).map(|sides| {
-                    sides
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, none)| **none)
-                        .map(|(i, _)| num(BORDER_TOP_WIDTH + i as i32, 0.0))
-                        .collect()
-                })
+                none.and_then(|none| super::quantity::box_sides(none, name))
+                    .map(|sides| {
+                        sides
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, none)| **none)
+                            .map(|(i, _)| num(BORDER_TOP_WIDTH + i as i32, 0.0))
+                            .collect()
+                    })
             }
         });
     }

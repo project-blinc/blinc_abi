@@ -686,7 +686,28 @@ impl Styles {
             }
             for &(k, v) in &now {
                 let name = self.cascade.str(k);
-                match layout_writes(name, Some(v), &units) {
+                // Widths and styles cascade independently. Keep specified
+                // widths here; apply the final style's used zero width below.
+                let routed = if let Some(sides) = super::layout::border_shorthand(name) {
+                    Some(super::border::parse(v, &units, false).map(|border| {
+                        sides
+                            .iter()
+                            .map(|&side| {
+                                (
+                                    super::layout::id::BORDER_TOP_WIDTH + side as i32,
+                                    PropValue::Number(border.width as f32),
+                                )
+                            })
+                            .collect()
+                    }))
+                } else if name == "border-style"
+                    || name.starts_with("border-") && name.ends_with("-style")
+                {
+                    layout_writes(name, Some(v), &units).map(|r| r.map(|_| Vec::new()))
+                } else {
+                    layout_writes(name, Some(v), &units)
+                };
+                match routed {
                     Some(Ok(writes)) => {
                         if let Err(e) = host.apply_layout(raw, &writes) {
                             errors.push(format!("{name}: {v}: {e}"));
@@ -694,6 +715,32 @@ impl Styles {
                     }
                     Some(Err(e)) => errors.push(format!("{name}: {v}: {e}")),
                     None => {}
+                }
+            }
+            if lays_out
+                && now
+                    .iter()
+                    .any(|(k, _)| self.cascade.str(*k).starts_with("border"))
+            {
+                let styles = super::border::resolved_styles(
+                    now.iter().map(|(k, v)| (self.cascade.str(*k), *v)),
+                    &units,
+                );
+                let zero: Vec<_> = styles
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(_, style)| *style == super::border::Style::None)
+                    .map(|(side, _)| {
+                        (
+                            super::layout::id::BORDER_TOP_WIDTH + side as i32,
+                            PropValue::Number(0.0),
+                        )
+                    })
+                    .collect();
+                if !zero.is_empty()
+                    && let Err(e) = host.apply_layout(raw, &zero)
+                {
+                    errors.push(format!("border-style: {e}"));
                 }
             }
             self.applied

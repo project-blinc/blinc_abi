@@ -299,6 +299,26 @@ impl LayoutContext {
         Ok(())
     }
 
+    /// Set one border side's native pattern: top 0, right 1, bottom 2, left 3.
+    /// The solid default needs no per-node style storage.
+    pub fn set_border_style(
+        &mut self,
+        node: Node,
+        side: usize,
+        style: crate::css::border::Style,
+    ) -> Result<()> {
+        let id = self.check(node)?;
+        if side >= 4 {
+            return Err("Invalid border side");
+        }
+        self.tree
+            .as_mut()
+            .ok_or("Layout context is disposed")?
+            .set_border_style(id, side, style);
+        self.revision += 1;
+        Ok(())
+    }
+
     pub fn set_text_decoration(
         &mut self,
         node: Node,
@@ -907,6 +927,73 @@ mod tests {
         assert!(tree.properties(child).is_err());
         assert!(encoder.read(&tree, &mut data).is_err());
     }
+    #[test]
+    fn border_patterns_share_rectangle_records_and_invalidate_cached_scenes() {
+        use crate::css::border::Style as BorderStyle;
+        use crate::display_list::{PRIM_RECT, RECORD_FLOATS};
+        let mut tree = LayoutContext::new();
+        let root = tree.create_node(style(180.0, 72.0)).unwrap();
+        let mut props = RenderProps::default();
+        props.border_width = 3.0;
+        props.border_color = Some(Color::WHITE);
+        props.border_radius = blinc_core::CornerRadius::uniform(16.0);
+        tree.set_properties(root, props).unwrap();
+        tree.compute(root, 180.0, 72.0).unwrap();
+        let mut encoder = SceneEncoder::new();
+        encoder
+            .prepare(&tree, root, PaintOptions::default())
+            .unwrap();
+        assert_eq!(
+            encoder.records.len(),
+            RECORD_FLOATS,
+            "solid keeps one box record"
+        );
+        for side in 0..4 {
+            tree.set_border_style(root, side, BorderStyle::Dotted)
+                .unwrap();
+        }
+        let mut old = vec![0.0; RECORD_FLOATS];
+        assert!(
+            encoder.read(&tree, &mut old).is_err(),
+            "pattern changes invalidate prepared data"
+        );
+        encoder
+            .prepare(&tree, root, PaintOptions::default())
+            .unwrap();
+        assert!(encoder.records.len() > 20 * RECORD_FLOATS);
+        for r in encoder.records.chunks_exact(RECORD_FLOATS) {
+            assert_eq!(
+                r[44], PRIM_RECT,
+                "both existing renderers can consume these records"
+            );
+            assert!(r.iter().all(|v| v.is_finite()));
+            assert_eq!(
+                &r[2..4],
+                &[3.0, 3.0],
+                "dots have the border width as diameter"
+            );
+            assert_eq!(&r[4..8], &[1.5; 4], "dots are round");
+        }
+        let mut other = LayoutContext::new();
+        let foreign = other.create_node(Default::default()).unwrap();
+        assert!(
+            tree.set_border_style(foreign, 0, BorderStyle::Dashed)
+                .is_err()
+        );
+        assert!(tree.set_border_style(root, 4, BorderStyle::Dashed).is_err());
+        for side in 0..4 {
+            tree.set_border_style(root, side, BorderStyle::Solid)
+                .unwrap();
+        }
+        assert!(tree.tree.as_ref().unwrap().border_styles.is_empty());
+        tree.set_border_style(root, 0, BorderStyle::Dashed).unwrap();
+        tree.remove(root).unwrap();
+        assert!(
+            tree.tree.as_ref().unwrap().border_styles.is_empty(),
+            "node removal forgets patterns"
+        );
+    }
+
     #[test]
     fn a_decoration_stacks_with_an_ancestors_and_an_explicit_none_does_not_undo_it() {
         use crate::css::text_decoration::{Style as DecorationStyle, TextDecoration, UNDERLINE};

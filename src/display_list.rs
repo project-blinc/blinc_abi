@@ -920,6 +920,7 @@ fn append_inner(
     let mut layer: Option<LayerState> = None;
     // A border drawn after the children, with the clips its node is drawn under.
     let mut after: Option<(Primitive, Clipping)> = None;
+    let mut patterned_after = Vec::new();
     if let Some(props) = tree.props.get(&node) {
         if !props.visible {
             return;
@@ -1019,6 +1020,7 @@ fn append_inner(
 
         let sides = border_sides(props);
         let side_colors = border_side_colors(props);
+        let styles = tree.border_styles.get(&node).copied().unwrap_or_default();
         let border = (0..4).any(|i| sides[i] > 0.0 && side_colors[i].is_some());
         // A border with no background draws over a transparent fill.
         let transparent = Brush::Solid(Color::TRANSPARENT);
@@ -1139,7 +1141,13 @@ fn append_inner(
         if brush.is_some_and(|b| fill(&mut p, b, opacity)) {
             if border {
                 p.border = sides;
-                p.side_colors = side_colors.map(|c| c.map_or([0.0; 4], |c| rgba(c, opacity)));
+                p.side_colors = std::array::from_fn(|i| {
+                    if styles[i] == crate::css::border::Style::Solid {
+                        side_colors[i].map_or([0.0; 4], |c| rgba(c, opacity))
+                    } else {
+                        [0.0; 4]
+                    }
+                });
                 // The most opaque side's, which says whether there is a border to draw.
                 p.border_color = p
                     .side_colors
@@ -1210,6 +1218,27 @@ fn append_inner(
         }
         if let Some((ring, clip)) = ring_over_inset {
             ring.push(&clip, out);
+        }
+
+        if styles.iter().any(|s| s.pattern(1.0).is_some()) {
+            let target = if clips_children(tree, node) {
+                &mut patterned_after
+            } else {
+                &mut *out
+            };
+            draw_border_patterns(
+                styles,
+                sides,
+                side_colors,
+                radii,
+                [x, y, w, h],
+                opacity,
+                glyphs.display_scale,
+                m,
+                clips,
+                target,
+                cull,
+            );
         }
 
         // An outline: a ring outside the box, `offset` away from it, its
@@ -1373,6 +1402,7 @@ fn append_inner(
     if let Some((ring, clip)) = after {
         ring.push(&clip, out);
     }
+    out.extend_from_slice(&patterned_after);
     if shaped {
         clips.pop();
     }
@@ -2353,6 +2383,161 @@ struct Decorated {
     cull: bool,
 }
 
+/// One side owns the half of each adjacent corner up to the bisector. The
+/// same dash/dot lengths as text decorations run along its centreline. Fit
+/// the spacing to whole periods so marks meet symmetrically at the corners.
+/// Solid borders keep their single merged box record.
+#[allow(clippy::too_many_arguments)]
+fn draw_border_patterns(
+    styles: [crate::css::border::Style; 4],
+    widths: [f32; 4],
+    colors: [Option<Color>; 4],
+    radii: [f32; 4],
+    bounds: [f32; 4],
+    opacity: f32,
+    display_scale: f32,
+    m: Affine,
+    clips: &[Clip],
+    out: &mut Vec<f32>,
+    cull: bool,
+) {
+    use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
+    let [x, y, w, h] = bounds;
+    let frames = [
+        IDENTITY,
+        [0.0, 1.0, -1.0, 0.0, w, 0.0],
+        [-1.0, 0.0, 0.0, -1.0, w, h],
+        [0.0, -1.0, 1.0, 0.0, 0.0, h],
+    ];
+    let radius_limit = w.min(h).max(0.0) / 2.0;
+    let radii = radii.map(|r| r.clamp(0.0, radius_limit));
+    for side in 0..4 {
+        let thick = widths[side].min(w.min(h));
+        let Some(pattern) = styles[side].pattern(thick) else {
+            continue;
+        };
+        let Some(color) = colors[side].filter(|c| c.a * opacity > 0.0) else {
+            continue;
+        };
+        if thick <= 0.0 || !thick.is_finite() {
+            continue;
+        }
+        let length = if side % 2 == 0 { w } else { h };
+        let rl = radii[side];
+        let rr = radii[(side + 1) % 4];
+        let cl = (rl - thick / 2.0).max(0.0);
+        let cr = (rr - thick / 2.0).max(0.0);
+        let left_arc = cl * FRAC_PI_4;
+        let line = (length - rl - rr).max(0.0);
+        let total = left_arc + line + cr * FRAC_PI_4;
+        if !total.is_finite() || total <= 0.0 {
+            continue;
+        }
+        // Bound output for arbitrarily small widths without silently changing
+        // a dotted or dashed border into a solid one.
+        let count = (total / (pattern.on + pattern.off))
+            .round()
+            .clamp(1.0, 4000.0) as usize;
+        let pitch = total / count as f32;
+        let on = pattern
+            .on
+            .min(pitch * if pattern.radius > 0.0 { 1.0 } else { 0.6 });
+        let frame = compose(m, compose([1.0, 0.0, 0.0, 1.0, x, y], frames[side]));
+        let paint = rgba(color, opacity);
+        for i in 0..count {
+            let mid = (i as f32 + 0.5) * pitch;
+            if pattern.radius > 0.0 {
+                let (cx, cy) = if mid < left_arc {
+                    let a = -3.0 * FRAC_PI_4 + mid / cl;
+                    (rl + cl * a.cos(), rl + cl * a.sin())
+                } else if mid <= left_arc + line {
+                    (rl + mid - left_arc, thick / 2.0)
+                } else {
+                    let a = -FRAC_PI_2 + (mid - left_arc - line) / cr;
+                    (length - rr + cr * a.cos(), rr + cr * a.sin())
+                };
+                let mut p = Primitive::new(PRIM_RECT, [0.0, 0.0, thick, thick], [thick / 2.0; 4]);
+                p.color = paint;
+                p.color2 = paint;
+                p.place(frame, cx - thick / 2.0, cy - thick / 2.0);
+                // Text-decoration pieces also snap to whole device pixels.
+                // A one-pixel dot centred between pixels would otherwise
+                // turn into two touching half-covered pixels: a solid line.
+                if (m[1] == 0.0 && m[2] == 0.0) || (m[0] == 0.0 && m[3] == 0.0) {
+                    p.bounds[0] = (p.bounds[0] * display_scale).round() / display_scale;
+                    p.bounds[1] = (p.bounds[1] * display_scale).round() / display_scale;
+                }
+                p.push(
+                    &clipping(
+                        clips,
+                        frame,
+                        (cx - thick / 2.0, cy - thick / 2.0),
+                        true,
+                        cull,
+                    ),
+                    out,
+                );
+            } else {
+                let start = mid - on / 2.0;
+                let end = mid + on / 2.0;
+                // A dash crossing a tangent is split there: its straight part
+                // is a band, its curved part an exact circular border ring.
+                let a = start.max(left_arc);
+                let b = end.min(left_arc + line);
+                if b > a {
+                    let mut p = Primitive::new(PRIM_RECT, [0.0, 0.0, b - a, thick], [0.0; 4]);
+                    p.color = paint;
+                    p.color2 = paint;
+                    p.place(frame, rl + a - left_arc, 0.0);
+                    p.push(
+                        &clipping(clips, frame, (rl + a - left_arc, 0.0), true, cull),
+                        out,
+                    );
+                }
+                for (offset, radius, centre, first) in [
+                    (0.0, rl, (rl, rl), -3.0 * FRAC_PI_4),
+                    (left_arc + line, rr, (length - rr, rr), -FRAC_PI_2),
+                ] {
+                    let centre_radius = (radius - thick / 2.0).max(0.0);
+                    let a = start.max(offset);
+                    let b = end.min(offset + centre_radius * FRAC_PI_4);
+                    if b <= a {
+                        continue;
+                    }
+                    let angle = first + ((a + b) / 2.0 - offset) / centre_radius;
+                    let half = (b - a) / (2.0 * centre_radius);
+                    let tangent = (-angle.sin(), angle.cos());
+                    let inward = (-angle.cos(), -angle.sin());
+                    let circle = compose(
+                        frame,
+                        [
+                            tangent.0,
+                            tangent.1,
+                            inward.0,
+                            inward.1,
+                            centre.0 - radius * (tangent.0 + inward.0),
+                            centre.1 - radius * (tangent.1 + inward.1),
+                        ],
+                    );
+                    let mut p = Primitive::new(
+                        PRIM_RECT,
+                        [0.0, 0.0, 2.0 * radius, 2.0 * radius],
+                        [radius; 4],
+                    );
+                    p.border = [thick; 4];
+                    p.border_color = paint;
+                    p.side_colors = [paint; 4];
+                    p.place(circle, 0.0, 0.0);
+                    let reach = centre_radius * half.sin();
+                    let mut clip = clipping(clips, circle, (0.0, 0.0), true, cull);
+                    clip.local = Some(([radius - reach, 0.0, 2.0 * reach, radius], [0.0; 4]));
+                    p.push(&clip, out);
+                }
+            }
+        }
+    }
+}
+
 /// The lines of `d` across each of `lines`, as rects: one band, two, or a row of dots or dashes.
 fn draw_decoration(
     d: &TextDecoration,
@@ -2410,11 +2595,12 @@ fn draw_decoration(
                     band(x, top + 2.0 * thick, len, thick, 0.0);
                 }
                 Style::Dotted | Style::Dashed => {
-                    let (on, off, radius) = if d.style == Style::Dotted {
-                        (thick, thick, thick / 2.0)
+                    let pattern = if d.style == Style::Dotted {
+                        crate::css::border::Pattern::dotted(thick)
                     } else {
-                        (3.0 * thick, 2.0 * thick, 0.0)
+                        crate::css::border::Pattern::dashed(thick)
                     };
+                    let (on, off, radius) = (pattern.on, pattern.off, pattern.radius);
                     // A line too long to count in pieces is a solid one.
                     if len / (on + off) > 4000.0 {
                         band(x, top, len, thick, 0.0);
