@@ -494,6 +494,8 @@ pub unsafe extern "C" fn hl_blinc_tree_flush(h: *mut c_void) -> bool {
             .retain(|node, _| layout.get_style(*node).is_some());
         tree.scrolls
             .retain(|node, _| layout.get_style(*node).is_some());
+        tree.scrollbar_styles
+            .retain(|node, _| layout.get_style(*node).is_some());
     }
     let mut needs_layout = false;
     let mut painted = false;
@@ -535,6 +537,15 @@ pub unsafe extern "C" fn hl_blinc_tree_flush(h: *mut c_void) -> bool {
     }
     for (node, write) in writes {
         match write {
+            TreeWrite::PointerEvents(enabled) => {
+                if tree.layout.get_style(node).is_some() {
+                    if enabled {
+                        tree.pass_through.remove(&node);
+                    } else {
+                        tree.pass_through.insert(node);
+                    }
+                }
+            }
             TreeWrite::Position(_) => {}
             TreeWrite::Inset(i, v) => {
                 if sticky.contains_key(&node) || tree.sticky.contains_key(&node) {
@@ -1052,6 +1063,41 @@ define_prim!(
     hlp_blinc_tree_set_pass_through,
     hl_blinc_tree_set_pass_through,
     "PXblinc_tree_lb_v"
+);
+
+/// Styles an overlay scrollbar without changing its offsets or interaction.
+/// Width zero hides the bar. Track is straight-alpha 0xAARRGGBB; zero is transparent.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_tree_set_scrollbar_style(
+    h: *mut c_void,
+    node: u64,
+    width: f32,
+    track: i32,
+) {
+    let Some(tree) = (unsafe { tree(h) }) else {
+        return;
+    };
+    let node = id(node);
+    if tree.layout.get_style(node).is_none() || !width.is_finite() || width < 0.0 {
+        return;
+    }
+    if width == 4.0 && track == 0 {
+        tree.scrollbar_styles.remove(&node);
+    } else {
+        let c = |shift: i32| ((track >> shift) & 0xff) as f32 / 255.0;
+        tree.scrollbar_styles.insert(
+            node,
+            crate::tree::ScrollbarStyle {
+                width,
+                track: [c(16), c(8), c(0), c(24)],
+            },
+        );
+    }
+}
+define_prim!(
+    hlp_blinc_tree_set_scrollbar_style,
+    hl_blinc_tree_set_scrollbar_style,
+    "PXblinc_tree_lfi_v"
 );
 
 /// Scrolls container `node`'s content by `(x, y)` and colours its thumb

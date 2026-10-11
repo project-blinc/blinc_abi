@@ -34,6 +34,8 @@ pub const INHERITED: &[&str] = &[
     "white-space",
     "cursor",
     "list-style-type",
+    "visibility",
+    "scrollbar-color",
 ];
 
 /// Shorthands and the longhands each sets.
@@ -766,7 +768,10 @@ impl Cascade {
             let name = self.str(*k);
             if name.starts_with("--")
                 || (!text
-                    && !matches!(name, "cursor" | "list-style-type")
+                    && !matches!(
+                        name,
+                        "cursor" | "list-style-type" | "visibility" | "scrollbar-color"
+                    )
                     && !own.iter().any(|(o, _)| o == k))
             {
                 continue;

@@ -194,11 +194,14 @@ pub(crate) enum TreeWrite {
     ZIndex(Option<i32>),
     TextOverflow(Option<bool>),
     LineClamp(Option<u32>),
+    PointerEvents(bool),
 }
 
 pub const Z_INDEX: i32 = crate::context::Z_INDEX;
 pub const TEXT_OVERFLOW: i32 = 122;
 pub const LINE_CLAMP: i32 = 123;
+pub const VISIBILITY: i32 = 124;
+pub const POINTER_EVENTS: i32 = 125;
 
 static PENDING_TREE: Mutex<Vec<(LayoutNodeId, TreeWrite)>> = Mutex::new(Vec::new());
 
@@ -643,6 +646,11 @@ pub unsafe extern "C" fn hl_blinc_apply_i32(
 ) {
     let node = LayoutNodeId::from_raw(node);
     let extra = match prop {
+        VISIBILITY => Some((PropertyId::Opacity, render(|p, v| p.visible = v == 0))),
+        POINTER_EVENTS => Some((
+            PropertyId::Transform,
+            render(move |_, v| record_tree(node, TreeWrite::PointerEvents(v == 0))),
+        )),
         Z_INDEX => Some((
             PropertyId::Transform,
             render(move |_, v| record_tree(node, TreeWrite::ZIndex(Some(v)))),
@@ -1027,6 +1035,11 @@ pub unsafe extern "C" fn hl_blinc_unset(node: u64, raw: i32) {
         Z_INDEX => ren(
             P::Transform,
             Box::new(move |_| record_tree(node, TreeWrite::ZIndex(None))),
+        ),
+        VISIBILITY => ren(P::Opacity, Box::new(|p| p.visible = true)),
+        POINTER_EVENTS => ren(
+            P::Transform,
+            Box::new(move |_| record_tree(node, TreeWrite::PointerEvents(true))),
         ),
         TEXT_OVERFLOW => ren(
             P::TextAlign,

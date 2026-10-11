@@ -401,3 +401,38 @@ fn inherited_cursor_and_list_markers_reach_non_text_hosts() {
     assert_eq!(get(&c, &styles[item], "cursor"), None);
     assert_eq!(get(&c, &styles[item], "list-style-type"), None);
 }
+
+#[test]
+fn inherited_visibility_and_scrollbar_color_restyle_element_hosts() {
+    let mut c = Cascade::new();
+    let first = c.push(sheet("div { visibility: hidden; scrollbar-color: red blue; scrollbar-width: thin } .own { visibility: visible; scrollbar-color: auto }"));
+    let mut doc = Doc::default();
+    let e = el(&mut c, &["div"], &[]);
+    let root = doc.add(None, e);
+    let e = el(&mut c, &["section"], &[]);
+    let child = doc.add(Some(root), e);
+    let e = el(&mut c, &["section"], &["own"]);
+    let own = doc.add(Some(root), e);
+    let styles = style_all(&c, &doc);
+    assert_eq!(
+        get(&c, &styles[child], "visibility").as_deref(),
+        Some("hidden")
+    );
+    assert_eq!(
+        get(&c, &styles[child], "scrollbar-color").as_deref(),
+        Some("red blue")
+    );
+    assert_eq!(get(&c, &styles[child], "scrollbar-width"), None);
+    assert_eq!(
+        get(&c, &styles[own], "visibility").as_deref(),
+        Some("visible")
+    );
+    assert_eq!(
+        get(&c, &styles[own], "scrollbar-color").as_deref(),
+        Some("auto")
+    );
+    c.remove(first);
+    let styles = style_all(&c, &doc);
+    assert_eq!(get(&c, &styles[child], "visibility"), None);
+    assert_eq!(get(&c, &styles[child], "scrollbar-color"), None);
+}

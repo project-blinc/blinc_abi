@@ -52,6 +52,8 @@ pub struct Tree {
     pub(crate) canvases: HashMap<LayoutNodeId, i32>,
     /// Scroll containers: how far their content is scrolled, and their thumb.
     pub(crate) scrolls: HashMap<LayoutNodeId, Scroll>,
+    /// Only scrollbars with a non-default width or track need a style entry.
+    pub(crate) scrollbar_styles: HashMap<LayoutNodeId, ScrollbarStyle>,
     /// Nodes the hit test passes through, with everything inside them, as CSS's `pointer-events: none`.
     pub(crate) pass_through: std::collections::HashSet<LayoutNodeId>,
     /// Nodes drawn as a notch: signed corner radii, then the top and bottom edges' modifiers.
@@ -96,6 +98,21 @@ pub struct Scroll {
     pub y: f32,
     /// The thumb's colour, straight alpha; transparent hides it.
     pub thumb: [f32; 4],
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ScrollbarStyle {
+    pub width: f32,
+    pub track: [f32; 4],
+}
+
+impl Default for ScrollbarStyle {
+    fn default() -> Self {
+        Self {
+            width: 4.0,
+            track: [0.0; 4],
+        }
+    }
 }
 
 impl Default for Tree {
@@ -507,6 +524,7 @@ impl Tree {
             image_sources: HashMap::new(),
             canvases: HashMap::new(),
             scrolls: HashMap::new(),
+            scrollbar_styles: HashMap::new(),
             pass_through: HashSet::new(),
             notches: HashMap::new(),
             #[cfg(feature = "scene")]
@@ -531,6 +549,7 @@ impl Tree {
         self.images.remove(&id);
         self.canvases.remove(&id);
         self.scrolls.remove(&id);
+        self.scrollbar_styles.remove(&id);
         self.pass_through.remove(&id);
         self.notches.remove(&id);
         self.backdrop_filters.remove(&id);

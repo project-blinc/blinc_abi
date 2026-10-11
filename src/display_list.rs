@@ -1767,8 +1767,7 @@ fn clips_children(tree: &Tree, node: LayoutNodeId) -> bool {
         .is_some_and(|s| s.overflow.x != Overflow::Visible || s.overflow.y != Overflow::Visible)
 }
 
-/// Width of a scroll thumb, and its gap from the container's edge.
-const THUMB: f32 = 4.0;
+/// Gap of an overlay scrollbar from the container's edge.
 const THUMB_GAP: f32 = 2.0;
 /// The shortest a thumb gets, so a long list still has something to see.
 const THUMB_MIN: f32 = 24.0;
@@ -1788,8 +1787,17 @@ fn thumbs(
     out: &mut Vec<f32>,
     cull: bool,
 ) {
+    let style = tree
+        .scrollbar_styles
+        .get(&node)
+        .copied()
+        .unwrap_or_default();
+    let width = style.width;
+    if width <= 0.0 {
+        return;
+    }
     let alpha = s.thumb[3] * opacity;
-    if alpha <= 0.0 {
+    if alpha <= 0.0 && style.track[3] * opacity <= 0.0 {
         return;
     }
     let Some(layout) = tree.layout.get_layout(node) else {
@@ -1806,8 +1814,11 @@ fn thumbs(
         layout.scrollable_overflow_rect.bottom,
     );
     let color = [s.thumb[0], s.thumb[1], s.thumb[2], alpha];
-    let mut bar = |rect: [f32; 4]| {
-        let mut p = Primitive::new(PRIM_RECT, [0.0, 0.0, rect[2], rect[3]], [THUMB / 2.0; 4]);
+    let mut bar = |rect: [f32; 4], color: [f32; 4]| {
+        if color[3] <= 0.0 || rect[2] <= 0.0 || rect[3] <= 0.0 {
+            return;
+        }
+        let mut p = Primitive::new(PRIM_RECT, [0.0, 0.0, rect[2], rect[3]], [width / 2.0; 4]);
         p.color = color;
         p.color2 = color;
         p.place(m, x + rect[0], y + rect[1]);
@@ -1816,27 +1827,27 @@ fn thumbs(
             out,
         );
     };
+    let track_color = [
+        style.track[0],
+        style.track[1],
+        style.track[2],
+        style.track[3] * opacity,
+    ];
     if content_h > view_h + 0.5 && view_h > 0.0 {
         let track = view_h - 2.0 * THUMB_GAP;
         let len = (track * view_h / content_h).max(THUMB_MIN).min(track);
         let along = (s.y / (content_h - view_h)).clamp(0.0, 1.0) * (track - len);
-        bar([
-            left + view_w - THUMB_GAP - THUMB,
-            top + THUMB_GAP + along,
-            THUMB,
-            len,
-        ]);
+        let edge = left + view_w - THUMB_GAP - width;
+        bar([edge, top + THUMB_GAP, width, track], track_color);
+        bar([edge, top + THUMB_GAP + along, width, len], color);
     }
     if content_w > view_w + 0.5 && view_w > 0.0 {
         let track = view_w - 2.0 * THUMB_GAP;
         let len = (track * view_w / content_w).max(THUMB_MIN).min(track);
         let along = (s.x / (content_w - view_w)).clamp(0.0, 1.0) * (track - len);
-        bar([
-            left + THUMB_GAP + along,
-            top + view_h - THUMB_GAP - THUMB,
-            len,
-            THUMB,
-        ]);
+        let edge = top + view_h - THUMB_GAP - width;
+        bar([left + THUMB_GAP, edge, track, width], track_color);
+        bar([left + THUMB_GAP + along, edge, len, width], color);
     }
 }
 
