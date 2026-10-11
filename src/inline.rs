@@ -383,6 +383,11 @@ pub fn layout(
                 },
             ));
             x = 0.0;
+            // On a line of its own it is looked at again: a word still too long breaks there.
+            if break_words && matches!(piece, Piece::Word { .. }) {
+                queue.push(piece);
+                continue;
+            }
         }
         line.pieces.push((piece, x));
         if block {
@@ -631,5 +636,12 @@ mod tests {
         let broken = layout(&long, 40.0, InlineAlign::Left, true);
         assert!(broken.lines.len() > 1);
         assert_eq!(broken.min_content, 0.0);
+        // However long, every line of it is within the width, not only the first.
+        let very = [text(&ctx, "Supercalifragilisticexpialidocious and more")];
+        let many = layout(&very, 40.0, InlineAlign::Left, true);
+        assert!(many.lines.len() >= 4, "{} lines", many.lines.len());
+        for f in &many.fragments {
+            assert!(f.width <= 40.5, "a fragment {} wide in 40", f.width);
+        }
     }
 }
