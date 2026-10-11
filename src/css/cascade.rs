@@ -32,6 +32,8 @@ pub const INHERITED: &[&str] = &[
     "letter-spacing",
     "text-align",
     "white-space",
+    "cursor",
+    "list-style-type",
 ];
 
 /// Shorthands and the longhands each sets.
@@ -708,12 +710,18 @@ impl Cascade {
             }
         }
 
-        // Inherited font properties reach a text element alone; other elements apply only their own.
+        // Inherited font properties reach text alone. Cursor and list markers
+        // also affect ordinary elements, and must reach hosts when only a
+        // parent's declaration changes.
         let text = element.types.contains(&self.text);
         let mut resolved = Vec::new();
         for (k, v) in &values {
             let name = self.str(*k);
-            if name.starts_with("--") || (!text && !own.iter().any(|(o, _)| o == k)) {
+            if name.starts_with("--")
+                || (!text
+                    && !matches!(name, "cursor" | "list-style-type")
+                    && !own.iter().any(|(o, _)| o == k))
+            {
                 continue;
             }
             resolved.push((*k, self.substitute(v, &values, &mut deps.theme)));
