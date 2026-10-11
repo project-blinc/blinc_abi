@@ -82,6 +82,9 @@ pub enum PaintWrite {
     BackdropFilter([f32; 7]),
     /// How the node's text, and its descendants', is decorated; none for no declaration.
     TextDecoration(Option<TextDecoration>),
+    /// The shadows of the node's text and its descendants', first on top; an empty list for
+    /// `none`, which stops one inherited, and none for no declaration.
+    TextShadow(Option<Vec<Shadow>>),
 }
 
 const GLASS: &[&str] = &[
@@ -130,6 +133,7 @@ pub fn is_paint_property(name: &str) -> bool {
             | "background-repeat"
             | "background-position"
             | "backdrop-filter"
+            | "text-shadow"
             | "text-decoration"
             | "text-decoration-line"
             | "text-decoration-style"
@@ -223,6 +227,8 @@ pub fn paint_writes(
         ("backdrop-filter", Some(v)) => {
             filter::parse_backdrop(v, units).map(|b| backdrop(b, units))
         }
+        ("text-shadow", None) => Ok(vec![TextShadow(None)]),
+        ("text-shadow", Some(v)) => one(shadow::parse_text(v, units).map(|s| TextShadow(Some(s)))),
         ("text-decoration" | "text-decoration-line", None) => Ok(vec![TextDecoration(None)]),
         // The rest are read by the line's write, beside it.
         (n, None) if text_decoration::is_property(n) => Ok(vec![]),

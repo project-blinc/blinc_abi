@@ -1841,8 +1841,9 @@ fn thumbs(
 
 /// Whether nothing a text run draws can reach the screen clip, so it need not
 /// be shaped at all: its box, grown on every side by twice its font size for
-/// ink that overhangs it and by its decorations' thickness and offset, lies
-/// wholly outside, by the same test its glyphs would each be rejected by.
+/// ink that overhangs it, by its decorations' thickness and offset and by its
+/// shadows' offsets and blur, lies wholly outside, by the same test its glyphs
+/// would each be rejected by.
 fn text_outside_clip(
     tree: &Tree,
     node: LayoutNodeId,
@@ -1859,7 +1860,12 @@ fn text_outside_clip(
         .iter()
         .map(|d| d.thickness.unwrap_or(0.0).abs() + d.offset.unwrap_or(0.0).abs())
         .fold(0.0f32, f32::max);
-    let reach = context.font_size * 2.0 + decorations;
+    // A shadow reaches its offset and three of its deviations, half its blur each, further.
+    let shadows = text_shadows_of(tree, node)
+        .iter()
+        .map(|s| s.offset_x.abs().max(s.offset_y.abs()) + s.blur * 1.5)
+        .fold(0.0f32, f32::max);
+    let reach = context.font_size * 2.0 + decorations + shadows;
     let clipping = clipping(clips, m, (0.0, 0.0), true, cull);
     let mut p = Primitive::new(
         PRIM_TEXT,
@@ -1922,44 +1928,174 @@ fn text_records(
     };
     // Glyphs start half the extra leading below the line box's top, as in CSS.
     let lead = text::half_leading(context, context.font_size * k);
-    // All glyphs share these clips. Resolve them once, then rebase the local
-    // rect directly from layout coordinates to retain the exact f32 arithmetic.
-    let mut clip = clipping(clips, m, (0.0, 0.0), true, cull);
-    let local_clip = clip.local;
-    for g in &prepared.glyphs {
-        let [gx, gy, gw, gh] = g.bounds;
-        let gy = gy + lead;
-        let mut p = Primitive::new(PRIM_TEXT, [0.0, 0.0, gw / k, gh / k], [0.0; 4]);
-        p.color = g.color;
-        p.gradient = g.uv_bounds;
-        p.fill_type = if g.is_color { 1.0 } else { 0.0 };
-        let at = (x + gx / k, y + gy / k);
-        p.place(m, at.0, at.1);
-        if let Some(s) = subpixel {
-            // On the pixel chosen for it, from the origin snapped down.
-            p.bounds[0] = (s.origin_x.floor() + gx) / display;
-            p.bounds[1] = (p.bounds[1] * display).round() / display;
-        } else if snap {
-            p.bounds[0] = (p.bounds[0] * display).round() / display;
-            p.bounds[1] = (p.bounds[1] * display).round() / display;
-        }
-        clip.local = local_clip.map(|(r, radii)| ([r[0] - at.0, r[1] - at.1, r[2], r[3]], radii));
-        p.push(&clip, out);
-    }
     let decorations = decorations_of(tree, node);
-    if !decorations.is_empty() {
-        let lines = glyph_lines(&prepared.glyphs, k, context.font_size * context.line_height);
-        for d in decorations {
+    let lines = if decorations.is_empty() {
+        Vec::new()
+    } else {
+        glyph_lines(&prepared.glyphs, k, context.font_size * context.line_height)
+    };
+    let run = Run {
+        glyphs: &prepared.glyphs,
+        k,
+        lead,
+        at: (x, y),
+        m,
+        display,
+        subpixel,
+        snap,
+        context,
+        decorations: &decorations,
+        lines: &lines,
+        opacity,
+    };
+    // Its shadows under it, last first, so the first is on top, as CSS draws them.
+    for s in text_shadows_of(tree, node).iter().rev() {
+        let shade = [s.color.r, s.color.g, s.color.b, s.color.a * opacity];
+        if shade[3] <= 0.0 {
+            continue;
+        }
+        if s.blur <= 0.0 {
+            run.draw(
+                (s.offset_x, s.offset_y),
+                Some(shade),
+                clips,
+                cull,
+                color,
+                out,
+            );
+            continue;
+        }
+        // Blurred, the run's shadow is drawn whole into a layer and blurred as one, its
+        // deviation half CSS's blur radius, then clipped where the text is.
+        let begin = out.len();
+        Primitive::new(PRIM_LAYER_BEGIN, [0.0; 4], [0.0; 4])
+            .push(&clipping(&[], IDENTITY, (0.0, 0.0), false, false), out);
+        run.draw(
+            (s.offset_x, s.offset_y),
+            Some(shade),
+            &[],
+            false,
+            color,
+            out,
+        );
+        if out.len() == begin + RECORD_FLOATS {
+            out.truncate(begin);
+            continue;
+        }
+        let sigma = s.blur * 0.5 * display;
+        let [bx, by, bw, bh] = records_bounds(&out[begin + RECORD_FLOATS..]);
+        let spread = (sigma * 3.0 / display).ceil();
+        let mut c = Primitive::new(
+            PRIM_LAYER,
+            [
+                bx - spread,
+                by - spread,
+                bw + 2.0 * spread,
+                bh + 2.0 * spread,
+            ],
+            [0.0; 4],
+        );
+        c.color = [sigma, 1.0, 1.0, 1.0];
+        c.gradient = [0.0; 4];
+        [c.color2, c.border, c.border_color] = IDENTITY_MATRIX;
+        c.push(&clipping(clips, IDENTITY, (0.0, 0.0), false, cull), out);
+    }
+    run.draw((0.0, 0.0), None, clips, cull, color, out);
+}
+
+/// A shaped text run, as `text_records` draws it: its glyphs and its decorations, at an offset
+/// and in a colour of its own for a shadow.
+struct Run<'a> {
+    glyphs: &'a [blinc_text::GlyphInstance],
+    k: f32,
+    lead: f32,
+    at: (f32, f32),
+    m: Affine,
+    display: f32,
+    subpixel: Option<SubpixelX>,
+    snap: bool,
+    context: &'a blinc_layout::tree::TextMeasureContext,
+    decorations: &'a [TextDecoration],
+    lines: &'a [GlyphLine],
+    opacity: f32,
+}
+
+impl Run<'_> {
+    /// Its glyph records, then its decorations', `offset` from where layout put it, under `clips`.
+    /// `shade` draws all in one colour, a shadow's: a colour glyph as its shape in that colour.
+    fn draw(
+        &self,
+        offset: (f32, f32),
+        shade: Option<[f32; 4]>,
+        clips: &[Clip],
+        cull: bool,
+        color: [f32; 4],
+        out: &mut Vec<f32>,
+    ) {
+        let (x, y) = (self.at.0 + offset.0, self.at.1 + offset.1);
+        let (k, display) = (self.k, self.display);
+        // A shadow's offset on screen, in whole device pixels where the text is snapped to them.
+        let shift = |d: f32, scale: f32| (d * scale * display).round() / display;
+        // All glyphs share these clips. Resolve them once, then rebase the local
+        // rect directly from layout coordinates to retain the exact f32 arithmetic.
+        let mut clip = clipping(clips, self.m, (0.0, 0.0), true, cull);
+        let local_clip = clip.local;
+        for g in self.glyphs {
+            let [gx, gy, gw, gh] = g.bounds;
+            let gy = gy + self.lead;
+            let mut p = Primitive::new(PRIM_TEXT, [0.0, 0.0, gw / k, gh / k], [0.0; 4]);
+            p.gradient = g.uv_bounds;
+            match shade {
+                Some(c) => {
+                    p.color = c;
+                    // A colour glyph's shadow is its shape: the colour atlas's alpha in the shadow's colour.
+                    p.fill_type = if g.is_color { 2.0 } else { 0.0 };
+                }
+                None => {
+                    p.color = g.color;
+                    p.fill_type = if g.is_color { 1.0 } else { 0.0 };
+                }
+            }
+            let at = (x + gx / k, y + gy / k);
+            p.place(self.m, at.0, at.1);
+            if let Some(s) = self.subpixel {
+                // On the pixel chosen for it, from the origin snapped down.
+                p.bounds[0] = (s.origin_x.floor() + gx) / display + shift(offset.0, self.m[0]);
+                p.bounds[1] = (p.bounds[1] * display).round() / display;
+            } else if self.snap {
+                p.bounds[0] = (p.bounds[0] * display).round() / display;
+                p.bounds[1] = (p.bounds[1] * display).round() / display;
+            }
+            clip.local =
+                local_clip.map(|(r, radii)| ([r[0] - at.0, r[1] - at.1, r[2], r[3]], radii));
+            p.push(&clip, out);
+        }
+        for d in self.decorations {
             let drawn = Decorated {
-                at: (x, y + lead),
-                color: d.color.map_or(color, |c| [c.r, c.g, c.b, c.a * opacity]),
-                m,
+                at: (x, y + self.lead),
+                color: shade.unwrap_or_else(|| {
+                    d.color
+                        .map_or(color, |c| [c.r, c.g, c.b, c.a * self.opacity])
+                }),
+                m: self.m,
                 display,
                 cull,
             };
-            draw_decoration(&d, context, &lines, &drawn, clips, out);
+            draw_decoration(d, self.context, self.lines, &drawn, clips, out);
         }
     }
+}
+
+/// The text shadows a node's text is drawn with: the nearest of it and its ancestors to set
+/// any, as CSS inherits them; empty for none.
+fn text_shadows_of(tree: &Tree, node: LayoutNodeId) -> &[blinc_core::Shadow] {
+    if tree.text_shadows.is_empty() {
+        return &[];
+    }
+    std::iter::once(node)
+        .chain(tree.layout.ancestors(node))
+        .find_map(|n| tree.text_shadows.get(&n))
+        .map_or(&[], |list| list.as_slice())
 }
 
 /// The decorations a text node is drawn with, outermost first: its own and those of every

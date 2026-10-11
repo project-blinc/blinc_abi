@@ -131,6 +131,29 @@ pub fn take_pending_backdrop() -> Vec<(LayoutNodeId, usize, f32)> {
 /// Kept beside render props because Blinc's glass style has no configurable bevel or dispersion.
 static PENDING_GLASS: Mutex<Vec<(LayoutNodeId, Option<GlassEffects>)>> = Mutex::new(Vec::new());
 
+/// The id of `text-shadow`: a shadow list, kept beside the tree for a node's text and its
+/// descendants', as Blinc's render props hold one shadow for text that is its own.
+pub const TEXT_SHADOW: i32 = 119;
+
+/// Text shadows set since the last flush: a list, empty for `none`, or none to unset.
+static PENDING_TEXT_SHADOW: Mutex<Vec<(LayoutNodeId, Option<Vec<blinc_core::Shadow>>)>> =
+    Mutex::new(Vec::new());
+
+fn record_text_shadow(node: LayoutNodeId, shadows: Option<Vec<blinc_core::Shadow>>) {
+    PENDING_TEXT_SHADOW
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((node, shadows));
+}
+
+pub fn take_pending_text_shadow() -> Vec<(LayoutNodeId, Option<Vec<blinc_core::Shadow>>)> {
+    std::mem::take(
+        &mut *PENDING_TEXT_SHADOW
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()),
+    )
+}
+
 /// Whether a node's clip-path fills even-odd, as its render write sets it.
 static PENDING_EVEN_ODD: Mutex<Vec<(LayoutNodeId, bool)>> = Mutex::new(Vec::new());
 
@@ -383,6 +406,19 @@ fn own_value_write(node: LayoutNodeId, raw: i32) -> Option<(PropertyId, Write<Va
                     Value::Shadow(outer, _) => outer.first().copied(),
                     _ => None,
                 };
+            })?,
+        ),
+        TEXT_SHADOW => (
+            PropertyId::Shadow,
+            render(move |_, v| {
+                // A transparent layer draws nothing: `none` is the list with none left.
+                let list = match v {
+                    Value::Shadow(outer, _) => {
+                        outer.into_iter().filter(|s| s.color.a > 0.0).collect()
+                    }
+                    _ => Vec::new(),
+                };
+                record_text_shadow(node, Some(list));
             })?,
         ),
         75 => (
@@ -870,6 +906,7 @@ pub unsafe extern "C" fn hl_blinc_unset(node: u64, raw: i32) {
                 record_even_odd(node, false);
             }),
         ),
+        TEXT_SHADOW => ren(P::Shadow, Box::new(move |_| record_text_shadow(node, None))),
         // Each colour filter back to its identity.
         76 => ren(P::Filter, Box::new(|p| filter(p).brightness = 1.0)),
         77 => ren(P::Filter, Box::new(|p| filter(p).contrast = 1.0)),

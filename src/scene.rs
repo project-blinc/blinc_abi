@@ -245,6 +245,33 @@ impl LayoutContext {
     }
     /// How a node decorates its text and its descendants', drawn beside their ancestors'; none
     /// takes the node's own away.
+    /// The shadows of `node`'s text and its descendants', first on top; an empty list for
+    /// `none`, and none to take what an ancestor sets.
+    pub fn set_text_shadow(
+        &mut self,
+        node: Node,
+        shadows: Option<Vec<blinc_core::Shadow>>,
+    ) -> Result<()> {
+        let id = self.check(node)?;
+        if shadows.as_ref().is_some_and(|list| {
+            list.iter().any(|s| {
+                !(s.offset_x.is_finite()
+                    && s.offset_y.is_finite()
+                    && s.blur.is_finite()
+                    && s.blur >= 0.0)
+            })
+        }) {
+            return Err("Invalid text shadow");
+        }
+        let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
+        match shadows {
+            Some(list) => tree.text_shadows.insert(id, list),
+            None => tree.text_shadows.remove(&id),
+        };
+        self.revision += 1;
+        Ok(())
+    }
+
     pub fn set_text_decoration(
         &mut self,
         node: Node,
@@ -853,6 +880,87 @@ mod tests {
         assert!(tree.properties(child).is_err());
         assert!(encoder.read(&tree, &mut data).is_err());
     }
+    #[test]
+    fn text_shadows_draw_under_the_text_last_first_and_inherit() {
+        use crate::display_list::{PRIM_LAYER, PRIM_LAYER_BEGIN, PRIM_TEXT, RECORD_FLOATS};
+        let mut tree = LayoutContext::new();
+        let root = tree.create_node(style(300.0, 100.0)).unwrap();
+        let text = tree
+            .create_text(
+                Style::default(),
+                TextMeasureContext {
+                    content: "WW".into(),
+                    font_size: 16.0,
+                    line_height: 1.2,
+                    letter_spacing: 0.0,
+                    wrap: false,
+                    font_name: None,
+                    generic_font: blinc_layout::div::GenericFont::SansSerif,
+                    font_weight: 400,
+                    italic: false,
+                },
+            )
+            .unwrap();
+        tree.set_children(root, &[text]).unwrap();
+        tree.compute(root, 300.0, 100.0).unwrap();
+        let shadow = |dx: f32, blur: f32, r: f32| blinc_core::Shadow {
+            offset_x: dx,
+            offset_y: 2.0,
+            blur,
+            spread: 0.0,
+            color: blinc_core::Color::rgba(r, 0.0, 0.0, 1.0),
+        };
+        let mut encoder = SceneEncoder::new();
+        let mut kinds = |tree: &LayoutContext| -> Vec<(u32, f32)> {
+            encoder
+                .prepare(tree, root, PaintOptions::default())
+                .unwrap();
+            encoder
+                .records
+                .chunks(RECORD_FLOATS)
+                .map(|r| (r[44] as u32, r[8]))
+                .collect()
+        };
+        // On the root, so the text inherits them: a hard one on top, a blurred one under it.
+        tree.set_text_shadow(
+            root,
+            Some(vec![shadow(2.0, 0.0, 0.5), shadow(4.0, 6.0, 1.0)]),
+        )
+        .unwrap();
+        let drawn = kinds(&tree);
+        let order: Vec<u32> = drawn.iter().map(|k| k.0).collect();
+        assert_eq!(
+            order,
+            [
+                PRIM_LAYER_BEGIN,
+                PRIM_TEXT,
+                PRIM_TEXT,
+                PRIM_LAYER,
+                PRIM_TEXT,
+                PRIM_TEXT,
+                PRIM_TEXT,
+                PRIM_TEXT
+            ]
+            .map(|k| k as u32),
+            "the blurred shadow in a layer, then the hard one, then the text"
+        );
+        // The shadows' glyphs in their own colours, the text's in its.
+        assert_eq!((drawn[1].1, drawn[4].1), (1.0, 0.5));
+        assert!(drawn[6].1 != 1.0 && drawn[6].1 != 0.5);
+        // `none` on the text stops what the root sets.
+        tree.set_text_shadow(text, Some(Vec::new())).unwrap();
+        assert_eq!(kinds(&tree).len(), 2);
+        // Unset there, the root's reach it again; unset on the root, none.
+        tree.set_text_shadow(text, None).unwrap();
+        assert_eq!(kinds(&tree).len(), 8);
+        tree.set_text_shadow(root, None).unwrap();
+        assert_eq!(kinds(&tree).len(), 2);
+        assert!(
+            tree.set_text_shadow(root, Some(vec![shadow(f32::NAN, 0.0, 1.0)]))
+                .is_err()
+        );
+    }
+
     #[test]
     fn text_out_of_its_clip_is_not_shaped_until_it_scrolls_into_view() {
         let mut tree = LayoutContext::new();

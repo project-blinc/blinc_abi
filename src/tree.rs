@@ -68,6 +68,9 @@ pub struct Tree {
     pub(crate) image_uses: HashMap<LayoutNodeId, Option<String>>,
     /// How each node decorates its text and its descendants'.
     pub(crate) text_decorations: HashMap<LayoutNodeId, crate::css::text_decoration::TextDecoration>,
+    /// Each node's text shadows, first on top: its own and its descendants' text's, the nearest
+    /// node with an entry winning; an empty list is `none`, which stops one inherited.
+    pub(crate) text_shadows: HashMap<LayoutNodeId, Vec<blinc_core::Shadow>>,
     /// Each liquid glass node's dispersion, bevel strength and curvature.
     pub(crate) glass_effects: HashMap<LayoutNodeId, crate::types::GlassEffects>,
     /// Nodes drawn away from their layout while a layout animation runs:
@@ -192,6 +195,7 @@ impl Tree {
             even_odd: HashSet::new(),
             backdrop_filters: HashMap::new(),
             text_decorations: HashMap::new(),
+            text_shadows: HashMap::new(),
             image_uses: HashMap::new(),
             glass_effects: HashMap::new(),
             visuals: HashMap::new(),
@@ -207,6 +211,7 @@ impl Tree {
         self.notches.remove(&id);
         self.backdrop_filters.remove(&id);
         self.text_decorations.remove(&id);
+        self.text_shadows.remove(&id);
         self.image_uses.remove(&id);
         self.glass_effects.remove(&id);
         self.visuals.remove(&id);

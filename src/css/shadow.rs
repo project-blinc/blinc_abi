@@ -55,6 +55,17 @@ pub fn parse_one(
 }
 
 /// `none`, or comma-separated layers, as outer and inset lists in CSS order.
+/// A `text-shadow` list, first on top: offsets and a blur, no spread or `inset`; empty for `none`.
+pub fn parse_text(text: &str, units: &PaintUnits) -> Result<Vec<Shadow>, String> {
+    if text.trim().eq_ignore_ascii_case("none") {
+        return Ok(Vec::new());
+    }
+    split(text, ',')
+        .iter()
+        .map(|part| parse_one(part, false, units).map(|(_, s)| s))
+        .collect()
+}
+
 pub fn parse(text: &str, units: &PaintUnits) -> Result<(Vec<Shadow>, Vec<Shadow>), String> {
     let (mut outer, mut inner) = (Vec::new(), Vec::new());
     if text.trim().eq_ignore_ascii_case("none") {

@@ -1796,3 +1796,45 @@ mod bordered_restyle {
         ));
     }
 }
+
+#[test]
+fn text_shadow_is_a_list_of_offsets_blur_and_colour_or_none() {
+    match writes("text-shadow", "1px 2px 3px red, 0 0 #00f").as_slice() {
+        [PaintWrite::TextShadow(Some(list))] => {
+            assert_eq!(list.len(), 2);
+            assert_eq!(
+                (list[0].offset_x, list[0].offset_y, list[0].blur),
+                (1.0, 2.0, 3.0)
+            );
+            assert_eq!(bytes(list[0].color), [255, 0, 0, 255]);
+            assert_eq!(
+                (list[1].blur, bytes(list[1].color)),
+                (0.0, [0, 0, 255, 255])
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        matches!(writes("text-shadow", "none").as_slice(), [PaintWrite::TextShadow(Some(l))] if l.is_empty())
+    );
+    assert!(matches!(
+        paint_writes("text-shadow", None, &PaintUnits::default())
+            .unwrap()
+            .unwrap()
+            .as_slice(),
+        [PaintWrite::TextShadow(None)]
+    ));
+    for bad in [
+        "1px 2px 3px 4px red",
+        "inset 1px 1px red",
+        "1px",
+        "1px 1px -2px red",
+    ] {
+        assert!(
+            paint_writes("text-shadow", Some(bad), &PaintUnits::default())
+                .unwrap()
+                .is_err(),
+            "{bad}"
+        );
+    }
+}
