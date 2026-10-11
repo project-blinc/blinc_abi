@@ -360,3 +360,44 @@ fn variables_leave_quoted_literals_and_quoted_fallback_parentheses_intact() {
     );
     assert_eq!(cascade.resolve_vars("var(--label)", &[]), "'Ready'");
 }
+
+#[test]
+fn inherited_cursor_and_list_markers_reach_non_text_hosts() {
+    let mut c = Cascade::new();
+    let first = c.push(sheet("ul { cursor: pointer; list-style-type: square } .own { cursor: default; list-style-type: lower-roman }"));
+    let mut doc = Doc::default();
+    let e = el(&mut c, &["ul"], &[]);
+    let list = doc.add(None, e);
+    let e = el(&mut c, &["li"], &[]);
+    let item = doc.add(Some(list), e);
+    let e = el(&mut c, &["li"], &["own"]);
+    let own = doc.add(Some(list), e);
+    let e = el(&mut c, &["div"], &[]);
+    let child = doc.add(Some(own), e);
+    let styles = style_all(&c, &doc);
+    assert_eq!(get(&c, &styles[item], "cursor").as_deref(), Some("pointer"));
+    assert_eq!(
+        get(&c, &styles[item], "list-style-type").as_deref(),
+        Some("square")
+    );
+    assert_eq!(
+        get(&c, &styles[child], "cursor").as_deref(),
+        Some("default")
+    );
+    assert_eq!(
+        get(&c, &styles[child], "list-style-type").as_deref(),
+        Some("lower-roman")
+    );
+    c.remove(first);
+    let second = c.push(sheet("ul { cursor: wait; list-style-type: none }"));
+    let styles = style_all(&c, &doc);
+    assert_eq!(get(&c, &styles[item], "cursor").as_deref(), Some("wait"));
+    assert_eq!(
+        get(&c, &styles[item], "list-style-type").as_deref(),
+        Some("none")
+    );
+    c.remove(second);
+    let styles = style_all(&c, &doc);
+    assert_eq!(get(&c, &styles[item], "cursor"), None);
+    assert_eq!(get(&c, &styles[item], "list-style-type"), None);
+}
