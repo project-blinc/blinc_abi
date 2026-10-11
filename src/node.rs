@@ -128,6 +128,7 @@ fn forget(tree: &mut Tree, nodes: &[LayoutNodeId]) {
         tree.sticky_expressions.remove(node);
         tree.z_index.remove(node);
         tree.image_uses.remove(node);
+        tree.image_mappings.remove(node);
         tree.glass_effects.remove(node);
     }
 }
@@ -816,6 +817,7 @@ pub unsafe extern "C" fn hl_blinc_tree_set_image(h: *mut c_void, node: u64, slot
     if let Some(tree) = unsafe { tree(h) } {
         if slot < 0 {
             tree.images.remove(&id(node));
+            tree.image_mappings.remove(&id(node));
         } else {
             tree.images.insert(id(node), slot);
         }
@@ -825,6 +827,27 @@ define_prim!(
     hlp_blinc_tree_set_image,
     hl_blinc_tree_set_image,
     "PXblinc_tree_li_v"
+);
+
+/// Optional bitmap object fitting and position. Uses numeric enums and f32 geometry.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_tree_set_image_mapping(
+    h: *mut c_void,
+    node: u64,
+    fit: i32,
+    x: f32,
+    y: f32,
+    offset_x: f32,
+    offset_y: f32,
+) {
+    if let Some(tree) = unsafe { tree(h) } {
+        tree.set_image_mapping(id(node), fit, [x, y, offset_x, offset_y]);
+    }
+}
+define_prim!(
+    hlp_blinc_tree_set_image_mapping,
+    hl_blinc_tree_set_image_mapping,
+    "PXblinc_tree_liffff_v"
 );
 
 /// Makes `node` paint itself in its content box, as the canvas the caller

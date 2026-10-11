@@ -36,6 +36,7 @@ pub const INHERITED: &[&str] = &[
     "list-style-type",
     "visibility",
     "scrollbar-color",
+    "object-position",
 ];
 
 /// Shorthands and the longhands each sets.
@@ -792,7 +793,11 @@ impl Cascade {
                 || (!text
                     && !matches!(
                         name,
-                        "cursor" | "list-style-type" | "visibility" | "scrollbar-color"
+                        "cursor"
+                            | "list-style-type"
+                            | "visibility"
+                            | "scrollbar-color"
+                            | "object-position"
                     )
                     && !own.iter().any(|(o, _)| o == k))
             {

@@ -2651,6 +2651,16 @@ fn image_record(
     rec.color2 = [1.0, 1.0, 1.0, opacity];
     let on_screen = display_scale * (m[0] * m[3] - m[1] * m[2]).abs().sqrt();
     rec.gradient = [slot as f32, on_screen, 0.0, 0.0];
+    if kind == PRIM_IMAGE {
+        if let Some(&[fit, px, py, ox, oy]) = tree.image_mappings.get(&node) {
+            // Unresolved mapped bitmap: the host turns radii into its drawn rect,
+            // resolves gradient to atlas coordinates, and leaves fill=3 for sampling.
+            // These rows are unused by ordinary image records; the stride is unchanged.
+            rec.fill_type = 3.0;
+            rec.radii = [px, py, ox, oy];
+            rec.color2[2] = fit;
+        }
+    }
     rec.place(m, x + left, y + top);
     // As glyphs: on whole device pixels when nothing turns or slants it.
     if m[1] == 0.0 && m[2] == 0.0 {
@@ -2854,5 +2864,69 @@ mod inner_radii_tests {
         assert_eq!(inner_radii([1.0, 1.0, 6.0, 1.0], r), [11.0, 11.0, 0.0, 0.0]);
         // A corner takes the wider of its two borders.
         assert_eq!(inner_radii([3.0, 0.0, 0.0, 5.0], r), [7.0, 9.0, 4.0, 0.0]);
+    }
+}
+
+#[cfg(test)]
+mod image_mapping_record_tests {
+    use super::*;
+    use taffy::{AvailableSpace, Dimension, Size, Style};
+
+    #[test]
+    fn mapped_bitmap_records_keep_fractional_position_without_changing_canvas_records() {
+        let mut tree = Tree::new();
+        let node = tree.layout.create_node(Style {
+            size: Size {
+                width: Dimension::length(20.0),
+                height: Dimension::length(10.0),
+            },
+            ..Default::default()
+        });
+        tree.layout.compute_layout(
+            node,
+            Size {
+                width: AvailableSpace::Definite(20.0),
+                height: AvailableSpace::Definite(10.0),
+            },
+        );
+        tree.set_image_mapping(node, 5, [0.125, 0.875, -0.375, 1.625]);
+        let mut out = Vec::new();
+        image_record(
+            &tree,
+            node,
+            PRIM_IMAGE,
+            1048578,
+            (0.0, 0.0),
+            0.75,
+            [1.0; 4],
+            IDENTITY,
+            &[],
+            2.0,
+            &mut out,
+            false,
+        );
+        assert_eq!(&out[4..8], &[0.125, 0.875, -0.375, 1.625]);
+        assert_eq!(out[14], 5.0);
+        assert_eq!(out[15], 0.75);
+        assert_eq!(out[40], 1048578.0);
+        assert_eq!(out[41], 2.0);
+        assert_eq!(out[45], 3.0);
+        out.clear();
+        image_record(
+            &tree,
+            node,
+            PRIM_CANVAS,
+            7,
+            (0.0, 0.0),
+            1.0,
+            [1.0; 4],
+            IDENTITY,
+            &[],
+            1.0,
+            &mut out,
+            false,
+        );
+        assert_eq!(&out[4..8], &[0.0; 4]);
+        assert_eq!(out[45], FILL_SOLID);
     }
 }

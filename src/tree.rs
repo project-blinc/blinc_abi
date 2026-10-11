@@ -44,6 +44,10 @@ pub struct Tree {
     /// Nodes that draw an image in their content box: an SVG or a bitmap,
     /// named by a slot the caller resolves after the walk.
     pub(crate) images: HashMap<LayoutNodeId, i32>,
+    /// Optional bitmap object mapping: fit (0 cover, 1 contain, 2 fill, 3 tile,
+    /// 4 none, 5 scale-down), then x/y fractions and x/y pixel offsets.
+    /// Legacy centred fits need no entry. Renderers resolve this before atlas sampling.
+    pub(crate) image_mappings: HashMap<LayoutNodeId, [f32; 5]>,
     /// Image-brush sources resolved by the host, with one prepared slot per fit.
     #[cfg(feature = "scene")]
     pub(crate) image_sources: HashMap<String, [Option<i32>; 4]>,
@@ -543,6 +547,7 @@ impl Tree {
             pruned: false,
             owners: HashMap::new(),
             images: HashMap::new(),
+            image_mappings: HashMap::new(),
             #[cfg(feature = "scene")]
             image_sources: HashMap::new(),
             canvases: HashMap::new(),
@@ -567,10 +572,34 @@ impl Tree {
             z_index: HashMap::new(),
         }
     }
+    /// Sets bitmap object mapping without allocating for the default centred fits.
+    /// A negative fit resets it. Nonfinite positions and unknown fits are rejected.
+    pub fn set_image_mapping(&mut self, node: LayoutNodeId, fit: i32, position: [f32; 4]) {
+        if fit < 0 {
+            self.image_mappings.remove(&node);
+        } else if fit <= 5 && position.iter().all(|v| v.is_finite()) {
+            if fit <= 3 && position == [0.5, 0.5, 0.0, 0.0] {
+                self.image_mappings.remove(&node);
+            } else {
+                self.image_mappings.insert(
+                    node,
+                    [
+                        fit as f32,
+                        position[0],
+                        position[1],
+                        position[2],
+                        position[3],
+                    ],
+                );
+            }
+        }
+    }
+
     pub(crate) fn forget(&mut self, id: LayoutNodeId) {
         self.props.remove(&id);
         self.owners.remove(&id);
         self.images.remove(&id);
+        self.image_mappings.remove(&id);
         self.canvases.remove(&id);
         self.scrolls.remove(&id);
         self.scrollbar_styles.remove(&id);
@@ -600,5 +629,31 @@ impl std::ops::Deref for Tree {
 impl std::ops::DerefMut for Tree {
     fn deref_mut(&mut self) -> &mut LayoutTree {
         &mut self.layout
+    }
+}
+
+#[cfg(test)]
+mod image_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn optional_mapping_keeps_fractions_resets_and_does_not_retain_removed_nodes() {
+        let mut tree = Tree::new();
+        let node = LayoutNodeId::from_raw(42);
+        tree.set_image_mapping(node, 2, [0.5, 0.5, 0.0, 0.0]);
+        assert!(tree.image_mappings.is_empty());
+        tree.set_image_mapping(node, 5, [0.125, 0.875, -0.375, 1.625]);
+        assert_eq!(
+            tree.image_mappings[&node],
+            [5.0, 0.125, 0.875, -0.375, 1.625]
+        );
+        tree.set_image_mapping(node, 6, [0.0; 4]);
+        tree.set_image_mapping(node, 1, [f32::NAN; 4]);
+        assert_eq!(tree.image_mappings[&node][0], 5.0);
+        tree.set_image_mapping(node, -1, [0.0; 4]);
+        assert!(tree.image_mappings.is_empty());
+        tree.set_image_mapping(node, 4, [0.5, 0.5, 0.0, 0.0]);
+        tree.forget(node);
+        assert!(tree.image_mappings.is_empty());
     }
 }

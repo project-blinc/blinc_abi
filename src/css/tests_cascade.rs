@@ -436,3 +436,31 @@ fn inherited_visibility_and_scrollbar_color_restyle_element_hosts() {
     assert_eq!(get(&c, &styles[child], "visibility"), None);
     assert_eq!(get(&c, &styles[child], "scrollbar-color"), None);
 }
+
+#[test]
+fn object_position_inherits_on_nontext_hosts_and_resets_after_sheet_removal() {
+    let mut c = Cascade::new();
+    let sheet = c.push(sheet("div { object-position: 12.5% 87.5%; object-fit: none } .own { object-position: right bottom }"));
+    let mut doc = Doc::default();
+    let e = el(&mut c, &["div"], &[]);
+    let root = doc.add(None, e);
+    let e = el(&mut c, &["img"], &[]);
+    let child = doc.add(Some(root), e);
+    let e = el(&mut c, &["img"], &["own"]);
+    let own = doc.add(Some(root), e);
+    let styles = style_all(&c, &doc);
+    assert_eq!(
+        get(&c, &styles[child], "object-position").as_deref(),
+        Some("12.5% 87.5%")
+    );
+    assert_eq!(get(&c, &styles[child], "object-fit"), None);
+    assert_eq!(
+        get(&c, &styles[own], "object-position").as_deref(),
+        Some("right bottom")
+    );
+    c.remove(sheet);
+    assert_eq!(
+        get(&c, &style_all(&c, &doc)[child], "object-position"),
+        None
+    );
+}
