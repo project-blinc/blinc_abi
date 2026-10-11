@@ -195,6 +195,7 @@ pub(crate) enum TreeWrite {
     TextOverflow(Option<bool>),
     LineClamp(Option<u32>),
     PointerEvents(bool),
+    BackgroundMapping(Option<crate::types::ImageMapping>),
 }
 
 pub const Z_INDEX: i32 = crate::context::Z_INDEX;
@@ -704,14 +705,22 @@ fn value_write(node: LayoutNodeId, prop: PropertyId) -> Option<Write<Value>> {
     match prop {
         P::Background => render(move |p, v| match v {
             Value::Glass(g, effects) => {
+                record_tree(node, TreeWrite::BackgroundMapping(None));
                 record_glass(node, if g.simple { None } else { Some(effects) });
                 p.background = Some(blinc_core::Brush::Glass(g));
             }
+            Value::Image(image, mapping) => {
+                record_tree(node, TreeWrite::BackgroundMapping(Some(mapping)));
+                record_glass(node, None);
+                p.background = Some(blinc_core::Brush::Image(image));
+            }
             Value::Brush(b) => {
+                record_tree(node, TreeWrite::BackgroundMapping(None));
                 record_glass(node, None);
                 p.background = Some(b);
             }
             Value::Color(c) => {
+                record_tree(node, TreeWrite::BackgroundMapping(None));
                 record_glass(node, None);
                 p.background = Some(c.into());
             }
@@ -896,6 +905,7 @@ pub unsafe extern "C" fn hl_blinc_unset(node: u64, raw: i32) {
             P::Background,
             Box::new(move |p| {
                 record_glass(node, None);
+                record_tree(node, TreeWrite::BackgroundMapping(None));
                 p.background = None;
             }),
         ),

@@ -71,7 +71,7 @@
 use crate::css::text_decoration::TextDecoration;
 use crate::text;
 use crate::tree::Tree;
-use blinc_core::{Brush, Color, CornerRadius, Gradient, GradientSpace, Transform};
+use blinc_core::{Brush, Color, CornerRadius, Gradient, GradientSpace, ImageFit, Transform};
 use blinc_layout::element::RenderProps;
 use blinc_layout::tree::LayoutNodeId;
 use blinc_text::{SubpixelX, TextError, TextRenderer};
@@ -1049,6 +1049,22 @@ fn append_inner(
             rec.color2 = [1.0, 1.0, 1.0, opacity * alpha];
             let on_screen = glyphs.display_scale * (m[0] * m[3] - m[1] * m[2]).abs().sqrt();
             rec.gradient = [slot as f32, on_screen, 0.0, 0.0];
+            if let Some(mapping) = tree.background_mappings.get(&node) {
+                rec.fill_type = 3.0;
+                rec.radii = mapping.position;
+                // Keep the core fit and repeat axes as numeric metadata until atlas resolution.
+                let fit = match props.background.as_ref() {
+                    Some(Brush::Image(i)) => match i.fit {
+                        ImageFit::Cover => 0.0,
+                        ImageFit::Contain => 1.0,
+                        ImageFit::Fill => 2.0,
+                        ImageFit::Tile => 3.0,
+                    },
+                    _ => 0.0,
+                };
+                rec.color2[2] = fit;
+                rec.color2[0] = mapping.repeat as f32;
+            }
             rec.place(m, x, y);
             rec.push(&clipping(&ring_clips, m, (x, y), true, cull), out);
         }
@@ -2473,6 +2489,7 @@ fn image_record(
             rec.fill_type = 3.0;
             rec.radii = [px, py, ox, oy];
             rec.color2[2] = fit;
+            rec.color2[0] = if fit == 3.0 { 3.0 } else { 0.0 };
         }
     }
     rec.place(m, x + left, y + top);
