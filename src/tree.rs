@@ -71,6 +71,8 @@ pub struct Tree {
     /// Each node's text shadows, first on top: its own and its descendants' text's, the nearest
     /// node with an entry winning; an empty list is `none`, which stops one inherited.
     pub(crate) text_shadows: HashMap<LayoutNodeId, Vec<blinc_core::Shadow>>,
+    /// Each block container's `text-overflow`: true for an ellipsis, false for clip.
+    pub(crate) text_overflows: HashMap<LayoutNodeId, bool>,
     /// Each liquid glass node's dispersion, bevel strength and curvature.
     pub(crate) glass_effects: HashMap<LayoutNodeId, crate::types::GlassEffects>,
     /// The insets of each `position: sticky` node, top, right, bottom and left: how far in from the
@@ -335,6 +337,7 @@ impl Tree {
             backdrop_filters: HashMap::new(),
             text_decorations: HashMap::new(),
             text_shadows: HashMap::new(),
+            text_overflows: HashMap::new(),
             image_uses: HashMap::new(),
             glass_effects: HashMap::new(),
             visuals: HashMap::new(),
@@ -353,6 +356,7 @@ impl Tree {
         self.backdrop_filters.remove(&id);
         self.text_decorations.remove(&id);
         self.text_shadows.remove(&id);
+        self.text_overflows.remove(&id);
         self.image_uses.remove(&id);
         self.glass_effects.remove(&id);
         self.visuals.remove(&id);

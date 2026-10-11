@@ -1927,6 +1927,24 @@ fn text_records(
         }
         Err(_) => return,
     };
+    // A line that overflows its container ends with an ellipsis where the container asks for one.
+    let prepared = match ellipsis_room(tree, node, w) {
+        Some(room) => ellipsized(
+            glyphs.renderer,
+            context,
+            w,
+            props.and_then(|p| p.text_align),
+            props
+                .and_then(|p| p.letter_spacing)
+                .unwrap_or(context.letter_spacing),
+            color,
+            k,
+            subpixel,
+            room,
+            prepared,
+        ),
+        None => prepared,
+    };
     // Glyphs start half the extra leading below the line box's top, as in CSS.
     let lead = text::half_leading(context, context.font_size * k);
     let decorations = decorations_of(tree, node);
@@ -2085,6 +2103,93 @@ impl Run<'_> {
             draw_decoration(d, self.context, self.lines, &drawn, clips, out);
         }
     }
+}
+
+/// How much room the line of a text node has, in layout units, when the block container it is in
+/// asks for an ellipsis: from its left edge to the container's content edge, or its own width
+/// when that is less. None where nothing asks, or the container says clip.
+fn ellipsis_room(tree: &Tree, node: LayoutNodeId, width: f32) -> Option<f32> {
+    if tree.text_overflows.is_empty() {
+        return None;
+    }
+    let mut left = 0.0;
+    let mut child = node;
+    for a in tree.layout.ancestors(node) {
+        left += tree.layout.get_layout(child)?.location.x;
+        if let Some(on) = tree.text_overflows.get(&a) {
+            if !on {
+                return None;
+            }
+            let layout = tree.layout.get_layout(a)?;
+            let style = tree.layout.get_style(a)?;
+            let px = |c: taffy::style::CompactLength| match c.tag() {
+                taffy::style::CompactLength::LENGTH_TAG => c.value(),
+                taffy::style::CompactLength::PERCENT_TAG => c.value() * layout.size.width,
+                _ => 0.0,
+            };
+            let edge = layout.size.width
+                - px(style.padding.right.into_raw())
+                - px(style.border.right.into_raw());
+            return Some(width.min(edge - left));
+        }
+        child = a;
+    }
+    None
+}
+
+/// `prepared`, the shaped line, when it fits `room` layout units; else the longest start of the
+/// text with an ellipsis after it that does. A text of several lines is left as it is.
+#[allow(clippy::too_many_arguments)]
+fn ellipsized(
+    renderer: &mut TextRenderer,
+    context: &blinc_layout::tree::TextMeasureContext,
+    width: f32,
+    align: Option<blinc_layout::div::TextAlign>,
+    spacing: f32,
+    color: [f32; 4],
+    k: f32,
+    subpixel: Option<SubpixelX>,
+    room: f32,
+    prepared: blinc_text::PreparedText,
+) -> blinc_text::PreparedText {
+    let extent = |p: &blinc_text::PreparedText| {
+        p.glyphs
+            .iter()
+            .map(|g| (g.bounds[0] + g.bounds[2]) / k)
+            .fold(0.0f32, f32::max)
+    };
+    // A glyph's ink reaches a little past its advance, which is what layout measures a line by.
+    let slack = context.font_size * 0.125;
+    if extent(&prepared) <= room + slack
+        || glyph_lines(&prepared.glyphs, k, context.font_size * context.line_height).len() > 1
+    {
+        return prepared;
+    }
+    let ends: Vec<usize> = context
+        .content
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(context.content.len()))
+        .collect();
+    let mut shape = |end: usize| {
+        let mut shown = context.clone();
+        shown.content = format!("{}\u{2026}", context.content[..end].trim_end());
+        text::prepare(renderer, &shown, width, align, spacing, color, k, subpixel).ok()
+    };
+    // The longest start that, with the ellipsis, fits; found by halving, as widths only grow.
+    let (mut lo, mut hi) = (0, ends.len() - 1);
+    let mut best = None;
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        match shape(ends[mid]) {
+            Some(p) if extent(&p) <= room + slack => {
+                best = Some(p);
+                lo = mid;
+            }
+            _ => hi = mid - 1,
+        }
+    }
+    best.or_else(|| shape(ends[lo])).unwrap_or(prepared)
 }
 
 /// The text shadows a node's text is drawn with: the nearest of it and its ancestors to set

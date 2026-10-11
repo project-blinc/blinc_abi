@@ -1842,6 +1842,30 @@ mod bordered_restyle {
 }
 
 #[test]
+fn text_overflow_is_clip_or_ellipsis() {
+    assert!(matches!(
+        writes("text-overflow", "ellipsis").as_slice(),
+        [PaintWrite::TextOverflow(Some(true))]
+    ));
+    assert!(matches!(
+        writes("text-overflow", "Clip").as_slice(),
+        [PaintWrite::TextOverflow(Some(false))]
+    ));
+    assert!(matches!(
+        paint_writes("text-overflow", None, &PaintUnits::default())
+            .unwrap()
+            .unwrap()
+            .as_slice(),
+        [PaintWrite::TextOverflow(None)]
+    ));
+    assert!(
+        paint_writes("text-overflow", Some("fade"), &PaintUnits::default())
+            .unwrap()
+            .is_err()
+    );
+}
+
+#[test]
 fn text_shadow_is_a_list_of_offsets_blur_and_colour_or_none() {
     match writes("text-shadow", "1px 2px 3px red, 0 0 #00f").as_slice() {
         [PaintWrite::TextShadow(Some(list))] => {

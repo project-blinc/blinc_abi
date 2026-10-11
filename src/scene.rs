@@ -245,6 +245,19 @@ impl LayoutContext {
     }
     /// How a node decorates its text and its descendants', drawn beside their ancestors'; none
     /// takes the node's own away.
+    /// What `node`, a block container, does with the text that overflows it: true ends it with an
+    /// ellipsis, false clips it, and none takes the setting away.
+    pub fn set_text_overflow(&mut self, node: Node, ellipsis: Option<bool>) -> Result<()> {
+        let id = self.check(node)?;
+        let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
+        match ellipsis {
+            Some(on) => tree.text_overflows.insert(id, on),
+            None => tree.text_overflows.remove(&id),
+        };
+        self.revision += 1;
+        Ok(())
+    }
+
     /// The shadows of `node`'s text and its descendants', first on top; an empty list for
     /// `none`, and none to take what an ancestor sets.
     pub fn set_text_shadow(
@@ -1133,6 +1146,80 @@ mod tests {
             "scrolled out of the view with its section"
         );
     }
+    #[test]
+    fn text_that_overflows_its_container_ends_with_an_ellipsis_where_asked() {
+        use crate::display_list::RECORD_FLOATS;
+        let mut tree = LayoutContext::new();
+        let container = tree
+            .create_node(Style {
+                overflow: taffy::Point {
+                    x: taffy::Overflow::Hidden,
+                    y: taffy::Overflow::Hidden,
+                },
+                padding: taffy::Rect {
+                    left: taffy::LengthPercentage::length(4.0),
+                    right: taffy::LengthPercentage::length(6.0),
+                    top: taffy::LengthPercentage::length(0.0),
+                    bottom: taffy::LengthPercentage::length(0.0),
+                },
+                ..style(100.0, 30.0)
+            })
+            .unwrap();
+        let text = tree
+            .create_text(
+                Style::default(),
+                TextMeasureContext {
+                    content: "WWWWWWWWWWWWWWWW".into(),
+                    font_size: 16.0,
+                    line_height: 1.2,
+                    letter_spacing: 0.0,
+                    wrap: false,
+                    font_name: None,
+                    generic_font: blinc_layout::div::GenericFont::SansSerif,
+                    font_weight: 400,
+                    italic: false,
+                },
+            )
+            .unwrap();
+        // The text is one level down, in a box that sizes to it.
+        let wrapper = tree.create_node(Style::default()).unwrap();
+        tree.set_children(wrapper, &[text]).unwrap();
+        tree.set_children(container, &[wrapper]).unwrap();
+        tree.compute(container, 100.0, 30.0).unwrap();
+        // The glyphs' count and right-most edge.
+        let glyphs = |tree: &LayoutContext| -> (usize, f32) {
+            let mut encoder = SceneEncoder::new();
+            let info = encoder
+                .prepare(tree, container, PaintOptions::default())
+                .unwrap();
+            let mut data = vec![0.0; info.floats];
+            encoder.read(tree, &mut data).unwrap();
+            data.chunks(RECORD_FLOATS)
+                .fold((0, 0.0f32), |(n, edge), r| (n + 1, edge.max(r[0] + r[2])))
+        };
+        let (all, overflow) = glyphs(&tree);
+        assert!(overflow > 100.0, "the text overflows its box: {overflow}");
+        tree.set_text_overflow(container, Some(false)).unwrap();
+        assert_eq!(glyphs(&tree), (all, overflow), "clip leaves it as it is");
+        tree.set_text_overflow(container, Some(true)).unwrap();
+        let (cut, edge) = glyphs(&tree);
+        // Within the container's content box, 4 in from the left and 6 from the right, give or take
+        // the ink that reaches past a glyph's advance.
+        assert!(edge <= 96.0, "ends within the content box: {edge}");
+        assert!(edge >= 78.0, "and uses most of it: {edge}");
+        assert!(cut < all, "with fewer glyphs: {cut} of {all}");
+        // A text that fits is untouched.
+        tree.set_text_overflow(container, None).unwrap();
+        let mut context = tree.text(text).unwrap();
+        context.content = "WW".into();
+        tree.set_text(text, context).unwrap();
+        tree.compute(container, 100.0, 30.0).unwrap();
+        let (two, _) = glyphs(&tree);
+        tree.set_text_overflow(container, Some(true)).unwrap();
+        assert_eq!(glyphs(&tree).0, two, "a line that fits has no ellipsis");
+        assert!(tree.set_text_overflow(container, None).is_ok());
+    }
+
     #[test]
     fn text_shadows_draw_under_the_text_last_first_and_inherit() {
         use crate::display_list::{PRIM_LAYER, PRIM_LAYER_BEGIN, PRIM_TEXT, RECORD_FLOATS};

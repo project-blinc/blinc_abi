@@ -85,6 +85,9 @@ pub enum PaintWrite {
     /// The shadows of the node's text and its descendants', first on top; an empty list for
     /// `none`, which stops one inherited, and none for no declaration.
     TextShadow(Option<Vec<Shadow>>),
+    /// What a block container does with the text that overflows its box: true ends it with an
+    /// ellipsis, false clips it; none for no declaration.
+    TextOverflow(Option<bool>),
 }
 
 const GLASS: &[&str] = &[
@@ -134,6 +137,7 @@ pub fn is_paint_property(name: &str) -> bool {
             | "background-position"
             | "backdrop-filter"
             | "text-shadow"
+            | "text-overflow"
             | "text-decoration"
             | "text-decoration-line"
             | "text-decoration-style"
@@ -227,6 +231,12 @@ pub fn paint_writes(
         ("backdrop-filter", Some(v)) => {
             filter::parse_backdrop(v, units).map(|b| backdrop(b, units))
         }
+        ("text-overflow", None) => Ok(vec![TextOverflow(None)]),
+        ("text-overflow", Some(v)) => match v.trim().to_ascii_lowercase().as_str() {
+            "ellipsis" => Ok(vec![TextOverflow(Some(true))]),
+            "clip" => Ok(vec![TextOverflow(Some(false))]),
+            _ => Err(format!("text-overflow is clip or ellipsis, not {v}")),
+        },
         ("text-shadow", None) => Ok(vec![TextShadow(None)]),
         ("text-shadow", Some(v)) => one(shadow::parse_text(v, units).map(|s| TextShadow(Some(s)))),
         ("text-decoration" | "text-decoration-line", None) => Ok(vec![TextDecoration(None)]),
