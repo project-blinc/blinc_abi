@@ -322,6 +322,53 @@ impl Tree {
         children
     }
 
+    /// Apply a position/inset batch to the sticky constraints shared by every adapter.
+    /// Insets hold a sticky box at the scroll edge; its normal-flow layout has none.
+    pub(crate) fn sync_sticky(
+        &mut self,
+        node: LayoutNodeId,
+        style: &mut taffy::Style,
+        position: Option<bool>,
+        writes: [Option<Option<f32>>; 4],
+    ) {
+        use taffy::style::{CompactLength, LengthPercentageAuto};
+        let held = self.sticky.get(&node).copied();
+        let sticky = position.unwrap_or(held.is_some());
+        if !sticky && held.is_none() {
+            return;
+        }
+        let mut insets = held.unwrap_or_else(|| {
+            [
+                style.inset.top,
+                style.inset.right,
+                style.inset.bottom,
+                style.inset.left,
+            ]
+            .map(|v| {
+                let c = v.into_raw();
+                (c.tag() == CompactLength::LENGTH_TAG).then_some(c.value())
+            })
+        });
+        for (slot, write) in insets.iter_mut().zip(writes) {
+            if let Some(v) = write {
+                *slot = v;
+            }
+        }
+        let inset = if sticky {
+            self.sticky.insert(node, insets);
+            [LengthPercentageAuto::auto(); 4]
+        } else {
+            self.sticky.remove(&node);
+            insets.map(|v| v.map_or(LengthPercentageAuto::auto(), LengthPercentageAuto::length))
+        };
+        [
+            style.inset.top,
+            style.inset.right,
+            style.inset.bottom,
+            style.inset.left,
+        ] = inset;
+    }
+
     /// Hold the text under each line-clamped container to that many lines: a text node's height is
     /// capped at its lines' pitch times the clamp, and let go again when the clamp is. Before layout.
     pub(crate) fn sync_line_clamps(&mut self) {
@@ -333,10 +380,10 @@ impl Tree {
             if lines == 0 {
                 continue;
             }
-            let mut stack = self.layout.children(container);
+            let mut stack = vec![container];
             while let Some(n) = stack.pop() {
                 // A container of its own clamps what it holds.
-                if self.line_clamps.contains_key(&n) {
+                if n != container && self.line_clamps.contains_key(&n) {
                     continue;
                 }
                 if let Some(context) = self.layout.text_context(n) {

@@ -251,7 +251,7 @@ impl LayoutContext {
         let id = self.check(node)?;
         let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
         match lines {
-            Some(n) if n > 0 => tree.line_clamps.insert(id, n),
+            Some(n) => tree.line_clamps.insert(id, n),
             _ => tree.line_clamps.remove(&id),
         };
         self.bounds.clear();
@@ -1293,6 +1293,17 @@ mod tests {
         tree.set_line_clamp(container, Some(40)).unwrap();
         tree.compute(container, 100.0, 200.0).unwrap();
         assert_eq!(measure(&tree), (natural, lines, glyphs));
+        tree.set_line_clamp(container, Some(0)).unwrap();
+        tree.compute(container, 100.0, 200.0).unwrap();
+        assert_eq!(
+            measure(&tree),
+            (natural, lines, glyphs),
+            "CSS none (zero) restores all glyphs"
+        );
+        tree.set_line_clamp(text, Some(1)).unwrap();
+        tree.compute(container, 100.0, 200.0).unwrap();
+        assert_eq!(measure(&tree).1, 1, "a text node itself can be clamped");
+        tree.set_line_clamp(text, None).unwrap();
         tree.set_line_clamp(container, Some(2)).unwrap();
         tree.compute(container, 100.0, 200.0).unwrap();
         tree.set_line_clamp(container, None).unwrap();

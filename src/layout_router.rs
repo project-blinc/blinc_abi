@@ -187,6 +187,56 @@ pub fn take_pending_text_decoration() -> Vec<(
     )
 }
 
+/// Effects held beside Taffy's styles, forwarded through the same reactive property queue.
+pub(crate) enum TreeWrite {
+    Position(bool),
+    Inset(usize, Option<f32>),
+    ZIndex(Option<i32>),
+    TextOverflow(Option<bool>),
+    LineClamp(Option<u32>),
+}
+
+pub const Z_INDEX: i32 = crate::context::Z_INDEX;
+pub const TEXT_OVERFLOW: i32 = 122;
+pub const LINE_CLAMP: i32 = 123;
+
+static PENDING_TREE: Mutex<Vec<(LayoutNodeId, TreeWrite)>> = Mutex::new(Vec::new());
+
+fn record_tree(node: LayoutNodeId, write: TreeWrite) {
+    PENDING_TREE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((node, write));
+}
+
+pub(crate) fn take_pending_tree() -> Vec<(LayoutNodeId, TreeWrite)> {
+    std::mem::take(&mut *PENDING_TREE.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Record only position/inset writes: their values also update sticky constraints.
+fn record_sticky(node: LayoutNodeId, raw: i32, style: &Style, sticky: Option<bool>) {
+    if let Some(sticky) = sticky {
+        record_tree(node, TreeWrite::Position(sticky));
+    } else if (30..=33).contains(&raw) {
+        use taffy::style::CompactLength;
+        let i = (raw - 30) as usize;
+        let v = [
+            style.inset.top,
+            style.inset.right,
+            style.inset.bottom,
+            style.inset.left,
+        ][i]
+            .into_raw();
+        record_tree(
+            node,
+            TreeWrite::Inset(
+                i,
+                (v.tag() == CompactLength::LENGTH_TAG).then_some(v.value()),
+            ),
+        );
+    }
+}
+
 /// Whether a node's clip-path fills even-odd, as its render write sets it.
 static PENDING_EVEN_ODD: Mutex<Vec<(LayoutNodeId, bool)>> = Mutex::new(Vec::new());
 
@@ -511,6 +561,7 @@ pub unsafe extern "C" fn hl_blinc_apply_f32(
     if let Some(id) = layout_props::f32_property(prop) {
         let write = Write::Layout(Arc::new(move |s: &mut Style, v| {
             layout_props::set_f32(s, prop, v);
+            record_sticky(node, prop, s, None);
         }));
         unsafe { bind(node, id, kind, constant, sig, comp, write) };
         return;
@@ -591,9 +642,34 @@ pub unsafe extern "C" fn hl_blinc_apply_i32(
     comp: *mut c_void,
 ) {
     let node = LayoutNodeId::from_raw(node);
+    let extra = match prop {
+        Z_INDEX => Some((
+            PropertyId::Transform,
+            render(move |_, v| record_tree(node, TreeWrite::ZIndex(Some(v)))),
+        )),
+        TEXT_OVERFLOW => Some((
+            PropertyId::TextAlign,
+            render(move |_, v| record_tree(node, TreeWrite::TextOverflow(Some(v == 1)))),
+        )),
+        LINE_CLAMP => Some((
+            PropertyId::FontSize,
+            render(move |_, v: i32| record_tree(node, TreeWrite::LineClamp(Some(v.max(0) as u32)))),
+        )),
+        _ => None,
+    };
+    if let Some((id, Some(write))) = extra {
+        unsafe { bind(node, id, kind, constant, sig, comp, write) };
+        return;
+    }
     if let Some(id) = layout_props::i32_property(prop) {
         let write = Write::Layout(Arc::new(move |s: &mut Style, v| {
             layout_props::set_i32(s, prop, v);
+            record_sticky(
+                node,
+                prop,
+                s,
+                (prop == 29).then_some(v == crate::context::STICKY),
+            );
         }));
         unsafe { bind(node, id, kind, constant, sig, comp, write) };
         return;
@@ -799,6 +875,7 @@ pub unsafe extern "C" fn hl_blinc_unset(node: u64, raw: i32) {
     if let Some(prop) = layout_props::unset_property(raw) {
         queue_layout_update_partial(node, prop, prop.side_effects(), move |s| {
             layout_props::unset(s, raw);
+            record_sticky(node, raw, s, (raw == 29).then_some(false));
         });
         return;
     }
@@ -946,6 +1023,18 @@ pub unsafe extern "C" fn hl_blinc_unset(node: u64, raw: i32) {
                 p.clip_path = None;
                 record_even_odd(node, false);
             }),
+        ),
+        Z_INDEX => ren(
+            P::Transform,
+            Box::new(move |_| record_tree(node, TreeWrite::ZIndex(None))),
+        ),
+        TEXT_OVERFLOW => ren(
+            P::TextAlign,
+            Box::new(move |_| record_tree(node, TreeWrite::TextOverflow(None))),
+        ),
+        LINE_CLAMP => ren(
+            P::FontSize,
+            Box::new(move |_| record_tree(node, TreeWrite::LineClamp(None))),
         ),
         TEXT_SHADOW => ren(P::Shadow, Box::new(move |_| record_text_shadow(node, None))),
         TEXT_DECORATION => ren(

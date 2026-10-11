@@ -2130,6 +2130,9 @@ fn ellipsis_room(tree: &Tree, node: LayoutNodeId, width: f32) -> Option<f32> {
     if tree.text_overflows.is_empty() {
         return None;
     }
+    if let Some(on) = tree.text_overflows.get(&node) {
+        return on.then_some(width);
+    }
     let mut left = 0.0;
     let mut child = node;
     for a in tree.layout.ancestors(node) {
@@ -2161,10 +2164,10 @@ fn line_clamp_of(tree: &Tree, node: LayoutNodeId) -> Option<u32> {
     if tree.line_clamps.is_empty() {
         return None;
     }
-    tree.layout
-        .ancestors(node)
-        .into_iter()
+    std::iter::once(node)
+        .chain(tree.layout.ancestors(node))
         .find_map(|a| tree.line_clamps.get(&a).copied())
+        .filter(|&lines| lines > 0)
 }
 
 /// `prepared` when it is no more than `lines` lines; else the longest start of the text with an
