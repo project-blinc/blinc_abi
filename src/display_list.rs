@@ -2655,15 +2655,15 @@ fn image_record(
     rec.color2 = [1.0, 1.0, 1.0, opacity];
     let on_screen = display_scale * (m[0] * m[3] - m[1] * m[2]).abs().sqrt();
     rec.gradient = [slot as f32, on_screen, 0.0, 0.0];
-    if kind == PRIM_IMAGE {
-        if let Some(&[fit, px, py, ox, oy]) = tree.image_mappings.get(&node) {
-            // Unresolved mapped bitmap: the host turns radii into its drawn rect,
-            // resolves gradient to atlas coordinates, and leaves fill=3 for sampling.
-            // These rows are unused by ordinary image records; the stride is unchanged.
-            rec.fill_type = 3.0;
-            rec.radii = [px, py, ox, oy];
-            rec.color2[2] = fit;
-        }
+    if kind == PRIM_IMAGE
+        && let Some(&[fit, px, py, ox, oy]) = tree.image_mappings.get(&node)
+    {
+        // Unresolved mapped bitmap: the host turns radii into its drawn rect,
+        // resolves gradient to atlas coordinates, and leaves fill=3 for sampling.
+        // These rows are unused by ordinary image records; the stride is unchanged.
+        rec.fill_type = 3.0;
+        rec.radii = [px, py, ox, oy];
+        rec.color2[2] = fit;
     }
     rec.place(m, x + left, y + top);
     // As glyphs: on whole device pixels when nothing turns or slants it.
