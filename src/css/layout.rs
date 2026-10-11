@@ -79,7 +79,7 @@ pub mod id {
 
 /// What relative lengths are relative to: the element's font size, the
 /// root's, and the viewport, in pixels.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Units {
     pub font_size: f64,
     pub root_font_size: f64,
@@ -294,6 +294,53 @@ fn number(text: &str, name: &str) -> Result<f64, String> {
 }
 
 /// A length's pixel id and pixels, or its percentage id and fraction; `auto` is NaN.
+pub(crate) fn expression(text: &str, units: &Units) -> Result<super::calc::Expression, String> {
+    super::calc::parse(text, &|v, unit| {
+        let px = |px| Some(super::calc::Length { px, percent: 0.0 });
+        match unit {
+            "px" => px(v),
+            "em" => px(v * units.font_size),
+            "rem" => px(v * units.root_font_size),
+            "vw" => px(v / 100.0 * units.viewport_width),
+            "vh" => px(v / 100.0 * units.viewport_height),
+            "vmin" => px(v / 100.0 * units.viewport_width.min(units.viewport_height)),
+            "vmax" => px(v / 100.0 * units.viewport_width.max(units.viewport_height)),
+            "%" => Some(super::calc::Length {
+                px: 0.0,
+                percent: v / 100.0,
+            }),
+            _ => None,
+        }
+    })
+}
+
+fn length_write<'a>(
+    name: &str,
+    text: &'a str,
+    units: &Units,
+) -> Result<(i32, PropValue<'a>), String> {
+    if super::calc::is_function(text) {
+        let expression = expression(text, units)?;
+        if expression
+            .linear()
+            .is_none_or(|l| l.px != 0.0 && l.percent != 0.0)
+        {
+            let (id, percent) = length_ids(name).unwrap();
+            if percent.is_none() {
+                return Err(format!("{name} takes no percentage"));
+            }
+            return Ok((
+                id,
+                PropValue::Math {
+                    source: text,
+                    units: *units,
+                },
+            ));
+        }
+    }
+    length(name, text, units).map(|(id, n)| (id, PropValue::Number(n as f32)))
+}
+
 fn length(name: &str, text: &str, units: &Units) -> Result<(i32, f64), String> {
     let (px_id, percent_id) = length_ids(name).expect("a length property");
     if (id::BORDER_TOP_WIDTH..=id::BORDER_LEFT_WIDTH).contains(&px_id) {
@@ -307,24 +354,7 @@ fn length(name: &str, text: &str, units: &Units) -> Result<(i32, f64), String> {
     }
     let bad = || format!("invalid value for {name}: {text}");
     if super::calc::is_function(&t) {
-        let value = super::calc::evaluate(&t, &|v, unit| {
-            let px = |px| Some(super::calc::Length { px, percent: 0.0 });
-            match unit {
-                "px" => px(v),
-                "em" => px(v * units.font_size),
-                "rem" => px(v * units.root_font_size),
-                "vw" => px(v / 100.0 * units.viewport_width),
-                "vh" => px(v / 100.0 * units.viewport_height),
-                "vmin" => px(v / 100.0 * units.viewport_width.min(units.viewport_height)),
-                "vmax" => px(v / 100.0 * units.viewport_width.max(units.viewport_height)),
-                "%" => Some(super::calc::Length {
-                    px: 0.0,
-                    percent: v / 100.0,
-                }),
-                _ => None,
-            }
-        })
-        .map_err(|e| format!("{name}: {e}"))?;
+        let value = expression(&t, units)?.linear().ok_or_else(&bad)?;
         return if value.percent == 0.0 {
             Ok((px_id, value.px))
         } else if value.px == 0.0 {
@@ -432,7 +462,7 @@ pub fn layout_writes<'a>(
         return Some(match value {
             // The pixel id's unset also resets the field its percentage id writes.
             None => Ok(vec![(px_id, PropValue::Unset)]),
-            Some(v) => length(name, v, units).map(|(id, v)| vec![num(id, v)]),
+            Some(v) => length_write(name, v, units).map(|v| vec![v]),
         });
     }
     if let Some(id) = enum_id(name) {
@@ -455,9 +485,8 @@ pub fn layout_writes<'a>(
             let parts = super::value::split_ref(v, ' ');
             let row = parts.first().copied().unwrap_or("");
             let column = parts.get(1).copied().unwrap_or(row);
-            length("row-gap", row, units).and_then(|r| {
-                length("column-gap", column, units).map(|c| vec![num(r.0, r.1), num(c.0, c.1)])
-            })
+            length_write("row-gap", row, units)
+                .and_then(|r| length_write("column-gap", column, units).map(|c| vec![r, c]))
         }
         ("flex-grow" | "flex-shrink", v) => {
             let id = if name == "flex-grow" {
@@ -490,8 +519,8 @@ pub fn layout_writes<'a>(
             };
             number(grow, name).and_then(|g| {
                 number(shrink, name).and_then(|s| {
-                    length("flex-basis", basis, units)
-                        .map(|b| vec![num(FLEX_GROW, g), num(FLEX_SHRINK, s), num(b.0, b.1)])
+                    length_write("flex-basis", basis, units)
+                        .map(|b| vec![num(FLEX_GROW, g), num(FLEX_SHRINK, s), b])
                 })
             })
         }

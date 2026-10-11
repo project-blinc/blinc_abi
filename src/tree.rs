@@ -1,8 +1,6 @@
 //! Host-independent scene storage shared with the compatibility adapter.
-use blinc_layout::{
-    element::RenderProps,
-    tree::{LayoutNodeId, LayoutTree},
-};
+use crate::layout_tree::LayoutTree;
+use blinc_layout::{element::RenderProps, tree::LayoutNodeId};
 use std::collections::{HashMap, HashSet};
 /// What the paint walk knows on reaching a node's children: the visible rect
 /// so far, in the root's coordinates, and where the node puts its children.
@@ -82,6 +80,7 @@ pub struct Tree {
     /// The insets of each `position: sticky` node, top, right, bottom and left: how far in from the
     /// edges of its scroll container it is held. Layout places it as `relative` with none of them.
     pub(crate) sticky: HashMap<LayoutNodeId, [Option<f32>; 4]>,
+    pub(crate) sticky_expressions: HashMap<LayoutNodeId, [Option<crate::css::calc::Expression>; 4]>,
     /// Each node's `z-index`, where it is not `auto`.
     pub(crate) z_index: HashMap<LayoutNodeId, i32>,
     /// Nodes drawn away from their layout while a layout animation runs:
@@ -189,11 +188,50 @@ impl Tree {
             seen,
         }
     }
+    pub(crate) fn sticky_insets(
+        &self,
+        node: LayoutNodeId,
+    ) -> Result<[Option<f32>; 4], &'static str> {
+        let mut insets = self.sticky.get(&node).copied().ok_or("Not sticky")?;
+        if let Some(expressions) = self.sticky_expressions.get(&node) {
+            let basis = self
+                .layout
+                .ancestors(node)
+                .first()
+                .and_then(|p| self.layout.get_layout(*p))
+                .map_or([0.0, 0.0], |l| {
+                    [
+                        l.size.width
+                            - l.padding.left
+                            - l.padding.right
+                            - l.border.left
+                            - l.border.right,
+                        l.size.height
+                            - l.padding.top
+                            - l.padding.bottom
+                            - l.border.top
+                            - l.border.bottom,
+                    ]
+                });
+            for (i, e) in expressions.iter().enumerate() {
+                if let Some(e) = e {
+                    let value =
+                        e.try_resolve(basis[if i == 0 || i == 2 { 1 } else { 0 }] as f64)? as f32;
+                    if !value.is_finite() {
+                        return Err("Non-finite sticky CSS length");
+                    }
+                    insets[i] = Some(value);
+                }
+            }
+        }
+        Ok(insets)
+    }
+
     /// How far a `position: sticky` node is drawn from where layout puts it: held `top`, `right`,
     /// `bottom` and `left` in from the edges of the view of its nearest scroll container, and
     /// never out of its parent. Zero for any other node, and one with nothing to scroll in.
     pub(crate) fn sticky_shift(&self, node: LayoutNodeId) -> (f32, f32) {
-        let Some(insets) = self.sticky.get(&node) else {
+        let Ok(insets) = self.sticky_insets(node) else {
             return (0.0, 0.0);
         };
         let Some(own) = self.layout.get_layout(node) else {
@@ -349,6 +387,38 @@ impl Tree {
                 (c.tag() == CompactLength::LENGTH_TAG).then_some(c.value())
             })
         });
+        let mut expressions = self
+            .sticky_expressions
+            .remove(&node)
+            .unwrap_or_else(|| std::array::from_fn(|_| None));
+        for (i, value) in [
+            style.inset.top,
+            style.inset.right,
+            style.inset.bottom,
+            style.inset.left,
+        ]
+        .iter()
+        .enumerate()
+        {
+            let raw = value.into_raw();
+            if raw.is_calc() {
+                expressions[i] = self
+                    .layout
+                    .expressions
+                    .get(&(raw.calc_value() as usize))
+                    .cloned();
+            } else if raw.tag() == CompactLength::PERCENT_TAG {
+                expressions[i] = Some(crate::css::calc::Expression::Linear(
+                    crate::css::calc::Length {
+                        px: 0.0,
+                        percent: raw.value() as f64,
+                    },
+                ));
+            }
+            if writes[i].is_some() {
+                expressions[i] = None;
+            }
+        }
         for (slot, write) in insets.iter_mut().zip(writes) {
             if let Some(v) = write {
                 *slot = v;
@@ -367,6 +437,19 @@ impl Tree {
             style.inset.bottom,
             style.inset.left,
         ] = inset;
+        if sticky {
+            if expressions.iter().any(Option::is_some) {
+                self.sticky_expressions.insert(node, expressions);
+            }
+        } else {
+            for (i, e) in expressions.into_iter().enumerate() {
+                if let Some(e) = e {
+                    let handle = crate::layout_tree::new_handle();
+                    self.layout.expressions.insert(handle, e);
+                    crate::layout_tree::set_math(style, 30 + i as i32, handle);
+                }
+            }
+        }
     }
 
     /// Hold the text under each line-clamped container to that many lines: a text node's height is
@@ -438,6 +521,7 @@ impl Tree {
             glass_effects: HashMap::new(),
             visuals: HashMap::new(),
             sticky: HashMap::new(),
+            sticky_expressions: HashMap::new(),
             z_index: HashMap::new(),
         }
     }
@@ -459,6 +543,7 @@ impl Tree {
         self.glass_effects.remove(&id);
         self.visuals.remove(&id);
         self.sticky.remove(&id);
+        self.sticky_expressions.remove(&id);
         self.z_index.remove(&id);
     }
 }

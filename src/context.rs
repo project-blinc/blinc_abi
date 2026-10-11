@@ -1,7 +1,8 @@
 //! Owned layout contexts for language adapters. No host GC or process-global tree.
+use crate::layout_tree::LayoutTree;
 use crate::tree::{Reach, Step};
 use blinc_layout::element::RenderProps;
-use blinc_layout::tree::{LayoutNodeId, LayoutTree};
+use blinc_layout::tree::LayoutNodeId;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 pub use taffy::prelude::{AvailableSpace, Size, Style};
@@ -41,6 +42,11 @@ pub struct LayoutContext {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PropValue<'a> {
     Number(f32),
+    /// A typed CSS length evaluated by layout against the property's percentage basis.
+    Math {
+        source: &'a str,
+        units: crate::css::layout::Units,
+    },
     Enum(i32),
     Text(Option<&'a str>),
     /// Back to a new node's value.
@@ -172,6 +178,7 @@ impl LayoutContext {
             sticky: Option<bool>,
             insets: [Option<Option<f32>>; 4],
             z_index: Option<Option<i32>>,
+            expressions: Vec<(usize, crate::css::calc::Expression)>,
         }
         let mut staged: Vec<Staged> = Vec::new();
         let mut index: HashMap<LayoutNodeId, usize> = HashMap::new();
@@ -190,6 +197,7 @@ impl LayoutContext {
                         sticky: None,
                         insets: [None; 4],
                         z_index: None,
+                        expressions: Vec::new(),
                     });
                     staged.len() - 1
                 });
@@ -241,9 +249,45 @@ impl LayoutContext {
                         entry.insets[(raw - INSET_TOP) as usize] = Some(v.is_finite().then_some(v));
                         crate::layout_props::set_f32(&mut entry.style, raw, v)
                     }
-                    PropValue::Unset if (INSET_TOP..INSET_TOP + 4).contains(&raw) => {
-                        entry.insets[(raw - INSET_TOP) as usize] = Some(None);
+                    PropValue::Number(v) if (112..116).contains(&raw) => {
+                        entry.insets[(raw - 112) as usize] = None;
+                        crate::layout_props::set_f32(&mut entry.style, raw, v)
+                    }
+                    PropValue::Unset
+                        if (INSET_TOP..INSET_TOP + 4).contains(&raw)
+                            || (112..116).contains(&raw) =>
+                    {
+                        let side = if raw >= 112 {
+                            raw - 112
+                        } else {
+                            raw - INSET_TOP
+                        };
+                        entry.insets[side as usize] = Some(None);
                         crate::layout_props::unset(&mut entry.style, raw)
+                    }
+                    PropValue::Math { source, units } => {
+                        let expression = crate::css::layout::expression(source, &units)
+                            .map_err(|_| "Invalid CSS length expression")?;
+                        let handle = crate::layout_tree::math_handle(&entry.style, raw)
+                            .filter(|h| {
+                                entry
+                                    .expressions
+                                    .iter()
+                                    .find(|(id, _)| id == h)
+                                    .map(|(_, e)| e)
+                                    .or_else(|| tree.layout.expressions.get(h))
+                                    == Some(&expression)
+                            })
+                            .unwrap_or_else(crate::layout_tree::new_handle);
+                        if crate::layout_tree::set_math(&mut entry.style, raw, handle) {
+                            if (INSET_TOP..INSET_TOP + 4).contains(&raw) {
+                                entry.insets[(raw - INSET_TOP) as usize] = None;
+                            }
+                            entry.expressions.push((handle, expression));
+                            true
+                        } else {
+                            false
+                        }
                     }
                     PropValue::Number(v) => crate::layout_props::set_f32(&mut entry.style, raw, v),
                     PropValue::Enum(v) if raw == POSITION => {
@@ -266,6 +310,7 @@ impl LayoutContext {
         let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
         let mut reordered = Vec::new();
         for mut entry in staged {
+            tree.layout.expressions.extend(entry.expressions);
             tree.sync_sticky(entry.id, &mut entry.style, entry.sticky, entry.insets);
             if let Some(z) = entry.z_index {
                 match z {
@@ -505,6 +550,12 @@ impl LayoutContext {
                 height: AvailableSpace::Definite(height),
             },
         );
+        if let Some(error) = tree.layout.error {
+            return Err(error);
+        }
+        for node in tree.sticky_expressions.keys() {
+            tree.sticky_insets(*node)?;
+        }
         self.revision += 1;
         // Resolve absolute coordinates once, not once per queried node and ancestor.
         let tree = self.tree.as_ref().ok_or("Layout context is disposed")?;

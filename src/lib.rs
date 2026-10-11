@@ -31,6 +31,7 @@ pub mod inline;
 pub mod layout_props;
 #[cfg(feature = "hashlink")]
 pub mod layout_router;
+pub mod layout_tree;
 #[cfg(feature = "hashlink")]
 pub mod node;
 #[cfg(feature = "scene")]

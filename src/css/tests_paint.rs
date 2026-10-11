@@ -1502,9 +1502,10 @@ mod borders {
                 (PADDING_LEFT, 6.0)
             ]
         );
-        // A percentage added to a length is one thing layout cannot say.
-        let mixed = write("width", "calc(100% - 32px)").unwrap_err();
-        assert!(mixed.contains("cannot be added"), "{mixed}");
+        let mixed = layout_writes("width", Some("calc(100% - 32px)"), &units)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(mixed[0], (WIDTH, PropValue::Math { .. })));
         assert!(write("width", "calc(1px + )").is_err());
         let gap = write("gap", "calc(50% + 10%)").unwrap();
         assert_eq!(gap, [(GAP_Y_PERCENT, 0.6), (GAP_X_PERCENT, 0.6)]);

@@ -1,10 +1,7 @@
 //! `calc()`, `min()`, `max()` and `clamp()` of lengths.
 //!
-//! A value is a number of pixels plus a fraction of something the layout knows only later, a
-//! percentage. Layout cannot add the two, so a value that has both is an error where a length
-//! is wanted; lengths in px, em, rem and the viewport units are all pixels by the time they are
-//! read, so `calc(100vw - 2rem)` and `clamp(14px, 2vw, 20px)` are pixels, and a percentage alone,
-//! `calc(100% / 3)`, is a fraction.
+//! Relative units are resolved while parsing; percentage terms and mixed comparisons are
+//! retained as typed expressions until Taffy supplies the property's percentage basis.
 
 /// A length: pixels plus a fraction of the percentage's basis.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -13,11 +10,99 @@ pub struct Length {
     pub percent: f64,
 }
 
+/// A typed length retained until layout supplies the property's percentage basis.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Expression {
+    Linear(Length),
+    Sum(Vec<Expression>),
+    Scale(f64, Box<Expression>),
+    Min(Vec<Expression>),
+    Max(Vec<Expression>),
+}
+
+impl Expression {
+    pub fn linear(&self) -> Option<Length> {
+        match self {
+            Self::Linear(l) => Some(*l),
+            _ => None,
+        }
+    }
+    pub fn resolve(&self, basis: f64) -> f64 {
+        self.try_resolve(basis).unwrap_or(f64::NAN)
+    }
+    /// Check every intermediate value, including branches of min/max that are not selected.
+    pub fn try_resolve(&self, basis: f64) -> Result<f64, &'static str> {
+        let value = match self {
+            Self::Linear(l) => l.px + l.percent * basis,
+            Self::Sum(v) => v
+                .iter()
+                .try_fold(0.0, |sum, e| e.try_resolve(basis).map(|n| sum + n))?,
+            Self::Scale(n, e) => n * e.try_resolve(basis)?,
+            Self::Min(v) | Self::Max(v) => {
+                let choose = if matches!(self, Self::Min(_)) {
+                    f64::min
+                } else {
+                    f64::max
+                };
+                let mut values = v.iter();
+                let first = values
+                    .next()
+                    .ok_or("Empty CSS math comparison")?
+                    .try_resolve(basis)?;
+                values.try_fold(first, |a, e| e.try_resolve(basis).map(|b| choose(a, b)))?
+            }
+        };
+        if value.is_finite() {
+            Ok(value)
+        } else {
+            Err("CSS math produced a non-finite value during layout")
+        }
+    }
+    fn scale(self, n: f64) -> Self {
+        match self {
+            Self::Linear(l) => Self::Linear(Length {
+                px: l.px * n,
+                percent: l.percent * n,
+            }),
+            Self::Scale(m, e) => Self::Scale(n * m, e),
+            e => Self::Scale(n, Box::new(e)),
+        }
+    }
+    fn add(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Linear(a), Self::Linear(b)) => Self::Linear(Length {
+                px: a.px + b.px,
+                percent: a.percent + b.percent,
+            }),
+            (Self::Sum(mut a), Self::Sum(b)) => {
+                a.extend(b);
+                Self::Sum(a)
+            }
+            (Self::Sum(mut a), b) => {
+                a.push(b);
+                Self::Sum(a)
+            }
+            (a, Self::Sum(mut b)) => {
+                b.insert(0, a);
+                Self::Sum(b)
+            }
+            (a, b) => Self::Sum(vec![a, b]),
+        }
+    }
+    fn finite(&self) -> bool {
+        match self {
+            Self::Linear(l) => l.px.is_finite() && l.percent.is_finite(),
+            Self::Scale(n, e) => n.is_finite() && e.finite(),
+            Self::Sum(v) | Self::Min(v) | Self::Max(v) => v.iter().all(Self::finite),
+        }
+    }
+}
+
 /// What an expression's term is: a plain number, which scales a length, or a length.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Term {
     Number(f64),
-    Length(Length),
+    Length(Expression),
 }
 
 /// How a unit's number is read: as pixels, or as a fraction for `%`; none for a unit that is not one.
@@ -34,6 +119,13 @@ pub fn is_function(text: &str) -> bool {
 
 /// The value of the function `text`, with `unit` reading each number's unit.
 pub fn evaluate(text: &str, unit: Unit<'_>) -> Result<Length, String> {
+    parse(text, unit)?
+        .linear()
+        .ok_or_else(|| "this expression needs a layout percentage basis".into())
+}
+
+/// Parse and type-check a length, resolving relative units and retaining percentages.
+pub fn parse(text: &str, unit: Unit<'_>) -> Result<Expression, String> {
     let mut parser = Parser {
         text: text.trim().as_bytes(),
         at: 0,
@@ -60,9 +152,9 @@ struct Parser<'a> {
 
 impl Term {
     fn finite(self) -> Result<Self, String> {
-        let finite = match self {
+        let finite = match &self {
             Self::Number(n) => n.is_finite(),
-            Self::Length(l) => l.px.is_finite() && l.percent.is_finite(),
+            Self::Length(l) => l.finite(),
         };
         if finite {
             Ok(self)
@@ -122,10 +214,7 @@ impl Parser<'_> {
                 }
                 (Term::Length(a), Term::Length(b)) => {
                     let sign = if op == b'+' { 1.0 } else { -1.0 };
-                    Term::Length(Length {
-                        px: a.px + sign * b.px,
-                        percent: a.percent + sign * b.percent,
-                    })
+                    Term::Length(a.add(b.scale(sign)))
                 }
                 _ => return Err("a length cannot be added to a number".into()),
             }
@@ -148,15 +237,11 @@ impl Parser<'_> {
             left = match (op, left, right) {
                 (b'*', Term::Number(a), Term::Number(b)) => Term::Number(a * b),
                 (b'*', Term::Length(l), Term::Number(n))
-                | (b'*', Term::Number(n), Term::Length(l)) => Term::Length(Length {
-                    px: l.px * n,
-                    percent: l.percent * n,
-                }),
+                | (b'*', Term::Number(n), Term::Length(l)) => Term::Length(l.scale(n)),
                 (b'/', Term::Number(a), Term::Number(b)) if b != 0.0 => Term::Number(a / b),
-                (b'/', Term::Length(l), Term::Number(n)) if n != 0.0 => Term::Length(Length {
-                    px: l.px / n,
-                    percent: l.percent / n,
-                }),
+                (b'/', Term::Length(l), Term::Number(n)) if n != 0.0 => {
+                    Term::Length(l.scale(1.0 / n))
+                }
                 (b'/', _, Term::Number(_)) => return Err("division by zero".into()),
                 (b'*', Term::Length(_), Term::Length(_)) => {
                     return Err("two lengths cannot be multiplied".into());
@@ -244,7 +329,7 @@ impl Parser<'_> {
             return Term::Number(number).finite();
         }
         (self.unit)(number, &unit)
-            .map(Term::Length)
+            .map(|l| Term::Length(Expression::Linear(l)))
             .ok_or_else(|| format!("\"{unit}\" is not a unit calc() reads here"))?
             .finite()
     }
@@ -271,13 +356,13 @@ impl Parser<'_> {
                 return Err(format!("{name}( is not closed"));
             }
             match (name.as_str(), args.as_slice()) {
-                ("calc", [one]) => Ok(*one),
-                ("min", list) if !list.is_empty() => pick(list, f64::min),
-                ("max", list) if !list.is_empty() => pick(list, f64::max),
+                ("calc", [one]) => Ok(one.clone()),
+                ("min", list) if !list.is_empty() => pick(list, false),
+                ("max", list) if !list.is_empty() => pick(list, true),
                 ("clamp", [low, value, high]) => {
                     // The value held between the bounds, the lower bound winning if they cross.
-                    let upper = pick(&[*value, *high], f64::min)?;
-                    pick(&[*low, upper], f64::max)
+                    let upper = pick(&[value.clone(), high.clone()], false)?;
+                    pick(&[low.clone(), upper], true)
                 }
                 ("calc" | "min" | "max" | "clamp", _) => {
                     Err(format!("{name}() takes a different number of values"))
@@ -290,40 +375,47 @@ impl Parser<'_> {
 
 /// The smallest or largest of `terms` by `pick`: of numbers, or of lengths that can be compared,
 /// which are all pixels or all one percentage, as a percentage cannot be set against pixels.
-fn pick(terms: &[Term], pick: fn(f64, f64) -> f64) -> Result<Term, String> {
-    let mut lengths = Vec::new();
-    let mut numbers = Vec::new();
-    for t in terms {
-        match t {
-            Term::Length(l) => lengths.push(*l),
-            Term::Number(n) => numbers.push(*n),
-        }
+fn pick(terms: &[Term], maximum: bool) -> Result<Term, String> {
+    let choose = if maximum { f64::max } else { f64::min };
+    if terms.iter().all(|t| matches!(t, Term::Number(_))) {
+        return Ok(Term::Number(
+            terms
+                .iter()
+                .map(|t| match t {
+                    Term::Number(n) => *n,
+                    _ => unreachable!(),
+                })
+                .reduce(choose)
+                .unwrap(),
+        ));
     }
-    match (lengths.is_empty(), numbers.is_empty()) {
-        (true, _) => Ok(Term::Number(
-            numbers.into_iter().reduce(pick).unwrap_or(0.0),
-        )),
-        (false, true) => {
-            if lengths.iter().all(|l| l.percent == 0.0) {
-                Ok(Term::Length(Length {
-                    px: lengths.iter().map(|l| l.px).reduce(pick).unwrap_or(0.0),
-                    percent: 0.0,
-                }))
-            } else if lengths.iter().all(|l| l.px == 0.0) {
-                Ok(Term::Length(Length {
-                    px: 0.0,
-                    percent: lengths
-                        .iter()
-                        .map(|l| l.percent)
-                        .reduce(pick)
-                        .unwrap_or(0.0),
-                }))
-            } else {
-                Err("min(), max() and clamp() cannot compare a percentage with a length".into())
-            }
-        }
-        _ => Err("a number and a length cannot be compared".into()),
-    }
+    let lengths: Vec<Expression> = terms
+        .iter()
+        .map(|t| match t {
+            Term::Length(e) => Ok(e.clone()),
+            _ => Err("a number and a length cannot be compared".to_string()),
+        })
+        .collect::<Result<_, _>>()?;
+    let linear: Option<Vec<Length>> = lengths.iter().map(Expression::linear).collect();
+    let expression = if let Some(values) = linear
+        .as_ref()
+        .filter(|v| v.iter().all(|l| l.percent == 0.0))
+    {
+        Expression::Linear(Length {
+            px: values.iter().map(|l| l.px).reduce(choose).unwrap(),
+            percent: 0.0,
+        })
+    } else if let Some(values) = linear.as_ref().filter(|v| v.iter().all(|l| l.px == 0.0)) {
+        Expression::Linear(Length {
+            px: 0.0,
+            percent: values.iter().map(|l| l.percent).reduce(choose).unwrap(),
+        })
+    } else if maximum {
+        Expression::Max(lengths)
+    } else {
+        Expression::Min(lengths)
+    };
+    Ok(Term::Length(expression))
 }
 
 #[cfg(test)]
@@ -426,6 +518,17 @@ mod tests {
         }
         let deep = format!("{}1px{}", "calc(".repeat(40), ")".repeat(40));
         assert!(evaluate(&deep, &unit).is_err(), "nesting is bounded");
+    }
+
+    #[test]
+    fn deferred_comparisons_use_the_final_percentage_basis() {
+        let e = parse("clamp(80px, calc(min(50%, 200px) + 10px), 180px)", &unit).unwrap();
+        assert_eq!(e.resolve(100.0), 80.0);
+        assert_eq!(e.resolve(276.0), 148.0);
+        assert_eq!(e.resolve(476.0), 180.0);
+        let e = parse("calc(2 * max(20%, 10px) - 4px)", &unit).unwrap();
+        assert_eq!(e.resolve(20.0), 16.0);
+        assert_eq!(e.resolve(100.0), 36.0);
     }
 
     #[test]

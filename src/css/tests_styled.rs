@@ -221,3 +221,149 @@ fn a_move_restyles_what_tests_its_place() {
         Some("30px")
     );
 }
+
+#[test]
+fn mixed_lengths_follow_content_boxes_and_resize_without_restyling() {
+    use crate::context::PropValue;
+    let mut ctx = LayoutContext::new();
+    let root = ctx.create_node(Default::default()).unwrap();
+    let child = ctx.create_node(Default::default()).unwrap();
+    ctx.insert_before(root, child, None).unwrap();
+    let mut s = Styles::new();
+    s.cascade_mut().push(parse(
+        ".root { width: 300px; height: 200px; display: flex; flex-direction: column; align-items: flex-start; padding: 10px; border: 2px solid red } .child { width: calc(100% - 32px); height: calc(50% - 8px); flex-shrink: 0 }",
+        None, &mut |_, _| None,
+    ));
+    for (n, c) in [(root, "root"), (child, "child")] {
+        let e = element(&mut s, &["div"], &[c]);
+        s.set_element(n, e);
+    }
+    assert!(s.restyle(&mut ctx, root).is_empty());
+    ctx.compute(root, 800.0, 600.0).unwrap();
+    assert_eq!(bounds(&ctx, child), [12.0, 12.0, 244.0, 80.0]);
+    ctx.apply(&[(root, 10, PropValue::Number(500.0))]).unwrap();
+    ctx.compute(root, 800.0, 600.0).unwrap();
+    assert_eq!(bounds(&ctx, child), [12.0, 12.0, 444.0, 80.0]);
+    ctx.apply(&[(root, 53, PropValue::Number(1.0))]).unwrap();
+    for width in [300.0, 300.0, 500.0, 300.0] {
+        ctx.compute(root, width, 600.0).unwrap();
+        assert_eq!(
+            bounds(&ctx, child),
+            [12.0, 12.0, width - 56.0, 80.0],
+            "Cached math layout follows available width"
+        );
+    }
+
+    // Replacing a math value releases its storage and restores the ordinary layout path.
+    ctx.apply(&[
+        (child, 10, PropValue::Number(40.0)),
+        (child, 11, PropValue::Number(20.0)),
+    ])
+    .unwrap();
+    ctx.compute(root, 800.0, 600.0).unwrap();
+    assert_eq!(bounds(&ctx, child), [12.0, 12.0, 40.0, 20.0]);
+    assert!(ctx.tree.as_ref().unwrap().layout.expressions.is_empty());
+}
+
+#[test]
+fn deferred_math_writes_remain_transactional_and_drop_with_removed_nodes() {
+    use super::layout::Units;
+    use crate::context::PropValue;
+    let mut ctx = LayoutContext::new();
+    let root = ctx.create_node(Default::default()).unwrap();
+    let child = ctx.create_node(Default::default()).unwrap();
+    ctx.insert_before(root, child, None).unwrap();
+    let math = PropValue::Math {
+        source: "min(50%, 100px)",
+        units: Units::default(),
+    };
+    assert!(
+        ctx.apply(&[(child, 10, math), (child, 99999, PropValue::Number(1.0))])
+            .is_err()
+    );
+    assert!(ctx.tree.as_ref().unwrap().layout.expressions.is_empty());
+    ctx.apply(&[(root, 10, PropValue::Number(300.0)), (child, 10, math)])
+        .unwrap();
+    ctx.compute(root, 300.0, 200.0).unwrap();
+    assert_eq!(bounds(&ctx, child)[2], 100.0);
+    ctx.remove(child).unwrap();
+    ctx.compute(root, 300.0, 200.0).unwrap();
+    assert!(ctx.tree.as_ref().unwrap().layout.expressions.is_empty());
+}
+
+#[test]
+fn mixed_insets_and_runtime_overflow_are_resolved_in_layout() {
+    use super::layout::Units;
+    use crate::context::PropValue;
+    let mut ctx = LayoutContext::new();
+    let root = ctx.create_node(Default::default()).unwrap();
+    let child = ctx.create_node(Default::default()).unwrap();
+    ctx.insert_before(root, child, None).unwrap();
+    let mut s = Styles::new();
+    s.cascade_mut().push(parse(".root {width:200px;height:100px;position:relative} .child {position:absolute;left:calc(25% + 3px);top:calc(50% - 4px);width:30px;height:10px}",None,&mut |_,_|None));
+    for (n, c) in [(root, "root"), (child, "child")] {
+        let e = element(&mut s, &["div"], &[c]);
+        s.set_element(n, e);
+    }
+    assert!(s.restyle(&mut ctx, root).is_empty());
+    ctx.compute(root, 200.0, 100.0).unwrap();
+    assert_eq!(bounds(&ctx, child), [53.0, 46.0, 30.0, 10.0]);
+    ctx.apply(&[(
+        child,
+        10,
+        PropValue::Math {
+            source: "min(calc(max(50%, 10px) * 1e308), 1px)",
+            units: Units::default(),
+        },
+    )])
+    .unwrap();
+    assert!(
+        ctx.compute(root, 200.0, 100.0).is_err(),
+        "Overflow must not be masked by min()"
+    );
+}
+
+#[test]
+fn sticky_inset_batches_keep_the_last_length_kind() {
+    use super::layout::Units;
+    use crate::context::PropValue;
+    let mut ctx = LayoutContext::new();
+    let root = ctx.create_node(Default::default()).unwrap();
+    let child = ctx.create_node(Default::default()).unwrap();
+    ctx.insert_before(root, child, None).unwrap();
+    ctx.apply(&[
+        (root, 10, PropValue::Number(200.0)),
+        (root, 11, PropValue::Number(100.0)),
+        (child, 29, PropValue::Enum(2)),
+    ])
+    .unwrap();
+    let math = PropValue::Math {
+        source: "calc(10% + 2px)",
+        units: Units::default(),
+    };
+    ctx.apply(&[(child, 30, PropValue::Number(3.0)), (child, 30, math)])
+        .unwrap();
+    ctx.compute(root, 200.0, 100.0).unwrap();
+    let id = child.id;
+    assert_eq!(
+        ctx.tree.as_ref().unwrap().sticky_insets(id).unwrap()[0],
+        Some(12.0)
+    );
+    ctx.apply(&[
+        (child, 30, PropValue::Number(3.0)),
+        (child, 112, PropValue::Number(0.2)),
+    ])
+    .unwrap();
+    ctx.compute(root, 200.0, 100.0).unwrap();
+    assert_eq!(
+        ctx.tree.as_ref().unwrap().sticky_insets(id).unwrap()[0],
+        Some(20.0)
+    );
+    ctx.apply(&[(child, 112, PropValue::Unset)]).unwrap();
+    ctx.compute(root, 200.0, 100.0).unwrap();
+    assert_eq!(
+        ctx.tree.as_ref().unwrap().sticky_insets(id).unwrap()[0],
+        None
+    );
+    assert!(ctx.tree.as_ref().unwrap().sticky_expressions.is_empty());
+}

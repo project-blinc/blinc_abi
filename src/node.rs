@@ -124,6 +124,7 @@ fn forget(tree: &mut Tree, nodes: &[LayoutNodeId]) {
         tree.line_clamps.remove(node);
         tree.clamped.remove(node);
         tree.sticky.remove(node);
+        tree.sticky_expressions.remove(node);
         tree.z_index.remove(node);
         tree.image_uses.remove(node);
         tree.glass_effects.remove(node);
