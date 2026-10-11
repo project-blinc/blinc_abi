@@ -52,6 +52,10 @@ pub enum PropValue<'a> {
 pub const BORDER_WIDTH: i32 = 2;
 pub const BORDER_TOP_WIDTH: i32 = 60;
 pub const ORDER: i32 = 118;
+/// The `position` property, its sticky value, and the first of the four insets after it.
+pub const POSITION: i32 = 29;
+pub const STICKY: i32 = 2;
+pub const INSET_TOP: i32 = 30;
 
 type Result<T> = std::result::Result<T, &'static str>;
 
@@ -162,6 +166,9 @@ impl LayoutContext {
             before: Style,
             props: Option<RenderProps>,
             order: Option<i32>,
+            /// Whether a write made it sticky or took that away, and the insets written since.
+            sticky: Option<bool>,
+            insets: [Option<Option<f32>>; 4],
         }
         let mut staged: Vec<Staged> = Vec::new();
         let mut index: HashMap<LayoutNodeId, usize> = HashMap::new();
@@ -177,6 +184,8 @@ impl LayoutContext {
                         style,
                         props: None,
                         order: None,
+                        sticky: None,
+                        insets: [None; 4],
                     });
                     staged.len() - 1
                 });
@@ -212,7 +221,20 @@ impl LayoutContext {
                             _ => false,
                         }
                     }
+                    // A sticky node's insets are where it is held, not where layout puts it.
+                    PropValue::Number(v) if (INSET_TOP..INSET_TOP + 4).contains(&raw) => {
+                        entry.insets[(raw - INSET_TOP) as usize] = Some(v.is_finite().then_some(v));
+                        crate::layout_props::set_f32(&mut entry.style, raw, v)
+                    }
+                    PropValue::Unset if (INSET_TOP..INSET_TOP + 4).contains(&raw) => {
+                        entry.insets[(raw - INSET_TOP) as usize] = Some(None);
+                        crate::layout_props::unset(&mut entry.style, raw)
+                    }
                     PropValue::Number(v) => crate::layout_props::set_f32(&mut entry.style, raw, v),
+                    PropValue::Enum(v) if raw == POSITION => {
+                        entry.sticky = Some(v == STICKY);
+                        crate::layout_props::set_i32(&mut entry.style, raw, v)
+                    }
                     PropValue::Enum(v) => crate::layout_props::set_i32(&mut entry.style, raw, v),
                     PropValue::Text(v) => crate::layout_props::set_string(&mut entry.style, raw, v),
                     PropValue::Unset => crate::layout_props::unset(&mut entry.style, raw),
@@ -224,7 +246,53 @@ impl LayoutContext {
         }
         let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
         let mut reordered = Vec::new();
-        for entry in staged {
+        for mut entry in staged {
+            // Held in place, a sticky node is laid out where it would be without insets.
+            let held = tree.sticky.get(&entry.id).copied();
+            let sticky = entry.sticky.unwrap_or(held.is_some());
+            if sticky {
+                let mut insets = held.unwrap_or_default();
+                if held.is_none() {
+                    // Just made sticky: the insets already on its style are where it is held.
+                    use taffy::style::CompactLength;
+                    let px = |v: taffy::style::LengthPercentageAuto| {
+                        let c = v.into_raw();
+                        (c.tag() == CompactLength::LENGTH_TAG).then_some(c.value())
+                    };
+                    let [t, r, b, l] = [
+                        entry.style.inset.top,
+                        entry.style.inset.right,
+                        entry.style.inset.bottom,
+                        entry.style.inset.left,
+                    ]
+                    .map(px);
+                    insets = [t, r, b, l];
+                }
+                for (slot, write) in insets.iter_mut().zip(entry.insets) {
+                    if let Some(v) = write {
+                        *slot = v;
+                    }
+                }
+                tree.sticky.insert(entry.id, insets);
+                let auto = taffy::style::LengthPercentageAuto::auto();
+                entry.style.inset.top = auto;
+                entry.style.inset.right = auto;
+                entry.style.inset.bottom = auto;
+                entry.style.inset.left = auto;
+            } else if let Some(insets) = held {
+                // No longer sticky: its insets offset it, as a relative node's do.
+                tree.sticky.remove(&entry.id);
+                let at = |v: Option<f32>| {
+                    v.map_or(
+                        taffy::style::LengthPercentageAuto::auto(),
+                        taffy::style::LengthPercentageAuto::length,
+                    )
+                };
+                entry.style.inset.top = at(insets[0]);
+                entry.style.inset.right = at(insets[1]);
+                entry.style.inset.bottom = at(insets[2]);
+                entry.style.inset.left = at(insets[3]);
+            }
             if entry.style != entry.before {
                 tree.layout.set_style(entry.id, entry.style);
             }
@@ -526,6 +594,15 @@ impl LayoutContext {
             .get_content_size(id)
             .ok_or("Layout node is removed")?;
         Ok([width, height])
+    }
+
+    /// How far `node` is drawn from where layout puts it, `(dx, dy)`, by `position: sticky`; zero
+    /// for any other node. Add it to its layout bounds to find where it is seen.
+    pub fn sticky_shift(&self, node: Node) -> Result<[f32; 2]> {
+        let id = self.check(node)?;
+        let tree = self.tree.as_ref().ok_or("Layout context is disposed")?;
+        let (dx, dy) = tree.sticky_shift(id);
+        Ok([dx, dy])
     }
 
     pub fn len(&self) -> Result<usize> {

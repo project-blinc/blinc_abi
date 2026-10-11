@@ -200,6 +200,7 @@ fn keyword(id: i32, word: &str) -> Option<i32> {
         POSITION => match word {
             "static" | "relative" => Some(0),
             "absolute" | "fixed" => Some(1),
+            "sticky" => Some(2),
             _ => None,
         },
         OVERFLOW | OVERFLOW_X | OVERFLOW_Y => match word {

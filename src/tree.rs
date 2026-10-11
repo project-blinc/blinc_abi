@@ -73,6 +73,9 @@ pub struct Tree {
     pub(crate) text_shadows: HashMap<LayoutNodeId, Vec<blinc_core::Shadow>>,
     /// Each liquid glass node's dispersion, bevel strength and curvature.
     pub(crate) glass_effects: HashMap<LayoutNodeId, crate::types::GlassEffects>,
+    /// The insets of each `position: sticky` node, top, right, bottom and left: how far in from the
+    /// edges of its scroll container it is held. Layout places it as `relative` with none of them.
+    pub(crate) sticky: HashMap<LayoutNodeId, [Option<f32>; 4]>,
     /// Nodes drawn away from their layout while a layout animation runs:
     /// moved by (dx, dy), and at size (w, h) when w is not negative.
     pub(crate) visuals: HashMap<LayoutNodeId, [f32; 4]>,
@@ -136,8 +139,9 @@ impl Tree {
         let Some(layout) = self.layout.get_layout(n) else {
             return Step::Through;
         };
-        let mut x = reach.origin.0 + layout.location.x;
-        let mut y = reach.origin.1 + layout.location.y;
+        let (stuck_x, stuck_y) = self.sticky_shift(n);
+        let mut x = reach.origin.0 + layout.location.x + stuck_x;
+        let mut y = reach.origin.1 + layout.location.y + stuck_y;
         let (mut w, mut h) = (layout.size.width, layout.size.height);
         if let Some(v) = self.visuals.get(&n) {
             x += v[0];
@@ -177,6 +181,114 @@ impl Tree {
             seen,
         }
     }
+    /// How far a `position: sticky` node is drawn from where layout puts it: held `top`, `right`,
+    /// `bottom` and `left` in from the edges of the view of its nearest scroll container, and
+    /// never out of its parent. Zero for any other node, and one with nothing to scroll in.
+    pub(crate) fn sticky_shift(&self, node: LayoutNodeId) -> (f32, f32) {
+        let Some(insets) = self.sticky.get(&node) else {
+            return (0.0, 0.0);
+        };
+        let Some(own) = self.layout.get_layout(node) else {
+            return (0.0, 0.0);
+        };
+        let overflows = |n: LayoutNodeId| {
+            self.layout.get_style(n).is_some_and(|s| {
+                s.overflow.x != taffy::Overflow::Visible || s.overflow.y != taffy::Overflow::Visible
+            })
+        };
+        // Where it is in the content of the scroll container, which the container's scroll moves.
+        let (mut cx, mut cy) = (own.location.x, own.location.y);
+        let (w, h) = (own.size.width, own.size.height);
+        let mut parent: Option<(f32, f32, f32, f32)> = None;
+        let mut container = None;
+        let mut below = Vec::new();
+        for a in self.layout.ancestors(node) {
+            if overflows(a) {
+                container = Some(a);
+                break;
+            }
+            below.push(a);
+        }
+        let Some(container) = container else {
+            return (0.0, 0.0);
+        };
+        let Some(view) = self.layout.get_layout(container) else {
+            return (0.0, 0.0);
+        };
+        // The parent's box in the same space, and the node's place in it.
+        let mut offset = (0.0, 0.0);
+        for (i, a) in below.iter().enumerate() {
+            let Some(l) = self.layout.get_layout(*a) else {
+                return (0.0, 0.0);
+            };
+            if i == 0 {
+                parent = Some((0.0, 0.0, l.size.width, l.size.height));
+                offset = (l.location.x, l.location.y);
+            } else {
+                offset.0 += l.location.x;
+                offset.1 += l.location.y;
+            }
+            cx += l.location.x;
+            cy += l.location.y;
+        }
+        // A parent that is the scroll container itself holds the node within its whole content.
+        let (px, py, pw, ph) = match parent {
+            Some((_, _, pw, ph)) => (offset.0, offset.1, pw, ph),
+            None => (
+                0.0,
+                0.0,
+                view.scrollable_overflow_rect.right.max(view.size.width),
+                view.scrollable_overflow_rect.bottom.max(view.size.height),
+            ),
+        };
+        let (sx, sy) = self
+            .scrolls
+            .get(&container)
+            .map_or((0.0, 0.0), |s| (s.x, s.y));
+        let shift = |place: f32,
+                     size: f32,
+                     scroll: f32,
+                     view: f32,
+                     lo: Option<f32>,
+                     hi: Option<f32>,
+                     p0: f32,
+                     p1: f32| {
+            let mut d = 0.0f32;
+            if let Some(lo) = lo {
+                d = d.max(scroll + lo - place);
+            }
+            if let Some(hi) = hi {
+                d = d.min(scroll + view - hi - (place + size));
+            }
+            // Not out of its parent.
+            d.min(p1 - (place + size)).max(p0 - place)
+        };
+        let dy = shift(
+            cy,
+            h,
+            sy,
+            view.size.height,
+            insets[0],
+            insets[2],
+            py,
+            py + ph,
+        );
+        let dx = shift(
+            cx,
+            w,
+            sx,
+            view.size.width,
+            insets[3],
+            insets[1],
+            px,
+            px + pw,
+        );
+        (
+            if dx.is_finite() { dx } else { 0.0 },
+            if dy.is_finite() { dy } else { 0.0 },
+        )
+    }
+
     pub fn new() -> Self {
         Self {
             layout: LayoutTree::new(),
@@ -199,6 +311,7 @@ impl Tree {
             image_uses: HashMap::new(),
             glass_effects: HashMap::new(),
             visuals: HashMap::new(),
+            sticky: HashMap::new(),
         }
     }
     pub(crate) fn forget(&mut self, id: LayoutNodeId) {
@@ -215,6 +328,7 @@ impl Tree {
         self.image_uses.remove(&id);
         self.glass_effects.remove(&id);
         self.visuals.remove(&id);
+        self.sticky.remove(&id);
     }
 }
 impl std::ops::Deref for Tree {

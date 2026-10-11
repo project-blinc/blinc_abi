@@ -948,6 +948,110 @@ mod tests {
         );
     }
     #[test]
+    fn a_sticky_header_is_held_in_view_and_leaves_with_its_section() {
+        use crate::context::{INSET_TOP, POSITION, PropValue, STICKY};
+        let mut tree = LayoutContext::new();
+        let column = |w: f32, h: f32| Style {
+            flex_direction: FlexDirection::Column,
+            ..style(w, h)
+        };
+        let scroller = tree
+            .create_node(Style {
+                overflow: taffy::Point {
+                    x: taffy::Overflow::Hidden,
+                    y: taffy::Overflow::Hidden,
+                },
+                ..column(100.0, 50.0)
+            })
+            .unwrap();
+        let mut headers = Vec::new();
+        let mut sections = Vec::new();
+        for hue in [0xff0000, 0x0000ff] {
+            let header = tree.create_node(style(100.0, 10.0)).unwrap();
+            let body = tree.create_node(style(100.0, 110.0)).unwrap();
+            let section = tree.create_node(column(100.0, 120.0)).unwrap();
+            tree.set_children(section, &[header, body]).unwrap();
+            tree.set_properties(
+                header,
+                RenderProps {
+                    background: Some(Brush::Solid(Color::from_hex(hue))),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            tree.apply(&[
+                (header, INSET_TOP, PropValue::Number(0.0)),
+                (header, POSITION, PropValue::Enum(STICKY)),
+            ])
+            .unwrap();
+            headers.push(header);
+            sections.push(section);
+        }
+        tree.set_children(scroller, &sections).unwrap();
+        tree.compute(scroller, 100.0, 50.0).unwrap();
+        // Sticky is laid out where it would be without its inset, not shifted by it.
+        let mut at = [0.0; 4];
+        tree.read_bounds(&[headers[1]], &mut at).unwrap();
+        assert_eq!(&at[..2], &[0.0, 120.0], "{at:?}");
+        const GONE: f32 = -999.0;
+        // The red and blue headers' drawn tops, at a scroll offset.
+        let drawn = |tree: &mut LayoutContext, scroll: f32| -> [f32; 2] {
+            tree.set_scroll(
+                scroller,
+                Some(Scroll {
+                    x: 0.0,
+                    y: scroll,
+                    thumb: [0.0; 4],
+                }),
+            )
+            .unwrap();
+            let mut encoder = SceneEncoder::new();
+            let info = encoder
+                .prepare(tree, scroller, PaintOptions::default())
+                .unwrap();
+            let mut data = vec![0.0; info.floats];
+            encoder.read(tree, &mut data).unwrap();
+            // A header out of the view is not drawn at all.
+            let mut tops = [GONE; 2];
+            for r in data.chunks(RECORD_FLOATS) {
+                // The fill's colour is in the third row.
+                if r[8] == 1.0 && r[10] == 0.0 {
+                    tops[0] = r[1];
+                } else if r[10] == 1.0 && r[8] == 0.0 {
+                    tops[1] = r[1];
+                }
+            }
+            tops
+        };
+        // Unscrolled, the first is where layout put it, and the second is below the view.
+        assert_eq!(drawn(&mut tree, 0.0), [0.0, GONE]);
+        // Scrolled into the first section, its header stays at the top of the view.
+        assert_eq!(drawn(&mut tree, 40.0), [0.0, GONE]);
+        // At the end of the first section, its header goes up with it, while the second arrives.
+        assert_eq!(drawn(&mut tree, 115.0), [-5.0, 5.0]);
+        // Past it, the first is gone and the second is held.
+        assert_eq!(drawn(&mut tree, 150.0), [GONE, 0.0]);
+        // What is hit at the top of the view is the held header, where it is drawn: the body
+        // there, which a later sibling would otherwise be hit first, is let through.
+        drawn(&mut tree, 40.0);
+        let body = tree.children(sections[0]).unwrap()[1];
+        tree.set_pointer_events(body, false).unwrap();
+        assert_eq!(
+            tree.hit_test(scroller, 5.0, 5.0).unwrap()[0].node,
+            headers[0]
+        );
+        tree.set_pointer_events(body, true).unwrap();
+        // A node made not sticky is laid out and drawn as a relative one is, offset by its inset.
+        tree.apply(&[(headers[0], POSITION, PropValue::Enum(0))])
+            .unwrap();
+        tree.compute(scroller, 100.0, 50.0).unwrap();
+        assert_eq!(
+            drawn(&mut tree, 40.0)[0],
+            GONE,
+            "scrolled out of the view with its section"
+        );
+    }
+    #[test]
     fn text_shadows_draw_under_the_text_last_first_and_inherit() {
         use crate::display_list::{PRIM_LAYER, PRIM_LAYER_BEGIN, PRIM_TEXT, RECORD_FLOATS};
         let mut tree = LayoutContext::new();

@@ -1457,6 +1457,26 @@ mod borders {
             .collect()
     }
 
+    #[test]
+    fn position_sticky_is_read_beside_the_other_positions() {
+        let word = |v: &str| -> Result<Vec<(i32, i32)>, String> {
+            layout_writes("position", Some(v), &Units::default())
+                .unwrap()
+                .map(|w| {
+                    w.iter()
+                        .map(|(id, v)| match v {
+                            PropValue::Enum(n) => (*id, *n),
+                            _ => panic!("not a keyword"),
+                        })
+                        .collect()
+                })
+        };
+        assert_eq!(word("sticky"), Ok(vec![(POSITION, 2)]));
+        assert_eq!(word("relative"), Ok(vec![(POSITION, 0)]));
+        assert_eq!(word("absolute"), Ok(vec![(POSITION, 1)]));
+        assert!(word("floating").is_err());
+    }
+
     fn sides(width: Option<f32>) -> Vec<(i32, Option<f32>)> {
         [
             BORDER_TOP_WIDTH,

@@ -143,8 +143,9 @@ fn hit(
     let Some(layout) = tree.layout.get_layout(node) else {
         return false;
     };
-    let mut x = origin.0 + layout.location.x;
-    let mut y = origin.1 + layout.location.y;
+    let (stuck_x, stuck_y) = tree.sticky_shift(node);
+    let mut x = origin.0 + layout.location.x + stuck_x;
+    let mut y = origin.1 + layout.location.y + stuck_y;
     let (mut w, mut h) = (layout.size.width, layout.size.height);
     // Where a layout animation draws it.
     let mut sized = false;
