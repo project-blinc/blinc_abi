@@ -6,6 +6,8 @@ pub enum Value {
     #[default]
     None,
     Brush(Brush),
+    /// Blinc image brush with optional positioning and independent repeat axes.
+    Image(blinc_core::layer::ImageBrush, ImageMapping),
     /// Glass and the rim settings which Blinc's GlassStyle does not carry.
     Glass(GlassStyle, GlassEffects),
     Color(Color),
@@ -20,6 +22,13 @@ pub enum Value {
     ClipPath(blinc_core::ClipPath, bool),
     /// How an element's text, and its descendants', is decorated.
     TextDecoration(crate::css::text_decoration::TextDecoration),
+}
+
+/// Image position as free-space fractions and pixel offsets; repeat uses bit 0 for X and bit 1 for Y.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageMapping {
+    pub position: [f32; 4],
+    pub repeat: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -292,6 +301,40 @@ mod host {
         hlp_blinc_brush_image,
         hl_blinc_brush_image,
         "PBi_Xblinc_value_"
+    );
+
+    /// Adds numeric mapping to an image value before it is bound to a node.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_brush_image_mapping(
+        brush: *mut c_void,
+        x: f32,
+        y: f32,
+        ox: f32,
+        oy: f32,
+        repeat: i32,
+    ) {
+        let position = [x, y, ox, oy];
+        if !(0..=3).contains(&repeat) || !position.iter().all(|v| v.is_finite()) {
+            return;
+        }
+        if let Some(value) = unsafe { handle_mut::<Value>(brush) } {
+            let image = match value {
+                Value::Brush(Brush::Image(image)) | Value::Image(image, _) => image.clone(),
+                _ => return,
+            };
+            *value = Value::Image(
+                image,
+                ImageMapping {
+                    position,
+                    repeat: repeat as u8,
+                },
+            );
+        }
+    }
+    define_prim!(
+        hlp_blinc_brush_image_mapping,
+        hl_blinc_brush_image_mapping,
+        "PXblinc_value_ffffi_v"
     );
 
     #[unsafe(no_mangle)]

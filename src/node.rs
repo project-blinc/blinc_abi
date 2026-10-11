@@ -129,6 +129,7 @@ fn forget(tree: &mut Tree, nodes: &[LayoutNodeId]) {
         tree.z_index.remove(node);
         tree.image_uses.remove(node);
         tree.image_mappings.remove(node);
+        tree.background_mappings.remove(node);
         tree.glass_effects.remove(node);
     }
 }
@@ -539,6 +540,14 @@ pub unsafe extern "C" fn hl_blinc_tree_flush(h: *mut c_void) -> bool {
     }
     for (node, write) in writes {
         match write {
+            TreeWrite::BackgroundMapping(mapping) => match mapping {
+                Some(mapping) if tree.layout.get_style(node).is_some() => {
+                    tree.background_mappings.insert(node, mapping);
+                }
+                _ => {
+                    tree.background_mappings.remove(&node);
+                }
+            },
             TreeWrite::PointerEvents(enabled) => {
                 if tree.layout.get_style(node).is_some() {
                     if enabled {

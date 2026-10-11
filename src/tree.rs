@@ -48,6 +48,8 @@ pub struct Tree {
     /// 4 none, 5 scale-down), then x/y fractions and x/y pixel offsets.
     /// Legacy centred fits need no entry. Renderers resolve this before atlas sampling.
     pub(crate) image_mappings: HashMap<LayoutNodeId, [f32; 5]>,
+    /// Background mapping is separate from a node’s content image mapping.
+    pub(crate) background_mappings: HashMap<LayoutNodeId, crate::types::ImageMapping>,
     /// Image-brush sources resolved by the host, with one prepared slot per fit.
     #[cfg(feature = "scene")]
     pub(crate) image_sources: HashMap<String, [Option<i32>; 4]>,
@@ -557,6 +559,7 @@ impl Tree {
             owners: HashMap::new(),
             images: HashMap::new(),
             image_mappings: HashMap::new(),
+            background_mappings: HashMap::new(),
             #[cfg(feature = "scene")]
             image_sources: HashMap::new(),
             canvases: HashMap::new(),
@@ -609,6 +612,7 @@ impl Tree {
         self.owners.remove(&id);
         self.images.remove(&id);
         self.image_mappings.remove(&id);
+        self.background_mappings.remove(&id);
         self.canvases.remove(&id);
         self.scrolls.remove(&id);
         self.scrollbar_styles.remove(&id);

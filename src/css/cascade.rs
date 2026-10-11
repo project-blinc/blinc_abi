@@ -87,7 +87,13 @@ pub fn longhands(name: &str) -> &'static [&'static str] {
         "inset" => &["top", "right", "bottom", "left"],
         "gap" => &["row-gap", "column-gap"],
         "flex" => &["flex-grow", "flex-shrink", "flex-basis"],
-        "background" => &["background-color", "background-image"],
+        "background" => &[
+            "background-color",
+            "background-image",
+            "background-size",
+            "background-repeat",
+            "background-position",
+        ],
         "overflow" => &["overflow-x", "overflow-y"],
         "outline" => &["outline-width", "outline-color"],
         "text-decoration" => &[

@@ -195,6 +195,7 @@ pub(crate) enum TreeWrite {
     TextOverflow(Option<bool>),
     LineClamp(Option<u32>),
     PointerEvents(bool),
+    BackgroundMapping(Option<crate::types::ImageMapping>),
 }
 
 pub const Z_INDEX: i32 = crate::context::Z_INDEX;
@@ -698,20 +699,35 @@ define_prim!(
 // VALUES: brushes, colors, radii, transforms, shadows
 // ============================================================================
 
+/// Ordinary colour/gradient writes need no image-mapping queue entry. Only a previous image can own one.
+fn clear_background_mapping(node: LayoutNodeId, props: &RenderProps) {
+    if matches!(props.background, Some(blinc_core::Brush::Image(_))) {
+        record_tree(node, TreeWrite::BackgroundMapping(None));
+    }
+}
+
 /// A value of the wrong variant for the property is ignored.
 fn value_write(node: LayoutNodeId, prop: PropertyId) -> Option<Write<Value>> {
     use PropertyId as P;
     match prop {
         P::Background => render(move |p, v| match v {
             Value::Glass(g, effects) => {
+                clear_background_mapping(node, p);
                 record_glass(node, if g.simple { None } else { Some(effects) });
                 p.background = Some(blinc_core::Brush::Glass(g));
             }
+            Value::Image(image, mapping) => {
+                record_tree(node, TreeWrite::BackgroundMapping(Some(mapping)));
+                record_glass(node, None);
+                p.background = Some(blinc_core::Brush::Image(image));
+            }
             Value::Brush(b) => {
+                clear_background_mapping(node, p);
                 record_glass(node, None);
                 p.background = Some(b);
             }
             Value::Color(c) => {
+                clear_background_mapping(node, p);
                 record_glass(node, None);
                 p.background = Some(c.into());
             }
@@ -896,6 +912,7 @@ pub unsafe extern "C" fn hl_blinc_unset(node: u64, raw: i32) {
             P::Background,
             Box::new(move |p| {
                 record_glass(node, None);
+                clear_background_mapping(node, p);
                 p.background = None;
             }),
         ),

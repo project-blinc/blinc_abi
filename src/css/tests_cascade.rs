@@ -156,6 +156,22 @@ fn a_shorthand_sets_its_longhands_anew() {
 }
 
 #[test]
+fn background_shorthand_resets_mapping_but_stronger_longhands_survive() {
+    let mut c = Cascade::new();
+    c.push(sheet(".a { background-size: contain; background-position: right bottom; background-repeat: no-repeat; }
+                  .a.b { background: url(tile.png); }
+                  .a.b.c { background-repeat: repeat-x; }"));
+    let mut doc = Doc::default();
+    let e = el(&mut c, &["div"], &["a", "b", "c"]);
+    doc.add(None, e);
+    let s = &style_all(&c, &doc)[0];
+    assert_eq!(get(&c, s, "background-size"), None);
+    assert_eq!(get(&c, s, "background-position"), None);
+    assert_eq!(get(&c, s, "background-repeat").as_deref(), Some("repeat-x"));
+    assert_eq!(get(&c, s, "background").as_deref(), Some("url(tile.png)"));
+}
+
+#[test]
 fn inheritance_reaches_text_and_variables_resolve() {
     let mut c = Cascade::new();
     c.set_theme(&[("primary", "#0af")]);
