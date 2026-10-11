@@ -1458,6 +1458,42 @@ mod borders {
     }
 
     #[test]
+    fn display_takes_the_inline_forms_laid_out_as_their_block_ones() {
+        let word = |v: &str| -> Result<i32, String> {
+            layout_writes("display", Some(v), &Units::default())
+                .unwrap()
+                .map(|w| match w[0].1 {
+                    PropValue::Enum(n) => n,
+                    _ => panic!("not a keyword"),
+                })
+        };
+        for (name, code) in [
+            ("block", 0),
+            ("flex", 1),
+            ("grid", 2),
+            ("none", 3),
+            ("inline-block", 4),
+            ("inline-flex", 5),
+            ("inline-grid", 6),
+            ("inline", 7),
+        ] {
+            assert_eq!(word(name), Ok(code), "{name}");
+        }
+        assert!(word("table").is_err());
+        // Laid out: inline-block as a block, inline-flex as a flex box, inline-grid as a grid.
+        let mut style = taffy::Style::default();
+        for (code, shown) in [
+            (4, taffy::Display::Block),
+            (5, taffy::Display::Flex),
+            (6, taffy::Display::Grid),
+            (7, taffy::Display::Block),
+        ] {
+            assert!(crate::layout_props::set_i32(&mut style, DISPLAY, code));
+            assert_eq!(style.display, shown, "{code}");
+        }
+    }
+
+    #[test]
     fn position_sticky_is_read_beside_the_other_positions() {
         let word = |v: &str| -> Result<Vec<(i32, i32)>, String> {
             layout_writes("position", Some(v), &Units::default())

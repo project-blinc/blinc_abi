@@ -194,10 +194,20 @@ fn keyword(id: i32, word: &str) -> Option<i32> {
             .iter()
             .position(|k| *k == word)
             .map(|i| i as i32),
-        DISPLAY => ["block", "flex", "grid", "none"]
-            .iter()
-            .position(|k| *k == word)
-            .map(|i| i as i32),
+        // The inline forms are laid out as their block ones; where one is inline is the host's to say.
+        DISPLAY => [
+            "block",
+            "flex",
+            "grid",
+            "none",
+            "inline-block",
+            "inline-flex",
+            "inline-grid",
+            "inline",
+        ]
+        .iter()
+        .position(|k| *k == word)
+        .map(|i| i as i32),
         POSITION => match word {
             "static" | "relative" => Some(0),
             "absolute" | "fixed" => Some(1),

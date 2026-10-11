@@ -202,10 +202,12 @@ pub fn set_f32(s: &mut Style, raw: i32, v: f32) -> bool {
     true
 }
 
+/// 0 block, 1 flex, 2 grid, 3 none, then the inline forms: 4 inline-block and 7 inline lay out as
+/// block, 5 inline-flex as flex and 6 inline-grid as grid. A host places them in a line of text.
 fn display(v: i32) -> Display {
     match v {
-        0 => Display::Block,
-        2 => Display::Grid,
+        0 | 4 | 7 => Display::Block,
+        2 | 6 => Display::Grid,
         3 => Display::None,
         _ => Display::Flex,
     }
