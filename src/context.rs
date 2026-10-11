@@ -396,6 +396,24 @@ impl LayoutContext {
         }))
     }
 
+    /// Opt into a shared grid for direct rows, preserving authored parents for CSS and hits.
+    /// Children use their grid-column placement and grid-row span. Empty rows reset the group.
+    pub fn set_grid_rows(&mut self, group: Node, rows: &[Node]) -> Result<()> {
+        let group = self.check(group)?;
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|&row| self.check(row))
+            .collect::<Result<_>>()?;
+        self.tree
+            .as_mut()
+            .ok_or("Layout context is disposed")?
+            .layout
+            .set_grid_rows(group, &rows)?;
+        self.bounds.clear();
+        self.revision += 1;
+        Ok(())
+    }
+
     /// Place `child` under `parent` before `before`, or last when `before`
     /// is `None`, first detaching it from wherever it is. Placing a node
     /// before itself changes nothing.

@@ -14,6 +14,7 @@ use std::{
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicUsize, Ordering},
 };
+use taffy::style_helpers::{TaffyGridLine, line};
 use taffy::*;
 
 static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(8);
@@ -120,6 +121,8 @@ pub struct LayoutTree {
     cache: HashMap<LayoutNodeId, Cache>,
     unrounded: HashMap<LayoutNodeId, Layout>,
     baselines: HashMap<LayoutNodeId, f32>,
+    /// An opt-in layout projection; the base tree remains the authored tree.
+    grid_rows: HashMap<LayoutNodeId, GridRows>,
     pub(crate) error: Option<&'static str>,
 }
 impl Default for LayoutTree {
@@ -150,6 +153,7 @@ impl LayoutTree {
             cache: HashMap::new(),
             unrounded: HashMap::new(),
             baselines: HashMap::new(),
+            grid_rows: HashMap::new(),
             error: None,
         }
     }
@@ -183,7 +187,61 @@ impl LayoutTree {
         self.nodes.remove(&id);
         self.computed.remove(&id);
         self.baselines.remove(&id);
+        self.grid_rows.remove(&id);
+        self.grid_rows.retain(|_, rows| !rows.contains(&id));
         self.base.remove_node(id);
+    }
+    /// Lay these direct rows' children out together. Empty rows restore ordinary layout.
+    /// Row and cell identities, styles and logical ancestry stay unchanged.
+    pub fn set_grid_rows(
+        &mut self,
+        group: LayoutNodeId,
+        rows: &[LayoutNodeId],
+    ) -> Result<(), &'static str> {
+        if !self.base.node_exists(group) {
+            return Err("Grid group is removed");
+        }
+        let children = self.base.children(group);
+        let direct: HashSet<_> = children.iter().copied().collect();
+        let unique: HashSet<_> = rows.iter().copied().collect();
+        if children.len() >= i16::MAX as usize
+            || unique.len() != rows.len()
+            || rows.iter().any(|row| !direct.contains(row))
+        {
+            return Err("Grid rows must be unique direct children of their group");
+        }
+        // The grid's row order is its authored order, never the supplied list's order.
+        let ordered: Vec<_> = children
+            .into_iter()
+            .filter(|n| unique.contains(n))
+            .collect();
+        if ordered.is_empty() {
+            self.grid_rows.remove(&group);
+        } else if self
+            .grid_rows
+            .get(&group)
+            .is_some_and(|r| r.rows == ordered)
+        {
+            return Ok(());
+        } else {
+            self.grid_rows.insert(
+                group,
+                GridRows {
+                    rows: ordered,
+                    members: unique,
+                },
+            );
+        }
+        self.cache.clear();
+        self.computed.clear();
+        self.unrounded.clear();
+        let style = self.base.get_style(group).ok_or("Grid group is removed")?;
+        self.base.set_style(group, style);
+        Ok(())
+    }
+    #[cfg(feature = "scene")]
+    pub(crate) fn grid_rows(&self, group: LayoutNodeId) -> Option<&GridRows> {
+        self.grid_rows.get(&group)
     }
     pub fn remove_subtree(&mut self, id: LayoutNodeId) {
         let mut nodes = vec![id];
@@ -203,6 +261,13 @@ impl LayoutTree {
     }
     pub fn compute_layout(&mut self, root: LayoutNodeId, space: Size<AvailableSpace>) {
         self.error = None;
+        // A detached or reparented row cannot leave a stale projection behind.
+        self.grid_rows.retain(|group, rows| {
+            let direct: HashSet<_> = self.base.children(*group).into_iter().collect();
+            self.base.node_exists(*group)
+                && direct.len() < i16::MAX as usize
+                && rows.iter().all(|row| direct.contains(row))
+        });
         // Removing/replacing declarations and nodes must release their expression storage.
         if !self.expressions.is_empty() {
             self.nodes.retain(|n| self.base.node_exists(*n));
@@ -216,7 +281,7 @@ impl LayoutTree {
                 .collect();
             self.expressions.retain(|id, _| live.contains(id));
         }
-        if self.expressions.is_empty() {
+        if self.expressions.is_empty() && self.grid_rows.is_empty() {
             self.computed.clear();
             self.cache.clear();
             self.unrounded.clear();
@@ -231,11 +296,22 @@ impl LayoutTree {
             &mut self.cache,
             &self.unrounded,
         );
+        let projected = if self.grid_rows.is_empty() {
+            Vec::new()
+        } else {
+            view.project_rows(&self.grid_rows)
+        };
         compute_root_layout(&mut view, NodeId::from(0usize), space);
         round_layout(&mut view, NodeId::from(0usize));
         if view.failed.get() {
             self.error = Some("Invalid or non-finite CSS length during layout");
             return;
+        }
+        for (cell, row) in projected {
+            let origin = view.node(row).final_layout.location;
+            let cell = view.node_mut(cell);
+            cell.final_layout.location.x -= origin.x;
+            cell.final_layout.location.y -= origin.y;
         }
         for node in view.nodes {
             self.computed.insert(node.id, node.final_layout);
@@ -272,6 +348,22 @@ impl LayoutTree {
     }
 }
 
+pub(crate) struct GridRows {
+    rows: Vec<LayoutNodeId>,
+    members: HashSet<LayoutNodeId>,
+}
+impl Deref for GridRows {
+    type Target = [LayoutNodeId];
+    fn deref(&self) -> &[LayoutNodeId] {
+        &self.rows
+    }
+}
+impl GridRows {
+    pub(crate) fn contains(&self, node: &LayoutNodeId) -> bool {
+        self.members.contains(node)
+    }
+}
+
 struct ViewNode {
     id: LayoutNodeId,
     style: Style,
@@ -288,6 +380,93 @@ struct View<'a> {
     failed: Cell<bool>,
 }
 impl<'a> View<'a> {
+    /// Flatten only the layout graph, with rows as full-width track-sizing boxes.
+    /// Cells are rebased under their authored row after rounding.
+    fn project_rows(&mut self, groups: &HashMap<LayoutNodeId, GridRows>) -> Vec<(NodeId, NodeId)> {
+        let index: HashMap<_, _> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.id, NodeId::from(i)))
+            .collect();
+        let mut projected = Vec::new();
+        for (group, rows) in groups {
+            let Some(&group) = index.get(group) else {
+                continue;
+            };
+            if self.node(group).style.display == Display::None {
+                continue;
+            }
+            let rows: Vec<_> = rows
+                .iter()
+                .filter_map(|id| index.get(id).copied())
+                .collect();
+            let Some(&first) = rows.first() else { continue };
+            let ordinal: HashMap<_, _> = rows.iter().enumerate().map(|(i, n)| (*n, i)).collect();
+            let columns = self.node(first).style.grid_template_columns.clone();
+            let gap = self.node(first).style.gap.width;
+            let children = self.node(group).children.clone();
+            let mut slots = HashMap::new();
+            let mut slot = 1i16;
+            for &child in &children {
+                if self.node(child).style.display != Display::None {
+                    slots.insert(child, slot);
+                    slot += 1;
+                }
+            }
+            let mut flat = Vec::new();
+            for child in children {
+                let Some(&ordinal) = ordinal.get(&child) else {
+                    let style = &mut self.node_mut(child).style;
+                    style.grid_column = crate::grid::line_pair("1 / -1").unwrap();
+                    if let Some(&slot) = slots.get(&child) {
+                        style.grid_row = line(slot);
+                    }
+                    flat.push(child);
+                    continue;
+                };
+                let Some(&slot) = slots.get(&child) else {
+                    // Hidden rows keep their subtree so Taffy clears its hidden layout.
+                    flat.push(child);
+                    continue;
+                };
+                let cells = std::mem::take(&mut self.node_mut(child).children);
+                let row = self.node_mut(child);
+                row.style.grid_column = crate::grid::line_pair("1 / -1").unwrap();
+                row.style.grid_row = line(slot);
+                // A row is the track's own box; its children are measured by the shared grid.
+                row.style.align_self = Some(AlignItems::STRETCH);
+                row.style.justify_self = Some(AlignItems::STRETCH);
+                flat.push(child);
+                for cell in cells {
+                    let span = match self.node(cell).style.grid_row.end {
+                        GridPlacement::Span(n) => usize::from(n),
+                        _ => 1,
+                    };
+                    let end = rows
+                        .iter()
+                        .skip(ordinal)
+                        .take(span)
+                        .filter_map(|r| slots.get(r))
+                        .next_back()
+                        .copied()
+                        .unwrap_or(slot);
+                    self.node_mut(cell).style.grid_row = Line {
+                        start: GridPlacement::from_line_index(slot),
+                        end: GridPlacement::from_line_index(end + 1),
+                    };
+                    flat.push(cell);
+                    projected.push((cell, child));
+                }
+            }
+            let node = self.node_mut(group);
+            node.children = flat;
+            node.style.display = Display::Grid;
+            node.style.grid_template_columns = columns;
+            node.style.gap.width = gap;
+        }
+        projected
+    }
     fn new(
         base: &'a BaseTree,
         expressions: &'a HashMap<usize, Expression>,

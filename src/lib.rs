@@ -13,6 +13,8 @@ pub mod css;
 #[cfg(feature = "hashlink")]
 mod css_hl;
 pub mod graph;
+#[cfg(test)]
+mod row_grid;
 #[cfg(feature = "scene")]
 pub mod scene;
 pub mod tree;

@@ -16,6 +16,14 @@ buffers. Disposing it invalidates all its nodes. The reactive context provides
 isolated signals, computed dependencies, batched effects and deferred mutation
 while callbacks run. Host adapters retain values and callback references.
 
+`LayoutContext::set_grid_rows(group, rows)` opts direct rows into a shared grid
+for table row spans. Adapters assign columns and spans; native layout measures
+the shared tracks and keeps authored row/cell ancestry for styles and events.
+Ordinary row backgrounds paint below spanning cells, with row transforms,
+clipping and stacking contexts preserved. An empty row list restores ordinary
+layout. HashLink exposes the same operation as `blinc_tree_set_grid_rows`, taking
+consecutive 64-bit row IDs and returning false for invalid ownership or rows.
+
 The `scene` feature adds owned scene properties, measured text, display-list
 encoding and hit testing without HashLink. Each `SceneEncoder` retains reusable
 buffers and its own glyph atlases, with revisioned incremental uploads. It reuses

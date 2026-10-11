@@ -125,6 +125,13 @@ impl HitRegion {
 
 /// Appends to `out` the topmost node of `node`'s subtree under `(px, py)` on
 /// screen, then each of its ancestors up to `node`; nothing when no node is.
+#[derive(Clone, Copy, PartialEq)]
+enum HitPass {
+    All,
+    Box,
+    Children,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn hit(
     tree: &Tree,
@@ -136,6 +143,33 @@ fn hit(
     py: f32,
     out: &mut Vec<Hit>,
     region: &mut HitRegion,
+) -> bool {
+    hit_inner(
+        tree,
+        node,
+        origin,
+        m,
+        clips,
+        px,
+        py,
+        out,
+        region,
+        HitPass::All,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn hit_inner(
+    tree: &Tree,
+    node: LayoutNodeId,
+    origin: (f32, f32),
+    m: Affine,
+    clips: &mut Vec<Clip>,
+    px: f32,
+    py: f32,
+    out: &mut Vec<Hit>,
+    region: &mut HitRegion,
+    pass: HitPass,
 ) -> bool {
     if tree.pass_through.contains(&node) {
         return false;
@@ -233,16 +267,61 @@ fn hit(
     let children = tree.paint_order(node);
     let (sx, sy) = tree.scrolls.get(&node).map_or((0.0, 0.0), |s| (s.x, s.y));
     let mut found = false;
-    for &child in children.iter().rev() {
-        if hit(tree, child, (x - sx, y - sy), m, clips, px, py, out, region) {
-            found = true;
-            break;
+    if pass != HitPass::Box {
+        for &child in children.iter().rev() {
+            let pass = if tree
+                .layout
+                .grid_rows(node)
+                .is_some_and(|r| r.contains(&child))
+                && !tree.row_stacks(child)
+            {
+                HitPass::Children
+            } else {
+                HitPass::All
+            };
+            if hit_inner(
+                tree,
+                child,
+                (x - sx, y - sy),
+                m,
+                clips,
+                px,
+                py,
+                out,
+                region,
+                pass,
+            ) {
+                found = true;
+                break;
+            }
+        }
+        if !found && let Some(rows) = tree.layout.grid_rows(node) {
+            for &child in children.iter().rev() {
+                if rows.contains(&child)
+                    && !tree.row_stacks(child)
+                    && hit_inner(
+                        tree,
+                        child,
+                        (x - sx, y - sy),
+                        m,
+                        clips,
+                        px,
+                        py,
+                        out,
+                        region,
+                        HitPass::Box,
+                    )
+                {
+                    found = true;
+                    break;
+                }
+            }
         }
     }
     if clipped {
         clips.pop();
     }
-    if !found {
+    if !found && pass != HitPass::Children {
         let inside_clips = clips.iter().all(|c| {
             let (cx, cy) = apply(c.to_layout, px, py);
             let [rx, ry, rw, rh] = c.rect;

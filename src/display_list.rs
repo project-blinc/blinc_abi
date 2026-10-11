@@ -855,8 +855,25 @@ pub fn append(
     out: &mut Vec<f32>,
 ) {
     append_inner(
-        tree, node, origin, opacity, color, m, clips, glyphs, out, true,
+        tree,
+        node,
+        origin,
+        opacity,
+        color,
+        m,
+        clips,
+        glyphs,
+        out,
+        true,
+        PaintPass::All,
     );
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum PaintPass {
+    All,
+    Box,
+    Children,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -871,6 +888,7 @@ fn append_inner(
     glyphs: &mut Glyphs,
     out: &mut Vec<f32>,
     mut cull: bool,
+    pass: PaintPass,
 ) {
     let Some(layout) = tree.layout.get_layout(node) else {
         return;
@@ -921,7 +939,8 @@ fn append_inner(
     // A border drawn after the children, with the clips its node is drawn under.
     let mut after: Option<(Primitive, Clipping)> = None;
     let mut patterned_after = Vec::new();
-    if let Some(props) = tree.props.get(&node) {
+    let props = tree.props.get(&node);
+    if let Some(props) = props {
         if !props.visible {
             return;
         }
@@ -996,6 +1015,8 @@ fn append_inner(
             });
             shaped = true;
         }
+    }
+    if let Some(props) = props.filter(|_| pass != PaintPass::Children) {
         let r: CornerRadius = props.border_radius;
         let radii = [r.top_left, r.top_right, r.bottom_right, r.bottom_left];
         let notch = tree.notches.get(&node).copied().unwrap_or([[0.0; 4]; 3]);
@@ -1282,8 +1303,18 @@ fn append_inner(
     // An image or a canvas is clipped to its own rounded corners, as an `<img>` is: inside its
     // border, when it has one, as the content of a box with a border is.
     let content = [
-        (tree.images.get(&node), PRIM_IMAGE),
-        (tree.canvases.get(&node), PRIM_CANVAS),
+        (
+            tree.images
+                .get(&node)
+                .filter(|_| pass != PaintPass::Children),
+            PRIM_IMAGE,
+        ),
+        (
+            tree.canvases
+                .get(&node)
+                .filter(|_| pass != PaintPass::Children),
+            PRIM_CANVAS,
+        ),
     ];
     for (found, kind) in content {
         let Some(&slot) = found else {
@@ -1328,7 +1359,8 @@ fn append_inner(
             ),
         }
     }
-    if let Some(context) = tree.layout.text_context(node)
+    if pass != PaintPass::Children
+        && let Some(context) = tree.layout.text_context(node)
         && !text_outside_clip(tree, node, context, [x, y, w, h], m, clips, cull)
     {
         text_records(
@@ -1345,7 +1377,6 @@ fn append_inner(
             cull,
         );
     }
-
     // Children are clipped to the padding box, each corner rounded by what is left of its
     // radius after its borders; and to a box a layout animation sizes.
     if clips_children(tree, node) || sized {
@@ -1395,21 +1426,65 @@ fn append_inner(
     // A scroll container's content moves up and left by its offset.
     let scroll = tree.scrolls.get(&node).copied();
     let (sx, sy) = scroll.map_or((0.0, 0.0), |s| (s.x, s.y));
-    for child in tree.paint_order(node) {
-        append_inner(
-            tree,
-            child,
-            (x - sx, y - sy),
-            opacity,
-            color,
-            m,
-            clips,
-            glyphs,
-            out,
-            cull,
-        );
+    if pass != PaintPass::Box {
+        let children = tree.paint_order(node);
+        if let Some(rows) = tree.layout.grid_rows(node) {
+            for &child in &children {
+                if rows.contains(&child) && !tree.row_stacks(child) {
+                    append_inner(
+                        tree,
+                        child,
+                        (x - sx, y - sy),
+                        opacity,
+                        color,
+                        m,
+                        clips,
+                        glyphs,
+                        out,
+                        cull,
+                        PaintPass::Box,
+                    );
+                }
+            }
+            for child in children {
+                let pass = if rows.contains(&child) && !tree.row_stacks(child) {
+                    PaintPass::Children
+                } else {
+                    PaintPass::All
+                };
+                append_inner(
+                    tree,
+                    child,
+                    (x - sx, y - sy),
+                    opacity,
+                    color,
+                    m,
+                    clips,
+                    glyphs,
+                    out,
+                    cull,
+                    pass,
+                );
+            }
+        } else {
+            for child in children {
+                append_inner(
+                    tree,
+                    child,
+                    (x - sx, y - sy),
+                    opacity,
+                    color,
+                    m,
+                    clips,
+                    glyphs,
+                    out,
+                    cull,
+                    PaintPass::All,
+                );
+            }
+        }
     }
-    if let Some(s) = scroll {
+    if let Some(s) = scroll.filter(|_| pass != PaintPass::Children) {
         thumbs(tree, node, s, (x, y), opacity, m, clips, out, cull);
     }
     if pushed {

@@ -415,6 +415,21 @@ impl Tree {
         children
     }
 
+    /// A row that creates a stacking context keeps its background and contents together.
+    /// Ordinary row backgrounds precede all the shared grid's cell contents.
+    #[cfg(feature = "scene")]
+    pub(crate) fn row_stacks(&self, node: LayoutNodeId) -> bool {
+        self.z_index.contains_key(&node)
+            || self.sticky.contains_key(&node)
+            || self.props.get(&node).is_some_and(|p| {
+                p.opacity < 1.0
+                    || p.transform.is_some()
+                    || p.filter.is_some()
+                    || p.mask_image.is_some()
+                    || p.clip_path.is_some()
+            })
+    }
+
     /// Apply a position/inset batch to the sticky constraints shared by every adapter.
     /// Insets hold a sticky box at the scroll edge; its normal-flow layout has none.
     pub(crate) fn sync_sticky(

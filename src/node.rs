@@ -333,6 +333,39 @@ define_prim!(
     "PXblinc_tree_lBi_v"
 );
 
+/// Opt into shared layout/paint for direct rows. `rows` contains `len` u64 ids.
+/// An empty list resets the projection; invalid ownership/structure leaves it unchanged.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_tree_set_grid_rows(
+    h: *mut c_void,
+    group: u64,
+    rows: *const vbyte,
+    len: i32,
+) -> bool {
+    if len < 0 || len >= i16::MAX as i32 || (len > 0 && rows.is_null()) {
+        return false;
+    }
+    let owner = unsafe { owner(h) };
+    let Some(tree) = (unsafe { tree(h) }) else {
+        return false;
+    };
+    let group = id(group);
+    let rows: Vec<_> = (0..len as usize)
+        .map(|i| id(unsafe { (rows as *const u64).add(i).read_unaligned() }))
+        .collect();
+    if tree.owners.get(&group) != Some(&owner)
+        || rows.iter().any(|r| tree.owners.get(r) != Some(&owner))
+    {
+        return false;
+    }
+    tree.layout.set_grid_rows(group, &rows).is_ok()
+}
+define_prim!(
+    hlp_blinc_tree_set_grid_rows,
+    hl_blinc_tree_set_grid_rows,
+    "PXblinc_tree_lBi_b"
+);
+
 /// Writes `node`'s children as 64-bit ids into `out`, at most `capacity`.
 /// Returns how many there are; 0 for a node that is gone.
 #[unsafe(no_mangle)]
