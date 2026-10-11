@@ -881,6 +881,73 @@ mod tests {
         assert!(encoder.read(&tree, &mut data).is_err());
     }
     #[test]
+    fn a_decoration_stacks_with_an_ancestors_and_an_explicit_none_does_not_undo_it() {
+        use crate::css::text_decoration::{Style as DecorationStyle, TextDecoration, UNDERLINE};
+        use crate::display_list::{PRIM_RECT, RECORD_FLOATS};
+        let mut tree = LayoutContext::new();
+        let root = tree.create_node(style(300.0, 100.0)).unwrap();
+        let child = tree
+            .create_text(
+                Style::default(),
+                TextMeasureContext {
+                    content: "WW".into(),
+                    font_size: 16.0,
+                    line_height: 1.2,
+                    letter_spacing: 0.0,
+                    wrap: false,
+                    font_name: None,
+                    generic_font: blinc_layout::div::GenericFont::SansSerif,
+                    font_weight: 400,
+                    italic: false,
+                },
+            )
+            .unwrap();
+        tree.set_children(root, &[child]).unwrap();
+        tree.compute(root, 300.0, 100.0).unwrap();
+        let underline = TextDecoration {
+            lines: UNDERLINE,
+            style: DecorationStyle::Solid,
+            color: None,
+            thickness: None,
+            offset: None,
+        };
+        let mut encoder = SceneEncoder::new();
+        let bands = |tree: &LayoutContext, encoder: &mut SceneEncoder| -> usize {
+            encoder
+                .prepare(tree, root, PaintOptions::default())
+                .unwrap();
+            encoder
+                .records
+                .chunks(RECORD_FLOATS)
+                .filter(|r| r[44] as u32 == PRIM_RECT as u32)
+                .count()
+        };
+        tree.set_text_decoration(root, Some(underline)).unwrap();
+        assert_eq!(
+            bands(&tree, &mut encoder),
+            1,
+            "the root's underline draws once, across its only child"
+        );
+        // The child's own `none`: it draws no line of its own, and does not undo the root's.
+        let none = TextDecoration {
+            lines: 0,
+            ..underline
+        };
+        tree.set_text_decoration(child, Some(none)).unwrap();
+        assert_eq!(
+            bands(&tree, &mut encoder),
+            1,
+            "a child's own none neither adds a line nor removes its ancestor's"
+        );
+        // The child decorated too: both bands draw, the child's innermost.
+        tree.set_text_decoration(child, Some(underline)).unwrap();
+        assert_eq!(
+            bands(&tree, &mut encoder),
+            2,
+            "a child's own line stacks with its ancestor's rather than replacing it"
+        );
+    }
+    #[test]
     fn text_shadows_draw_under_the_text_last_first_and_inherit() {
         use crate::display_list::{PRIM_LAYER, PRIM_LAYER_BEGIN, PRIM_TEXT, RECORD_FLOATS};
         let mut tree = LayoutContext::new();
