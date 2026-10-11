@@ -501,7 +501,33 @@ pub unsafe extern "C" fn hl_blinc_css_restyle(h: *mut c_void, t: *mut c_void, ro
     let (Some(s), Some(tree)) = (unsafe { styles(h) }, unsafe { crate::node::tree(t) }) else {
         return 0;
     };
+    let pending = s.changed_count();
     s.restyle_host(&mut TreeHost(tree), root);
+    // Only native pattern state is ours to apply. Read it from the already
+    // resolved declarations; the host keeps its other paint declarations,
+    // without a second parse of backgrounds, gradients and shadows here.
+    let (env, root_font_size) = s.cascade().environment();
+    for raw in s.changed_nodes().skip(pending) {
+        let id = LayoutNodeId::from_raw(raw);
+        if let Some(computed) = s.computed(raw)
+            && tree.layout.node_exists(id)
+        {
+            let units = css::layout::Units {
+                font_size: computed.font_size,
+                root_font_size,
+                viewport_width: env.width,
+                viewport_height: env.height,
+            };
+            let styles = css::border::resolved_styles(
+                computed
+                    .resolved
+                    .iter()
+                    .map(|(name, value)| (s.cascade().str(*name), value.as_str())),
+                &units,
+            );
+            tree.set_border_styles(id, styles);
+        }
+    }
     s.changed_count() as i32
 }
 define_prim!(

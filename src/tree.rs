@@ -72,6 +72,8 @@ pub struct Tree {
     /// Nodes whose background image source changed since the host last took them, each with the
     /// source it names now, none when it names none: one entry per node, the last change.
     pub(crate) image_uses: HashMap<LayoutNodeId, Option<String>>,
+    /// Only nodes with non-default border patterns need an entry, top first, clockwise.
+    pub(crate) border_styles: HashMap<LayoutNodeId, [crate::css::border::Style; 4]>,
     /// How each node decorates its text and its descendants'.
     pub(crate) text_decorations: HashMap<LayoutNodeId, crate::css::text_decoration::TextDecoration>,
     /// Each node's text shadows, first on top: its own and its descendants' text's, the nearest
@@ -135,6 +137,36 @@ impl Tree {
     /// which has no box, is passed through; a node not laid out yet counts as
     /// in view, and a hidden or `display: none` ancestor as not. A box of no
     /// size counts where it stands, so one growing from nothing is seen.
+    #[cfg(feature = "scene")]
+    pub(crate) fn set_border_style(
+        &mut self,
+        node: LayoutNodeId,
+        side: usize,
+        style: crate::css::border::Style,
+    ) {
+        use crate::css::border::Style;
+        let mut styles = self
+            .border_styles
+            .get(&node)
+            .copied()
+            .unwrap_or([Style::Solid; 4]);
+        styles[side] = style;
+        self.set_border_styles(node, styles);
+    }
+
+    #[cfg(feature = "scene")]
+    pub(crate) fn set_border_styles(
+        &mut self,
+        node: LayoutNodeId,
+        styles: [crate::css::border::Style; 4],
+    ) {
+        if styles == [crate::css::border::Style::Solid; 4] {
+            self.border_styles.remove(&node);
+        } else {
+            self.border_styles.insert(node, styles);
+        }
+    }
+
     pub fn in_view(&self, node: LayoutNodeId) -> bool {
         let mut path = self.layout.ancestors(node);
         path.reverse();
@@ -538,6 +570,7 @@ impl Tree {
             #[cfg(feature = "scene")]
             even_odd: HashSet::new(),
             backdrop_filters: HashMap::new(),
+            border_styles: HashMap::new(),
             text_decorations: HashMap::new(),
             text_shadows: HashMap::new(),
             text_overflows: HashMap::new(),
@@ -586,6 +619,7 @@ impl Tree {
         self.pass_through.remove(&id);
         self.notches.remove(&id);
         self.backdrop_filters.remove(&id);
+        self.border_styles.remove(&id);
         self.text_decorations.remove(&id);
         self.text_shadows.remove(&id);
         self.text_overflows.remove(&id);

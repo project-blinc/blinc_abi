@@ -482,3 +482,114 @@ fn generated_styles_follow_origin_state_attributes_and_inheritance() {
         assert!(s.take_generated().is_empty());
     }
 }
+
+#[cfg(feature = "scene")]
+#[test]
+fn border_side_patterns_follow_cascade_colour_changes_and_shorthand_resets() {
+    use super::border::Style as BorderStyle;
+    use super::paint::PaintWrite;
+    let mut ctx = LayoutContext::new();
+    let root = ctx.create_node(Default::default()).unwrap();
+    let mut s = Styles::new();
+    s.set_paint_output(true);
+    s.cascade_mut().push(parse(
+        ".box { border: 3px dashed red; border-top-style: dotted; border-color: blue; }
+         .box:hover { border: 2px solid lime; }
+         .box:active { border-style: dashed dotted none solid; }",
+        None,
+        &mut |_, _| None,
+    ));
+    let e = element(&mut s, &["div"], &["box"]);
+    s.set_element(root, e);
+    let apply = |s: &mut Styles, ctx: &mut LayoutContext| {
+        assert!(s.restyle(ctx, root).is_empty());
+        for (node, writes) in s.take_paint() {
+            for write in writes {
+                if let PaintWrite::BorderStyle { side, style } = write {
+                    ctx.set_border_style(node, side, style).unwrap();
+                }
+            }
+        }
+    };
+    apply(&mut s, &mut ctx);
+    let id = blinc_layout::tree::LayoutNodeId::from_raw(root.raw());
+    assert_eq!(
+        ctx.tree.as_ref().unwrap().border_styles[&id],
+        [
+            BorderStyle::Dotted,
+            BorderStyle::Dashed,
+            BorderStyle::Dashed,
+            BorderStyle::Dashed
+        ]
+    );
+    s.set_states(root, States(States::bit("hover").unwrap()));
+    apply(&mut s, &mut ctx);
+    assert!(
+        !ctx.tree.as_ref().unwrap().border_styles.contains_key(&id),
+        "solid takes the compact default"
+    );
+    s.set_states(root, States(States::bit("active").unwrap()));
+    apply(&mut s, &mut ctx);
+    assert_eq!(
+        ctx.tree.as_ref().unwrap().border_styles[&id],
+        [
+            BorderStyle::Dashed,
+            BorderStyle::Dotted,
+            BorderStyle::None,
+            BorderStyle::Solid
+        ]
+    );
+    s.set_states(root, States::default());
+    apply(&mut s, &mut ctx);
+    assert_eq!(
+        ctx.tree.as_ref().unwrap().border_styles[&id][0],
+        BorderStyle::Dotted
+    );
+    let plain = element(&mut s, &["div"], &[]);
+    s.set_element(root, plain);
+    apply(&mut s, &mut ctx);
+    assert!(
+        !ctx.tree.as_ref().unwrap().border_styles.contains_key(&id),
+        "removing the rule resets patterns"
+    );
+}
+
+#[test]
+fn none_has_zero_used_width_independent_of_width_declaration_order() {
+    let mut ctx = LayoutContext::new();
+    let root = ctx.create_node(Default::default()).unwrap();
+    let child = ctx.create_node(Default::default()).unwrap();
+    ctx.set_children(root, &[child]).unwrap();
+    let mut s = Styles::new();
+    s.cascade_mut().push(parse(
+        ".box { width:100px;height:50px;border-style:none;border-width:3px; }
+        .box:hover { border-style:solid; border-left-style:none; }
+        .box:active { border-left-style:dotted; }",
+        None,
+        &mut |_, _| None,
+    ));
+    let e = element(&mut s, &["div"], &["box"]);
+    s.set_element(root, e);
+    assert!(s.restyle(&mut ctx, root).is_empty());
+    ctx.compute(root, 100.0, 50.0).unwrap();
+    assert_eq!(&bounds(&ctx, child)[..2], &[0.0, 0.0]);
+    s.set_states(root, States(States::bit("active").unwrap()));
+    assert!(s.restyle(&mut ctx, root).is_empty());
+    ctx.compute(root, 100.0, 50.0).unwrap();
+    assert_eq!(
+        &bounds(&ctx, child)[..2],
+        &[3.0, 0.0],
+        "a side overrides a shorthand none"
+    );
+    s.set_states(root, States(States::bit("hover").unwrap()));
+    assert!(s.restyle(&mut ctx, root).is_empty());
+    ctx.compute(root, 100.0, 50.0).unwrap();
+    assert_eq!(&bounds(&ctx, child)[..2], &[0.0, 3.0]);
+    s.set_states(
+        root,
+        States(States::bit("hover").unwrap() | States::bit("active").unwrap()),
+    );
+    assert!(s.restyle(&mut ctx, root).is_empty());
+    ctx.compute(root, 100.0, 50.0).unwrap();
+    assert_eq!(&bounds(&ctx, child)[..2], &[3.0, 3.0]);
+}
