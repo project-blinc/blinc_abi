@@ -948,6 +948,92 @@ mod tests {
         );
     }
     #[test]
+    fn z_index_stacks_siblings_and_the_hit_test_follows() {
+        use crate::context::{PropValue, Z_INDEX};
+        let mut tree = LayoutContext::new();
+        let root = tree.create_node(style(100.0, 100.0)).unwrap();
+        // Three boxes in one place, in tree order red, green, blue.
+        let boxes: Vec<_> = [0xff0000u32, 0x00ff00, 0x0000ff]
+            .iter()
+            .map(|&hue| {
+                let node = tree
+                    .create_node(Style {
+                        position: Position::Absolute,
+                        ..style(50.0, 50.0)
+                    })
+                    .unwrap();
+                tree.set_properties(
+                    node,
+                    RenderProps {
+                        background: Some(Brush::Solid(Color::from_hex(hue))),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                node
+            })
+            .collect();
+        tree.set_children(root, &boxes).unwrap();
+        tree.compute(root, 100.0, 100.0).unwrap();
+        // Which of red (r), green (g) and blue (b) is drawn first to last.
+        let painted = |tree: &mut LayoutContext| -> String {
+            tree.compute(root, 100.0, 100.0).unwrap();
+            let mut encoder = SceneEncoder::new();
+            let info = encoder
+                .prepare(tree, root, PaintOptions::default())
+                .unwrap();
+            let mut data = vec![0.0; info.floats];
+            encoder.read(tree, &mut data).unwrap();
+            data.chunks(RECORD_FLOATS)
+                .map(|r| match (r[8], r[9], r[10]) {
+                    (1.0, 0.0, 0.0) => 'r',
+                    (0.0, 1.0, 0.0) => 'g',
+                    _ => 'b',
+                })
+                .collect()
+        };
+        assert_eq!(painted(&mut tree), "rgb", "tree order with no z-index");
+        let z = |tree: &mut LayoutContext, node: Node, v: i32| {
+            tree.apply(&[(node, Z_INDEX, PropValue::Enum(v))]).unwrap();
+            tree.compute(root, 100.0, 100.0).unwrap();
+        };
+        z(&mut tree, boxes[0], 1);
+        assert_eq!(
+            painted(&mut tree),
+            "gbr",
+            "a positive z-index goes to the top"
+        );
+        assert_eq!(tree.hit_test(root, 10.0, 10.0).unwrap()[0].node, boxes[0]);
+        z(&mut tree, boxes[2], -1);
+        assert_eq!(
+            painted(&mut tree),
+            "bgr",
+            "a negative one goes under the rest"
+        );
+        z(&mut tree, boxes[1], 2);
+        assert_eq!(painted(&mut tree), "brg", "higher is over lower");
+        assert_eq!(tree.hit_test(root, 10.0, 10.0).unwrap()[0].node, boxes[1]);
+        // Equal z-indexes keep tree order; zero is with the positioned ones, above the others.
+        z(&mut tree, boxes[1], 1);
+        assert_eq!(painted(&mut tree), "brg");
+        tree.apply(&[(boxes[0], Z_INDEX, PropValue::Unset)])
+            .unwrap();
+        tree.apply(&[(boxes[1], Z_INDEX, PropValue::Unset)])
+            .unwrap();
+        tree.apply(&[(boxes[2], Z_INDEX, PropValue::Unset)])
+            .unwrap();
+        assert_eq!(
+            painted(&mut tree),
+            "rgb",
+            "auto puts them back in tree order"
+        );
+        assert!(
+            tree.apply(&[(boxes[0], Z_INDEX, PropValue::Text(None))])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn a_sticky_header_is_held_in_view_and_leaves_with_its_section() {
         use crate::context::{INSET_TOP, POSITION, PropValue, STICKY};
         let mut tree = LayoutContext::new();
@@ -1031,16 +1117,12 @@ mod tests {
         assert_eq!(drawn(&mut tree, 115.0), [-5.0, 5.0]);
         // Past it, the first is gone and the second is held.
         assert_eq!(drawn(&mut tree, 150.0), [GONE, 0.0]);
-        // What is hit at the top of the view is the held header, where it is drawn: the body
-        // there, which a later sibling would otherwise be hit first, is let through.
+        // A held header is drawn over the body that follows it, and is what is hit over it.
         drawn(&mut tree, 40.0);
-        let body = tree.children(sections[0]).unwrap()[1];
-        tree.set_pointer_events(body, false).unwrap();
         assert_eq!(
             tree.hit_test(scroller, 5.0, 5.0).unwrap()[0].node,
             headers[0]
         );
-        tree.set_pointer_events(body, true).unwrap();
         // A node made not sticky is laid out and drawn as a relative one is, offset by its inset.
         tree.apply(&[(headers[0], POSITION, PropValue::Enum(0))])
             .unwrap();

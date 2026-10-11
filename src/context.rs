@@ -56,6 +56,8 @@ pub const ORDER: i32 = 118;
 pub const POSITION: i32 = 29;
 pub const STICKY: i32 = 2;
 pub const INSET_TOP: i32 = 30;
+/// `z-index`: an integer, or unset for `auto`.
+pub const Z_INDEX: i32 = 121;
 
 type Result<T> = std::result::Result<T, &'static str>;
 
@@ -169,6 +171,7 @@ impl LayoutContext {
             /// Whether a write made it sticky or took that away, and the insets written since.
             sticky: Option<bool>,
             insets: [Option<Option<f32>>; 4],
+            z_index: Option<Option<i32>>,
         }
         let mut staged: Vec<Staged> = Vec::new();
         let mut index: HashMap<LayoutNodeId, usize> = HashMap::new();
@@ -186,6 +189,7 @@ impl LayoutContext {
                         order: None,
                         sticky: None,
                         insets: [None; 4],
+                        z_index: None,
                     });
                     staged.len() - 1
                 });
@@ -194,6 +198,17 @@ impl LayoutContext {
                     raw == BORDER_WIDTH || (BORDER_TOP_WIDTH..BORDER_TOP_WIDTH + 4).contains(&raw);
                 let applied = match value {
                     PropValue::Number(v) if v.is_infinite() => false,
+                    _ if raw == Z_INDEX => match value {
+                        PropValue::Enum(v) => {
+                            entry.z_index = Some(Some(v));
+                            true
+                        }
+                        PropValue::Unset => {
+                            entry.z_index = Some(None);
+                            true
+                        }
+                        _ => false,
+                    },
                     _ if raw == ORDER => match value {
                         PropValue::Enum(v) => {
                             entry.order = Some(v);
@@ -292,6 +307,12 @@ impl LayoutContext {
                 entry.style.inset.right = at(insets[1]);
                 entry.style.inset.bottom = at(insets[2]);
                 entry.style.inset.left = at(insets[3]);
+            }
+            if let Some(z) = entry.z_index {
+                match z {
+                    Some(z) => tree.z_index.insert(entry.id, z),
+                    None => tree.z_index.remove(&entry.id),
+                };
             }
             if entry.style != entry.before {
                 tree.layout.set_style(entry.id, entry.style);

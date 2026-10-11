@@ -1350,7 +1350,7 @@ fn append_inner(
     // A scroll container's content moves up and left by its offset.
     let scroll = tree.scrolls.get(&node).copied();
     let (sx, sy) = scroll.map_or((0.0, 0.0), |s| (s.x, s.y));
-    for child in tree.layout.children(node) {
+    for child in tree.paint_order(node) {
         append_inner(
             tree,
             child,

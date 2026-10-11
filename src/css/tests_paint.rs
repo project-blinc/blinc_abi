@@ -1477,6 +1477,30 @@ mod borders {
         assert!(word("floating").is_err());
     }
 
+    #[test]
+    fn z_index_is_an_integer_or_auto() {
+        let write = |v: Option<&str>| {
+            layout_writes("z-index", v, &Units::default())
+                .unwrap()
+                .map(|w| {
+                    w.iter()
+                        .map(|(id, v)| match v {
+                            PropValue::Enum(n) => (*id, Some(*n)),
+                            PropValue::Unset => (*id, None),
+                            _ => panic!("not an integer"),
+                        })
+                        .collect::<Vec<_>>()
+                })
+        };
+        assert!(is_layout_property("z-index"));
+        assert_eq!(write(Some("3")), Ok(vec![(Z_INDEX, Some(3))]));
+        assert_eq!(write(Some("-1")), Ok(vec![(Z_INDEX, Some(-1))]));
+        assert_eq!(write(Some("auto")), Ok(vec![(Z_INDEX, None)]));
+        assert_eq!(write(None), Ok(vec![(Z_INDEX, None)]));
+        assert!(write(Some("1.5")).is_err());
+        assert!(write(Some("top")).is_err());
+    }
+
     fn sides(width: Option<f32>) -> Vec<(i32, Option<f32>)> {
         [
             BORDER_TOP_WIDTH,

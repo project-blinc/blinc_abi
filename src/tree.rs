@@ -76,6 +76,8 @@ pub struct Tree {
     /// The insets of each `position: sticky` node, top, right, bottom and left: how far in from the
     /// edges of its scroll container it is held. Layout places it as `relative` with none of them.
     pub(crate) sticky: HashMap<LayoutNodeId, [Option<f32>; 4]>,
+    /// Each node's `z-index`, where it is not `auto`.
+    pub(crate) z_index: HashMap<LayoutNodeId, i32>,
     /// Nodes drawn away from their layout while a layout animation runs:
     /// moved by (dx, dy), and at size (w, h) when w is not negative.
     pub(crate) visuals: HashMap<LayoutNodeId, [f32; 4]>,
@@ -289,6 +291,31 @@ impl Tree {
         )
     }
 
+    /// The children of `node` in the order they are painted, the last on top, which is the order
+    /// they are hit in reverse. As CSS stacks a context's children: those with a negative
+    /// `z-index`, then the rest in tree order, then those with `z-index: 0` and sticky ones in
+    /// tree order, then those with a positive `z-index`; ties in tree order. Each node stacks
+    /// only among its siblings, as if it began a stacking context. Nodes with no `z-index`, bar
+    /// sticky ones, keep their tree order, as they did before `z-index` was read.
+    pub(crate) fn paint_order(&self, node: LayoutNodeId) -> Vec<LayoutNodeId> {
+        let mut children = self.layout.children(node);
+        if self.z_index.is_empty() && self.sticky.is_empty() {
+            return children;
+        }
+        // Which of four layers, then by z-index within the outer two.
+        let layer = |n: &LayoutNodeId| -> (u8, i32) {
+            match self.z_index.get(n) {
+                Some(z) if *z < 0 => (0, *z),
+                Some(0) => (2, 0),
+                Some(z) => (3, *z),
+                None if self.sticky.contains_key(n) => (2, 0),
+                None => (1, 0),
+            }
+        };
+        children.sort_by_key(layer);
+        children
+    }
+
     pub fn new() -> Self {
         Self {
             layout: LayoutTree::new(),
@@ -312,6 +339,7 @@ impl Tree {
             glass_effects: HashMap::new(),
             visuals: HashMap::new(),
             sticky: HashMap::new(),
+            z_index: HashMap::new(),
         }
     }
     pub(crate) fn forget(&mut self, id: LayoutNodeId) {
@@ -329,6 +357,7 @@ impl Tree {
         self.glass_effects.remove(&id);
         self.visuals.remove(&id);
         self.sticky.remove(&id);
+        self.z_index.remove(&id);
     }
 }
 impl std::ops::Deref for Tree {

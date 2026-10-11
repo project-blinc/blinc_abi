@@ -74,6 +74,7 @@ pub mod id {
     pub const GAP_X_PERCENT: i32 = 116;
     pub const GAP_Y_PERCENT: i32 = 117;
     pub const ORDER: i32 = 118;
+    pub const Z_INDEX: i32 = 121;
 }
 
 /// What relative lengths are relative to: the element's font size, the
@@ -270,7 +271,7 @@ pub fn is_layout_property(name: &str) -> bool {
         || sides(name).is_some()
         || matches!(
             name,
-            "gap" | "flex" | "flex-grow" | "flex-shrink" | "order" | "aspect-ratio"
+            "gap" | "flex" | "flex-grow" | "flex-shrink" | "order" | "aspect-ratio" | "z-index"
         )
 }
 
@@ -453,6 +454,15 @@ pub fn layout_writes<'a>(
                 })
             })
         }
+        ("z-index", None) => Ok(vec![(Z_INDEX, PropValue::Unset)]),
+        ("z-index", Some(v)) if v.trim().eq_ignore_ascii_case("auto") => {
+            Ok(vec![(Z_INDEX, PropValue::Unset)])
+        }
+        ("z-index", Some(v)) => v
+            .trim()
+            .parse::<i32>()
+            .map(|n| vec![(Z_INDEX, PropValue::Enum(n))])
+            .map_err(|_| format!("z-index takes an integer or auto, not {v}")),
         ("order", None) => Ok(vec![(ORDER, PropValue::Unset)]),
         ("order", Some(v)) => number(v, name).map(|n| vec![(ORDER, PropValue::Enum(n as i32))]),
         ("aspect-ratio", None) => Ok(vec![(ASPECT_RATIO, PropValue::Unset)]),

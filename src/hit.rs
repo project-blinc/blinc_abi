@@ -230,7 +230,7 @@ fn hit(
             to_layout,
         });
     }
-    let children = tree.layout.children(node);
+    let children = tree.paint_order(node);
     let (sx, sy) = tree.scrolls.get(&node).map_or((0.0, 0.0), |s| (s.x, s.y));
     let mut found = false;
     for &child in children.iter().rev() {
@@ -315,7 +315,7 @@ fn order(tree: &Tree, node: LayoutNodeId, out: &mut Vec<u64>) {
         return;
     }
     out.push(node.to_raw());
-    for child in tree.layout.children(node) {
+    for child in tree.paint_order(node) {
         order(tree, child, out);
     }
 }
