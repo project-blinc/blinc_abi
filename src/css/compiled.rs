@@ -11,14 +11,19 @@
 use super::*;
 
 pub const MAGIC: &[u8; 4] = b"BCSS";
-/// The layout's version; a reader refuses any other.
-pub const VERSION: u16 = 2;
+/// Font metadata uses version 3; sheets without it still encode identically as version 2.
+pub const VERSION: u16 = 3;
 
 /// `sheet` as compiled bytes.
 pub fn encode(sheet: &Stylesheet) -> Vec<u8> {
     let mut w = Writer(Vec::with_capacity(1024));
     w.0.extend_from_slice(MAGIC);
-    w.0.extend_from_slice(&VERSION.to_le_bytes());
+    let version = if sheet.font_faces.is_empty() {
+        2u16
+    } else {
+        VERSION
+    };
+    w.0.extend_from_slice(&version.to_le_bytes());
     let (text, spans) = sheet.atoms.parts();
     w.n(text.len() as u64);
     w.0.extend_from_slice(text.as_bytes());
@@ -109,6 +114,29 @@ pub fn encode(sheet: &Stylesheet) -> Vec<u8> {
             }
         }
     });
+    if version >= 3 {
+        w.list(&sheet.font_faces, |w, f| {
+            w.atom(f.family);
+            w.list(&f.sources, |w, s| {
+                w.atom(s.name);
+                w.byte(s.local as u8);
+                w.opt(s.format);
+            });
+            w.n(f.weight[0] as u64);
+            w.n(f.weight[1] as u64);
+            w.byte(f.italic as u8);
+            match f.media {
+                None => w.byte(0),
+                Some(m) => {
+                    w.byte(1);
+                    w.span(m);
+                }
+            }
+            w.opt(f.file);
+            w.n(f.line as u64);
+            w.n(f.column as u64);
+        });
+    }
     w.0
 }
 
@@ -118,7 +146,7 @@ pub fn decode(bytes: &[u8]) -> Result<Stylesheet, String> {
         return Err("not a compiled stylesheet".into());
     }
     let version = u16::from_le_bytes([bytes[4], bytes[5]]);
-    if version != VERSION {
+    if version != 2 && version != VERSION {
         return Err(format!(
             "compiled stylesheet version {version}; this reads {VERSION}"
         ));
@@ -237,6 +265,29 @@ pub fn decode(bytes: &[u8]) -> Result<Stylesheet, String> {
             file,
         })
     })?;
+    if version >= 3 {
+        sheet.font_faces = r.list(|r| {
+            Ok(font_face::FontFace {
+                family: r.atom()?,
+                sources: r.list(|r| {
+                    Ok(font_face::FontSource {
+                        name: r.atom()?,
+                        local: r.boolean()?,
+                        format: r.opt()?,
+                    })
+                })?,
+                weight: [
+                    u16::try_from(r.n()?).map_err(|_| "font weight out of range")?,
+                    u16::try_from(r.n()?).map_err(|_| "font weight out of range")?,
+                ],
+                italic: r.boolean()?,
+                media: if r.boolean()? { Some(r.span()?) } else { None },
+                file: r.opt()?,
+                line: r.u32()?,
+                column: r.u32()?,
+            })
+        })?;
+    }
     if r.at != bytes.len() {
         return Err("bytes after the sheet".into());
     }
@@ -254,6 +305,21 @@ fn check(s: &Stylesheet) -> Result<(), String> {
     };
     let atom = |a: Atom| (a.0 as usize) < s.atoms.len();
     let bad = |what: &str| Err(format!("{what} points outside the sheet"));
+    for f in &s.font_faces {
+        if !atom(f.family)
+            || f.file.is_some_and(|a| !atom(a))
+            || f.sources.is_empty()
+            || f.sources
+                .iter()
+                .any(|src| !atom(src.name) || src.format.is_some_and(|a| !atom(a)))
+            || f.media.is_some_and(|m| !within(m, s.media_lists.len()))
+        {
+            return bad("a font face");
+        }
+        if f.weight[0] < 1 || f.weight[1] > 1000 || f.weight[0] > f.weight[1] {
+            return Err("invalid font weight range".into());
+        }
+    }
     for r in &s.rules {
         if !within(r.selectors, s.selectors.len()) || !within(r.declarations, s.declarations.len())
         {
@@ -535,6 +601,13 @@ struct Reader<'b> {
 type Got<T> = Result<T, String>;
 
 impl Reader<'_> {
+    fn boolean(&mut self) -> Got<bool> {
+        match self.byte()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err("invalid boolean".into()),
+        }
+    }
     fn byte(&mut self) -> Got<u8> {
         let b = *self.bytes.get(self.at).ok_or("the bytes end early")?;
         self.at += 1;

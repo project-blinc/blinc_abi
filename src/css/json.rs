@@ -77,6 +77,29 @@ fn declaration(sheet: &Stylesheet, d: &Declaration) -> String {
 }
 
 pub fn to_json(sheet: &Stylesheet) -> String {
+    let fonts = if sheet.font_faces.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ",\"fontFaces\":{}",
+            list(&sheet.font_faces, |f| format!(
+                "{{\"family\":{},\"sources\":{},\"weight\":[{},{}],\"italic\":{},\"file\":{},\"line\":{},\"column\":{}}}",
+                string(sheet.str(f.family)),
+                list(&f.sources, |s| format!(
+                    "{{\"name\":{},\"local\":{},\"format\":{}}}",
+                    string(sheet.str(s.name)),
+                    s.local,
+                    s.format.map_or("null".into(), |a| string(sheet.str(a)))
+                )),
+                f.weight[0],
+                f.weight[1],
+                f.italic,
+                f.file.map_or("null".into(), |a| string(sheet.str(a))),
+                f.line,
+                f.column
+            ))
+        )
+    };
     let rules = list(&sheet.rules, |r| {
         let media = match r.media {
             None => "null".to_string(),
@@ -109,7 +132,7 @@ pub fn to_json(sheet: &Stylesheet) -> String {
     let mut keyframes: Vec<&Keyframes> = sheet.keyframes.iter().collect();
     keyframes.sort_by(|a, b| sheet.str(a.name).cmp(sheet.str(b.name)));
     format!(
-        "{{\"rules\":{},\"variables\":{},\"keyframes\":{},\"imports\":{},\"diagnostics\":{}}}",
+        "{{\"rules\":{},\"variables\":{},\"keyframes\":{},\"imports\":{},\"diagnostics\":{}{}}}",
         rules,
         list(&variables, |(k, v)| format!(
             "[{},{}]",
@@ -137,6 +160,7 @@ pub fn to_json(sheet: &Stylesheet) -> String {
             d.line,
             d.column,
             d.file.as_deref().map_or("null".to_string(), string)
-        ))
+        )),
+        fonts
     )
 }

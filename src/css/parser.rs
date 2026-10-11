@@ -240,6 +240,45 @@ impl Parser {
         self.at += 1;
         let name = self.ident().to_lowercase();
         match name.as_str() {
+            "font-face" => {
+                let prelude = self.until(cx, &['{', ';', '}']);
+                if scope.parents.is_some()
+                    || !prelude.trim().is_empty()
+                    || self.done()
+                    || self.peek() != '{'
+                {
+                    self.report(
+                        cx,
+                        Severity::Error,
+                        "@font-face requires a descriptor block outside a style rule",
+                        start,
+                    );
+                    if !self.done() && self.peek() == '{' {
+                        self.at += 1;
+                        self.skip_block();
+                    } else if !self.done() && self.peek() == ';' {
+                        self.at += 1;
+                    }
+                    return;
+                }
+                self.at += 1;
+                let declarations = self.block(cx, &Scope::top(), true);
+                match super::font_face::parse(&mut cx.sheet, &declarations) {
+                    Ok(mut face) => {
+                        face.media = scope.media.as_ref().map(|m| cx.sheet.push_media(m));
+                        face.file = self.file.as_ref().map(|f| cx.sheet.atoms.intern(f));
+                        face.line = self.line_of(start);
+                        face.column = self.column_of(start);
+                        cx.sheet.font_faces.push(face);
+                    }
+                    Err(e) => self.report(
+                        cx,
+                        Severity::Warning,
+                        &format!("@font-face: {e}; skipped"),
+                        start,
+                    ),
+                }
+            }
             "media" => {
                 let prelude = self.until(cx, &['{', ';']).trim().to_string();
                 if self.done() || self.peek() != '{' {

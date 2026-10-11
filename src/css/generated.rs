@@ -107,7 +107,7 @@ pub fn parse(
     Ok(Some(Content::Text(out)))
 }
 
-fn quoted(text: &str, at: &mut usize) -> Result<String, String> {
+pub(crate) fn quoted(text: &str, at: &mut usize) -> Result<String, String> {
     let quote = text.as_bytes()[*at];
     *at += 1;
     let mut out = String::new();

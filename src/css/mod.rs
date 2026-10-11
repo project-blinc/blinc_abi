@@ -18,6 +18,7 @@ pub mod clip_path;
 pub mod color;
 pub mod compiled;
 pub mod filter;
+pub mod font_face;
 pub mod generated;
 pub mod gradient;
 pub mod json;
@@ -414,6 +415,8 @@ pub struct Stylesheet {
     pub keyframes: Vec<Keyframes>,
     pub frames: Vec<Keyframe>,
     pub offsets: Vec<f64>,
+    /// Bundled faces in source order; declarations retain the importing file and media.
+    pub font_faces: Vec<font_face::FontFace>,
     /// The files it imported, directly or through another, in the order read.
     pub imports: Vec<Atom>,
     pub diagnostics: Vec<Diagnostic>,
@@ -514,14 +517,21 @@ impl Stylesheet {
 
     /// Whether every `@media` list a rule is inside holds.
     pub fn media_holds(&self, r: &Rule, env: &MediaEnvironment) -> bool {
-        self.rule_media(r).iter().all(|&list| {
-            self.list_queries(list).iter().any(|q| {
-                self.query_features(q)
-                    .iter()
-                    .all(|f| self.feature_holds(f, env))
-                    != q.not
+        self.media_span_holds(r.media, env)
+    }
+
+    pub fn media_span_holds(&self, media: Option<Span>, env: &MediaEnvironment) -> bool {
+        media
+            .map_or(&[][..], |s| &self.media_lists[s.range()])
+            .iter()
+            .all(|&list| {
+                self.list_queries(list).iter().any(|q| {
+                    self.query_features(q)
+                        .iter()
+                        .all(|f| self.feature_holds(f, env))
+                        != q.not
+                })
             })
-        })
     }
 
     fn feature_holds(&self, f: &MediaFeature, env: &MediaEnvironment) -> bool {
