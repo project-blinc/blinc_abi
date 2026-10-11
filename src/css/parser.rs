@@ -1056,6 +1056,9 @@ impl SelectorReader {
             if self.done() || self.peek() == ',' || self.peek() == ')' {
                 break;
             }
+            if compounds.last().is_some_and(|c| c.pseudo_element.is_some()) {
+                return self.fail("a pseudo-element must end its selector".into());
+            }
             let c = match self.combinator() {
                 Some(c) => c,
                 None if !had_space => {
@@ -1097,6 +1100,9 @@ impl SelectorReader {
             c.type_name = Some(self.name().to_lowercase());
         }
         while !self.done() {
+            if c.pseudo_element.is_some() && matches!(self.peek(), '#' | '.' | '[' | ':') {
+                return self.fail("a pseudo-element must end its compound".into());
+            }
             match self.peek() {
                 '#' => {
                     self.at += 1;
@@ -1117,8 +1123,10 @@ impl SelectorReader {
                     if !self.done() && self.peek() == ':' {
                         self.at += 1;
                         let pe = self.name().to_lowercase();
-                        if pe != "placeholder" {
-                            return self.fail(format!("::{pe} is not supported; ::placeholder is"));
+                        if !matches!(pe.as_str(), "placeholder" | "before" | "after") {
+                            return self.fail(format!(
+                                "::{pe} is not supported; use ::before, ::after or ::placeholder"
+                            ));
                         }
                         c.pseudo_element = Some(pe);
                     } else {

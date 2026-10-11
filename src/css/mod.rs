@@ -18,6 +18,7 @@ pub mod clip_path;
 pub mod color;
 pub mod compiled;
 pub mod filter;
+pub mod generated;
 pub mod gradient;
 pub mod json;
 pub mod layout;

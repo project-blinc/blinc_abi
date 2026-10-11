@@ -128,6 +128,8 @@ pub struct Element {
     /// Made by a layout rather than the author, as a table's wrapper: not
     /// counted among its siblings by structural pseudo-classes.
     pub anonymous: bool,
+    /// A generated box: excluded, with its subtree, from authored selector relationships.
+    pub generated: bool,
 }
 
 /// The host's tree, as the cascade walks it.
@@ -455,7 +457,11 @@ impl Cascade {
                     out.push(n);
                 }
             }
-            let mut children = tree.children(n);
+            let mut children: Vec<_> = tree
+                .children(n)
+                .into_iter()
+                .filter(|&c| tree.element(c).is_none_or(|e| !e.generated))
+                .collect();
             children.reverse();
             stack.extend(children);
         }
@@ -517,6 +523,7 @@ impl Cascade {
         element: &Element,
         node: T::Node,
         deps: &mut Dependencies<T::Node>,
+        pseudo: Option<&str>,
     ) -> Vec<Matched> {
         let mut matched = Vec::new();
         for (s, (_, sheet)) in self.sheets.iter().enumerate() {
@@ -544,7 +551,14 @@ impl Cascade {
                     continue;
                 }
                 let selector = &sheet.sheet.selectors[e.selector as usize];
-                if !walk.matches(sheet, selector, node, deps) {
+                if !walk.at(
+                    sheet,
+                    selector,
+                    selector.compounds.len as usize - 1,
+                    (node, pseudo),
+                    None,
+                    deps,
+                ) {
                     continue;
                 }
                 for (i, d) in sheet.sheet.rule_declarations(rule).iter().enumerate() {
@@ -582,7 +596,7 @@ impl Cascade {
             states: Vec::new(),
             theme: false,
         };
-        let matched = self.matching(&walk, element, node, &mut deps);
+        let matched = self.matching(&walk, element, node, &mut deps, None);
         let mut out = Vec::new();
         let own = |out: &mut Vec<Origin>| {
             for (k, v) in &element.inline {
@@ -642,6 +656,36 @@ impl Cascade {
         node: T::Node,
         parent: Option<&Computed>,
     ) -> (Computed, Dependencies<T::Node>) {
+        self.style_target(tree, node, parent, None)
+    }
+
+    /// Match a generated box's rules on its originating element; inherit from that element.
+    pub fn style_pseudo<T: Tree>(
+        &self,
+        tree: &T,
+        node: T::Node,
+        parent: &Computed,
+        pseudo: &str,
+    ) -> (Computed, Dependencies<T::Node>) {
+        self.style_target(tree, node, Some(parent), Some(pseudo))
+    }
+
+    pub fn uses_generated(&self) -> bool {
+        self.sheets.iter().any(|(_, s)| {
+            s.sheet.compounds.iter().any(|c| {
+                c.pseudo_element
+                    .is_some_and(|a| matches!(s.sheet.str(a), "before" | "after"))
+            })
+        })
+    }
+
+    fn style_target<T: Tree>(
+        &self,
+        tree: &T,
+        node: T::Node,
+        parent: Option<&Computed>,
+        pseudo: Option<&str>,
+    ) -> (Computed, Dependencies<T::Node>) {
         let mut deps = Dependencies {
             states: Vec::new(),
             theme: false,
@@ -660,7 +704,11 @@ impl Cascade {
             cascade: self,
         };
 
-        let matched = self.matching(&walk, element, node, &mut deps);
+        let matched = if element.generated {
+            Vec::new()
+        } else {
+            self.matching(&walk, element, node, &mut deps, pseudo)
+        };
 
         // The element's own declarations stand over every rule but an !important one, which the sort put last.
         let mut own: Vec<(Atom, &str)> = Vec::new();
@@ -678,14 +726,14 @@ impl Cascade {
         for m in &matched {
             if m.important && !inlined {
                 inlined = true;
-                for (k, v) in &element.inline {
+                for (k, v) in element.inline.iter().filter(|_| pseudo.is_none()) {
                     set(self, &mut own, *k, v.as_str());
                 }
             }
             set(self, &mut own, m.name, self.str(m.value));
         }
         if !inlined {
-            for (k, v) in &element.inline {
+            for (k, v) in element.inline.iter().filter(|_| pseudo.is_none()) {
                 set(self, &mut own, *k, v.as_str());
             }
         }
@@ -709,7 +757,7 @@ impl Cascade {
         }
 
         // Inherited font properties reach a text element alone; other elements apply only their own.
-        let text = element.types.contains(&self.text);
+        let text = element.types.contains(&self.text) || pseudo.is_some() || element.generated;
         let mut resolved = Vec::new();
         for (k, v) in &values {
             let name = self.str(*k);
@@ -936,7 +984,14 @@ impl<T: Tree> Walk<'_, T> {
         n: T::Node,
         deps: &mut Dependencies<T::Node>,
     ) -> bool {
-        self.at(sheet, s, s.compounds.len as usize - 1, n, None, deps)
+        self.at(
+            sheet,
+            s,
+            s.compounds.len as usize - 1,
+            (n, None),
+            None,
+            deps,
+        )
     }
 
     /// Whether compound `i` of `s` matches `n`, and those before it match
@@ -947,12 +1002,13 @@ impl<T: Tree> Walk<'_, T> {
         sheet: &Sheet,
         s: &Selector,
         i: usize,
-        n: T::Node,
+        target: (T::Node, Option<&str>),
         anchor: Option<T::Node>,
         deps: &mut Dependencies<T::Node>,
     ) -> bool {
+        let (n, pseudo) = target;
         let compounds = sheet.sheet.selector_compounds(s);
-        if !self.compound(sheet, &compounds[i], n, deps) {
+        if !self.compound(sheet, &compounds[i], n, deps, pseudo) {
             return false;
         }
         if i == 0 {
@@ -962,22 +1018,22 @@ impl<T: Tree> Walk<'_, T> {
         match sheet.sheet.selector_combinators(s)[i - 1] {
             Combinator::Child => self
                 .parent(n)
-                .is_some_and(|p| self.at(sheet, s, i - 1, p, anchor, deps)),
+                .is_some_and(|p| self.at(sheet, s, i - 1, (p, None), anchor, deps)),
             Combinator::Descendant => self
                 .ancestors(n)
                 .into_iter()
-                .any(|a| self.at(sheet, s, i - 1, a, anchor, deps)),
+                .any(|a| self.at(sheet, s, i - 1, (a, None), anchor, deps)),
             Combinator::NextSibling => {
                 let sib = self.siblings(n);
                 let k = sib.iter().position(|&x| x == n).unwrap_or(0);
-                k > 0 && self.at(sheet, s, i - 1, sib[k - 1], anchor, deps)
+                k > 0 && self.at(sheet, s, i - 1, (sib[k - 1], None), anchor, deps)
             }
             Combinator::LaterSibling => {
                 let sib = self.siblings(n);
                 let k = sib.iter().position(|&x| x == n).unwrap_or(0);
                 sib[..k]
                     .iter()
-                    .any(|&x| self.at(sheet, s, i - 1, x, anchor, deps))
+                    .any(|&x| self.at(sheet, s, i - 1, (x, None), anchor, deps))
             }
         }
     }
@@ -1007,6 +1063,7 @@ impl<T: Tree> Walk<'_, T> {
         c: &super::Compound,
         n: T::Node,
         deps: &mut Dependencies<T::Node>,
+        pseudo: Option<&str>,
     ) -> bool {
         let Some(e) = self.tree.element(n) else {
             return false;
@@ -1018,7 +1075,7 @@ impl<T: Tree> Walk<'_, T> {
         if c.id.is_some_and(|id| e.id != Some(m(id))) {
             return false;
         }
-        if c.pseudo_element.is_some() {
+        if c.pseudo_element.map(|a| sheet.sheet.str(a)) != pseudo {
             return false;
         }
         for &class in sheet.sheet.compound_classes(c) {
@@ -1076,7 +1133,11 @@ impl<T: Tree> Walk<'_, T> {
                 Some(r) => r == n,
                 None => self.parent(n).is_none(),
             },
-            Pseudo::Empty => self.tree.children(n).is_empty(),
+            Pseudo::Empty => self
+                .tree
+                .children(n)
+                .into_iter()
+                .all(|c| self.tree.element(c).is_some_and(|e| e.generated)),
             Pseudo::FirstChild => index(&self.siblings(n)) == 1,
             Pseudo::LastChild => {
                 let s = self.siblings(n);
@@ -1143,7 +1204,7 @@ impl<T: Tree> Walk<'_, T> {
         };
         candidates
             .into_iter()
-            .any(|x| self.at(sheet, s, last, x, Some(anchor), deps))
+            .any(|x| self.at(sheet, s, last, (x, None), Some(anchor), deps))
     }
 
     /// `n` and everything under it, depth first.
@@ -1152,7 +1213,12 @@ impl<T: Tree> Walk<'_, T> {
         let mut stack = vec![n];
         while let Some(x) = stack.pop() {
             out.push(x);
-            let mut children = self.tree.children(x);
+            let mut children: Vec<_> = self
+                .tree
+                .children(x)
+                .into_iter()
+                .filter(|&c| self.tree.element(c).is_none_or(|e| !e.generated))
+                .collect();
             children.reverse();
             stack.extend(children);
         }

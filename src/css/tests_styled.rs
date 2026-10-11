@@ -367,3 +367,118 @@ fn sticky_inset_batches_keep_the_last_length_kind() {
     );
     assert!(ctx.tree.as_ref().unwrap().sticky_expressions.is_empty());
 }
+#[test]
+fn generated_styles_follow_origin_state_attributes_and_inheritance() {
+    use super::generated::{Content, PseudoElement};
+    let css = r#"
+      .origin { font-size: 18px; color: blue; width: 200px; content: 'ordinary'; }
+      span { font-size: 40px; color: red; }
+      .origin:empty::before { content: '[' attr(title) ']'; width: 20px; }
+      div:is(.origin)::after { content: url('icon.svg'); height: 12px; }
+      .origin:hover::before { content: 'hover'; width: 30px; }
+      .origin:hover::after { content: none; }
+      .origin:has(> span) { height: 90px; }
+    "#;
+    for compiled in [false, true] {
+        let mut ctx = LayoutContext::new();
+        let root = ctx.create_node(Default::default()).unwrap();
+        let mut s = Styles::new();
+        let sheet = parse(css, None, &mut |_, _| None);
+        assert!(sheet.diagnostics.is_empty(), "{}", sheet.report(None));
+        let sheet = if compiled {
+            super::compiled::decode(&super::compiled::encode(&sheet)).unwrap()
+        } else {
+            sheet
+        };
+        s.cascade_mut().push(sheet);
+        let mut e = element(&mut s, &["div"], &["origin"]);
+        e.attributes.push((s.intern("title"), s.intern("one")));
+        e.inline.push((s.intern("width"), "200px".into()));
+        s.set_element(root, e.clone());
+        assert!(s.restyle(&mut ctx, root).is_empty());
+        let out = s.take_generated();
+        assert_eq!(
+            out,
+            vec![
+                (
+                    root.raw(),
+                    PseudoElement::Before,
+                    Some(Content::Text("[one]".into()))
+                ),
+                (
+                    root.raw(),
+                    PseudoElement::After,
+                    Some(Content::Image("icon.svg".into()))
+                )
+            ]
+        );
+        let before = ctx.create_node(Default::default()).unwrap();
+        let text = ctx.create_node(Default::default()).unwrap();
+        ctx.insert_before(root, before, None).unwrap();
+        ctx.insert_before(before, text, None).unwrap();
+        let mut box_e = element(&mut s, &["span"], &[]);
+        box_e.anonymous = true;
+        let mut text_e = element(&mut s, &["text"], &[]);
+        text_e.anonymous = true;
+        s.set_element(before, box_e);
+        s.set_element(text, text_e);
+        s.set_generated(before, root, PseudoElement::Before, None);
+        s.children_changed(root);
+        assert!(s.restyle(&mut ctx, root).is_empty());
+        assert!(
+            s.take_generated().is_empty(),
+            ":empty ignores generated content"
+        );
+        ctx.compute(root, 200.0, 100.0).unwrap();
+        assert_eq!(
+            bounds(&ctx, before)[2],
+            20.0,
+            "origin inline width does not apply to pseudo"
+        );
+        assert_ne!(
+            bounds(&ctx, root)[3],
+            90.0,
+            ":has ignores generated subtree"
+        );
+        assert_eq!(
+            s.computed(text).unwrap().font_size,
+            18.0,
+            "generated text takes origin, not span selectors"
+        );
+        assert_eq!(
+            s.resolved(text).find(|(k, _)| *k == "color").unwrap().1,
+            "blue"
+        );
+        assert_eq!(s.select(&ctx, root, "span").unwrap(), vec![]);
+        e.attributes[0].1 = s.intern("two");
+        s.set_element(root, e);
+        assert!(s.restyle(&mut ctx, root).is_empty());
+        assert_eq!(
+            s.take_generated(),
+            vec![(
+                root.raw(),
+                PseudoElement::Before,
+                Some(Content::Text("[two]".into()))
+            )]
+        );
+        s.set_states(root, States(States::bit("hover").unwrap()));
+        assert!(s.restyle(&mut ctx, root).is_empty());
+        assert_eq!(
+            s.take_generated(),
+            vec![
+                (
+                    root.raw(),
+                    PseudoElement::Before,
+                    Some(Content::Text("hover".into()))
+                ),
+                (root.raw(), PseudoElement::After, None)
+            ]
+        );
+        ctx.compute(root, 200.0, 100.0).unwrap();
+        assert_eq!(bounds(&ctx, before)[2], 30.0);
+        s.forget(before);
+        s.forget(text);
+        s.forget(root);
+        assert!(s.take_generated().is_empty());
+    }
+}

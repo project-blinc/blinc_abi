@@ -435,6 +435,7 @@ pub unsafe extern "C" fn hl_blinc_css_set_element(h: *mut c_void, node: u64, des
             inline,
             states: States::default(),
             anonymous: anonymous == "1",
+            generated: false,
         },
     );
 }

@@ -6,6 +6,7 @@
 //! What is neither, text for one, stays readable as resolved declarations.
 
 use super::cascade::{Cascade, Computed, Element, States, Tree};
+use super::generated::{Content, Generated, GeneratedNode, PseudoElement};
 use super::layout::{Units, is_layout_property, layout_writes};
 use super::paint::{PaintWrite, is_paint_property, paint_writes};
 use super::quantity::PaintUnits;
@@ -114,6 +115,9 @@ pub struct Styles {
     cascade: Cascade,
     elements: FxHashMap<u64, Element>,
     computed: FxHashMap<u64, Computed>,
+    generated: FxHashMap<(u64, PseudoElement), Generated>,
+    generated_nodes: FxHashMap<u64, GeneratedNode>,
+    generated_out: Vec<(u64, PseudoElement, Option<Content>)>,
     /// The layout properties each node took from the cascade, to unset those it no longer takes.
     applied: FxHashMap<u64, Vec<Atom>>,
     /// Who depends on which state of which node: restyled when it changes.
@@ -167,6 +171,9 @@ impl Styles {
             cascade: Cascade::new(),
             elements: FxHashMap::default(),
             computed: FxHashMap::default(),
+            generated: FxHashMap::default(),
+            generated_nodes: FxHashMap::default(),
+            generated_out: Vec::new(),
             applied: FxHashMap::default(),
             dependents: FxHashMap::default(),
             depends_on: FxHashMap::default(),
@@ -223,7 +230,39 @@ impl Styles {
                 }
             }
         }
+        if self.generated_nodes.contains_key(&raw) {
+            element.generated = true;
+            element.anonymous = true;
+        }
         self.elements.insert(raw, element);
+    }
+
+    /// Associate a host-owned generated box with its originating element.
+    pub fn set_generated(
+        &mut self,
+        node: impl Key,
+        owner: impl Key,
+        pseudo: PseudoElement,
+        intrinsic: Option<(f32, f32)>,
+    ) {
+        let raw = node.key();
+        let target = GeneratedNode {
+            owner: owner.key(),
+            pseudo,
+            intrinsic,
+        };
+        if self.generated_nodes.get(&raw) != Some(&target) {
+            self.generated_nodes.insert(raw, target);
+            self.stale.insert(raw);
+        }
+        if let Some(e) = self.elements.get_mut(&raw) {
+            e.generated = true;
+            e.anonymous = true;
+        }
+    }
+    /// Generated content changes; the host owns creation, replacement and removal.
+    pub fn take_generated(&mut self) -> Vec<(u64, PseudoElement, Option<Content>)> {
+        std::mem::take(&mut self.generated_out)
     }
 
     /// `node` was placed under a new parent: what it and its descendants
@@ -261,6 +300,11 @@ impl Styles {
         let raw = node.key();
         self.elements.remove(&raw);
         self.computed.remove(&raw);
+        self.generated_nodes.remove(&raw);
+        for pseudo in [PseudoElement::Before, PseudoElement::After] {
+            self.generated.remove(&(raw, pseudo));
+        }
+        self.generated_out.retain(|(owner, _, _)| *owner != raw);
         self.applied.remove(&raw);
         self.paint_applied.remove(&raw);
         self.untrack(raw);
@@ -404,6 +448,7 @@ impl Styles {
         if let Some(c) = host.context() {
             self.context = c;
         }
+        let uses_generated = self.cascade.uses_generated();
         let everything = std::mem::replace(&mut self.everything, false);
         let changed = std::mem::take(&mut self.changed);
         let reordered = std::mem::take(&mut self.reordered);
@@ -486,15 +531,124 @@ impl Styles {
                 continue;
             }
             self.styled += 1;
-            let (computed, deps) = {
+            let mut ancestor = Some(raw);
+            let mut generated = false;
+            while !self.generated_nodes.is_empty()
+                && let Some(n) = ancestor
+            {
+                if self.generated_nodes.contains_key(&n) {
+                    generated = true;
+                    break;
+                }
+                ancestor = host.parent(n);
+            }
+            if let Some(e) = self.elements.get_mut(&raw) {
+                e.generated = generated;
+            }
+            let (computed, mut deps) = {
                 let tree = HostTree {
                     host: &*host,
                     elements: &self.elements,
                     root,
                 };
                 let parent = tree.parent(raw).and_then(|p| self.computed.get(&p));
-                self.cascade.style(&tree, raw, parent)
+                if let Some(target) = self.generated_nodes.get(&raw) {
+                    let mut c = self
+                        .generated
+                        .get(&(target.owner, target.pseudo))
+                        .map(|g| g.computed.clone())
+                        .unwrap_or_default();
+                    if let Some((w, h)) = target.intrinsic {
+                        let width = self.cascade.intern("width");
+                        let height = self.cascade.intern("height");
+                        let ratio = self.cascade.intern("aspect-ratio");
+                        if !c.resolved.iter().any(|(k, _)| *k == width || *k == height) {
+                            c.resolved.push((width, format!("{w}px")));
+                        }
+                        if !c.resolved.iter().any(|(k, _)| *k == ratio) {
+                            c.resolved.push((ratio, format!("{w} / {h}")));
+                        }
+                    }
+                    (c, super::cascade::Dependencies::default())
+                } else {
+                    self.cascade.style(&tree, raw, parent)
+                }
             };
+            if !self.generated_nodes.contains_key(&raw)
+                && self.elements.get(&raw).is_some_and(|e| !e.anonymous)
+                && (uses_generated
+                    || (self.generated.contains_key(&(raw, PseudoElement::Before))
+                        || self.generated.contains_key(&(raw, PseudoElement::After))))
+            {
+                for pseudo in [PseudoElement::Before, PseudoElement::After] {
+                    let (mut c, read) = {
+                        let tree = HostTree {
+                            host: &*host,
+                            elements: &self.elements,
+                            root,
+                        };
+                        self.cascade
+                            .style_pseudo(&tree, raw, &computed, pseudo.name())
+                    };
+                    deps.states.extend(read.states);
+                    let content = c
+                        .resolved
+                        .iter()
+                        .find(|(k, _)| self.cascade.str(*k) == "content")
+                        .map(|(_, v)| v.as_str())
+                        .unwrap_or("none");
+                    let parsed = super::generated::parse(content, &|name| {
+                        self.elements
+                            .get(&raw)
+                            .and_then(|e| {
+                                e.attributes
+                                    .iter()
+                                    .find(|(k, _)| self.cascade.str(*k) == name)
+                            })
+                            .map(|(_, v)| self.cascade.str(*v).to_string())
+                    });
+                    let content = match parsed {
+                        Ok(value) => value,
+                        Err(e) => {
+                            errors.push(format!("content: {content}: {e}"));
+                            None
+                        }
+                    };
+                    errors.extend(c.errors.iter().cloned());
+                    let display = self.cascade.intern("display");
+                    if !c.resolved.iter().any(|(k, _)| *k == display) {
+                        c.resolved.push((display, "inline".into()));
+                    }
+                    let key = (raw, pseudo);
+                    let now = content.clone().map(|content| Generated {
+                        content,
+                        computed: c,
+                    });
+                    let old = self.generated.get(&key);
+                    if old.map(|g| &g.content) != content.as_ref() {
+                        self.generated_out.push((raw, pseudo, content));
+                    }
+                    if old != now.as_ref() {
+                        for child in host.children(raw) {
+                            if self
+                                .generated_nodes
+                                .get(&child)
+                                .is_some_and(|g| g.owner == raw && g.pseudo == pseudo)
+                            {
+                                work.push_at(child, depth + 1);
+                            }
+                        }
+                    }
+                    match now {
+                        Some(g) => {
+                            self.generated.insert(key, g);
+                        }
+                        None => {
+                            self.generated.remove(&key);
+                        }
+                    }
+                }
+            }
             errors.extend(computed.errors.iter().cloned());
             // What it depends on, afresh.
             self.untrack(raw);
