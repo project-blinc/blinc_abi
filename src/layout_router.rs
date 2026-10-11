@@ -154,6 +154,39 @@ pub fn take_pending_text_shadow() -> Vec<(LayoutNodeId, Option<Vec<blinc_core::S
     )
 }
 
+/// The id of `text-decoration`: a decoration record, kept beside the tree, which a node's text
+/// and its descendants' stack with their own, as `text-shadow` is.
+pub const TEXT_DECORATION: i32 = 120;
+
+/// Text decorations set since the last flush: a record, or none to unset.
+static PENDING_TEXT_DECORATION: Mutex<
+    Vec<(
+        LayoutNodeId,
+        Option<crate::css::text_decoration::TextDecoration>,
+    )>,
+> = Mutex::new(Vec::new());
+
+fn record_text_decoration(
+    node: LayoutNodeId,
+    decoration: Option<crate::css::text_decoration::TextDecoration>,
+) {
+    PENDING_TEXT_DECORATION
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((node, decoration));
+}
+
+pub fn take_pending_text_decoration() -> Vec<(
+    LayoutNodeId,
+    Option<crate::css::text_decoration::TextDecoration>,
+)> {
+    std::mem::take(
+        &mut *PENDING_TEXT_DECORATION
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()),
+    )
+}
+
 /// Whether a node's clip-path fills even-odd, as its render write sets it.
 static PENDING_EVEN_ODD: Mutex<Vec<(LayoutNodeId, bool)>> = Mutex::new(Vec::new());
 
@@ -419,6 +452,14 @@ fn own_value_write(node: LayoutNodeId, raw: i32) -> Option<(PropertyId, Write<Va
                     _ => Vec::new(),
                 };
                 record_text_shadow(node, Some(list));
+            })?,
+        ),
+        TEXT_DECORATION => (
+            PropertyId::Shadow,
+            render(move |_, v| {
+                if let Value::TextDecoration(d) = v {
+                    record_text_decoration(node, Some(d));
+                }
             })?,
         ),
         75 => (
@@ -907,6 +948,10 @@ pub unsafe extern "C" fn hl_blinc_unset(node: u64, raw: i32) {
             }),
         ),
         TEXT_SHADOW => ren(P::Shadow, Box::new(move |_| record_text_shadow(node, None))),
+        TEXT_DECORATION => ren(
+            P::Shadow,
+            Box::new(move |_| record_text_decoration(node, None)),
+        ),
         // Each colour filter back to its identity.
         76 => ren(P::Filter, Box::new(|p| filter(p).brightness = 1.0)),
         77 => ren(P::Filter, Box::new(|p| filter(p).contrast = 1.0)),

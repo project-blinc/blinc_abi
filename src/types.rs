@@ -18,6 +18,8 @@ pub enum Value {
     /// A CSS `clip-path` shape, and whether a polygon or path of it fills by
     /// the even-odd rule rather than nonzero.
     ClipPath(blinc_core::ClipPath, bool),
+    /// How an element's text, and its descendants', is decorated.
+    TextDecoration(crate::css::text_decoration::TextDecoration),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -538,6 +540,45 @@ mod host {
         hlp_blinc_shadow_push,
         hl_blinc_shadow_push,
         "PXblinc_value_ffffifb_v"
+    );
+
+    // --- Text decoration ---
+
+    /// `lines` is UNDERLINE | OVERLINE | LINE_THROUGH as bits; `style` is 0 solid, 1 double, 2
+    /// dotted, 3 dashed. `has_color`, `has_thickness` and `has_offset` false leave the matching
+    /// value at the font's own.
+    #[unsafe(no_mangle)]
+    #[allow(clippy::too_many_arguments)]
+    pub extern "C" fn hl_blinc_text_decoration(
+        lines: i32,
+        style: i32,
+        hex: i32,
+        alpha: f32,
+        thickness: f32,
+        offset: f32,
+    ) -> *mut c_void {
+        use crate::css::text_decoration::Style;
+        let style = match style {
+            1 => Style::Double,
+            2 => Style::Dotted,
+            3 => Style::Dashed,
+            _ => Style::Solid,
+        };
+        value(Value::TextDecoration(
+            crate::css::text_decoration::TextDecoration {
+                lines: lines as u8,
+                style,
+                // A negative alpha is no colour of its own, the font's size none, a NaN offset none.
+                color: (alpha >= 0.0).then(|| hex_color(hex, alpha)),
+                thickness: (!thickness.is_nan()).then_some(thickness),
+                offset: (!offset.is_nan()).then_some(offset),
+            },
+        ))
+    }
+    define_prim!(
+        hlp_blinc_text_decoration,
+        hl_blinc_text_decoration,
+        "Piiifff_Xblinc_value_"
     );
 }
 #[cfg(feature = "hashlink")]
