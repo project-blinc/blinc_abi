@@ -1300,8 +1300,8 @@ fn append_inner(
         );
     }
 
-    // Children are clipped to the padding box, rounded by what is left of a
-    // uniform radius after a uniform border; and to a box a layout animation sizes.
+    // Children are clipped to the padding box, each corner rounded by what is left of its
+    // radius after its borders; and to a box a layout animation sizes.
     if clips_children(tree, node) || sized {
         let (sides, r) = tree
             .props
@@ -1309,12 +1309,7 @@ fn append_inner(
             .map(|p| (border_sides(p), p.border_radius))
             .unwrap_or_default();
         let [top, right, bottom, left] = sides;
-        let uniform = sides.iter().all(|&s| s == top);
-        let inset_radius = if uniform && r.is_uniform() && r.top_left > top {
-            r.top_left - top
-        } else {
-            0.0
-        };
+        let inset = inner_radii(sides, r);
         let inner = [
             x + left,
             y + top,
@@ -1322,7 +1317,7 @@ fn append_inner(
             (h - top - bottom).max(0.0),
         ];
         let (rect, radii) = if m == IDENTITY {
-            (inner, [inset_radius; 4])
+            (inner, inset)
         } else {
             (bounding(m, inner), [0.0; 4])
         };
@@ -1340,7 +1335,7 @@ fn append_inner(
             rect,
             radii,
             layout: inner,
-            layout_radii: [inset_radius; 4],
+            layout_radii: inset,
             frame: m,
             n,
             fade: tree.props.get(&node).map_or([0.0; 4], |p| {
@@ -2148,7 +2143,7 @@ fn image_record(
 }
 
 /// A clip to what is inside a node's border: its own rounded box when it has no border, else its
-/// padding box, rounded by what is left of a uniform radius after a uniform border, as the clip
+/// padding box, each corner rounded by what is left of its radius after its borders, as the clip
 /// its children get is.
 fn content_box(props: &RenderProps, rect: [f32; 4], m: Affine, shapes: &Shapes) -> Clip {
     let sides = border_sides(props);
@@ -2157,12 +2152,7 @@ fn content_box(props: &RenderProps, rect: [f32; 4], m: Affine, shapes: &Shapes) 
     }
     let [top, right, bottom, left] = sides;
     let r = props.border_radius;
-    let uniform = sides.iter().all(|&s| s == top);
-    let inset_radius = if uniform && r.is_uniform() && r.top_left > top {
-        r.top_left - top
-    } else {
-        0.0
-    };
+    let inset = inner_radii(sides, r);
     let [x, y, w, h] = rect;
     let inner = [
         x + left,
@@ -2176,13 +2166,9 @@ fn content_box(props: &RenderProps, rect: [f32; 4], m: Affine, shapes: &Shapes) 
         } else {
             bounding(m, inner)
         },
-        radii: if m == IDENTITY {
-            [inset_radius; 4]
-        } else {
-            [0.0; 4]
-        },
+        radii: if m == IDENTITY { inset } else { [0.0; 4] },
         layout: inner,
-        layout_radii: [inset_radius; 4],
+        layout_radii: inset,
         frame: m,
         n: shapes.resolve(
             props.corner_shape.to_array(),
@@ -2194,6 +2180,17 @@ fn content_box(props: &RenderProps, rect: [f32; 4], m: Affine, shapes: &Shapes) 
         fade: [0.0; 4],
         shape: None,
     }
+}
+
+/// The radii of a padding box's corners, top-left first: each outer radius less the wider of
+/// the two borders beside it, as CSS's inner border edge is rounded, and none below zero.
+fn inner_radii([top, right, bottom, left]: [f32; 4], r: CornerRadius) -> [f32; 4] {
+    [
+        (r.top_left - top.max(left)).max(0.0),
+        (r.top_right - top.max(right)).max(0.0),
+        (r.bottom_right - bottom.max(right)).max(0.0),
+        (r.bottom_left - bottom.max(left)).max(0.0),
+    ]
 }
 
 /// A clip to a node's own rounded box, `rect` in layout coordinates under `m`.
@@ -2318,5 +2315,26 @@ mod culling_tests {
             params: [0.0; 4],
         });
         assert!(!p.outside_clip(&clipping(&[c], IDENTITY, (0.0, 0.0), true, true)));
+    }
+}
+
+#[cfg(test)]
+mod inner_radii_tests {
+    use super::*;
+
+    #[test]
+    fn each_corner_keeps_what_its_borders_leave_of_its_radius() {
+        let r = CornerRadius {
+            top_left: 12.0,
+            top_right: 12.0,
+            bottom_right: 4.0,
+            bottom_left: 0.0,
+        };
+        // A uniform border takes the same from each corner, as before.
+        assert_eq!(inner_radii([2.0; 4], r), [10.0, 10.0, 2.0, 0.0]);
+        // A thick bottom border takes from the bottom corners alone; none goes below zero.
+        assert_eq!(inner_radii([1.0, 1.0, 6.0, 1.0], r), [11.0, 11.0, 0.0, 0.0]);
+        // A corner takes the wider of its two borders.
+        assert_eq!(inner_radii([3.0, 0.0, 0.0, 5.0], r), [7.0, 9.0, 4.0, 0.0]);
     }
 }
