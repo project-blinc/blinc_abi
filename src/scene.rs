@@ -974,6 +974,25 @@ mod tests {
             );
             assert_eq!(&r[4..8], &[1.5; 4], "dots are round");
         }
+        let mut square = tree.properties(root).unwrap();
+        square.border_radius = blinc_core::CornerRadius::uniform(0.0);
+        tree.set_properties(root, square).unwrap();
+        encoder
+            .prepare(&tree, root, PaintOptions::default())
+            .unwrap();
+        let centres: Vec<_> = encoder
+            .records
+            .chunks_exact(RECORD_FLOATS)
+            .map(|r| (r[0] + 1.5 * (r[60] + r[62]), r[1] + 1.5 * (r[61] + r[63])))
+            .collect();
+        for i in 0..centres.len() {
+            let a = centres[i];
+            let b = centres[(i + 1) % centres.len()];
+            assert!(
+                (a.0 - b.0).hypot(a.1 - b.1) >= 3.0,
+                "square-corner dots do not overlap"
+            );
+        }
         let mut other = LayoutContext::new();
         let foreign = other.create_node(Default::default()).unwrap();
         assert!(

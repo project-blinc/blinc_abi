@@ -2428,7 +2428,11 @@ fn draw_border_patterns(
         let cl = (rl - thick / 2.0).max(0.0);
         let cr = (rr - thick / 2.0).max(0.0);
         let left_arc = cl * FRAC_PI_4;
-        let line = (length - rl - rr).max(0.0);
+        // Square corners meet on the inset centreline too. Starting at the
+        // outer corner would put adjacent round dots on top of each other.
+        let left_inset = rl.max(thick / 2.0);
+        let right_inset = rr.max(thick / 2.0);
+        let line = (length - left_inset - right_inset).max(0.0);
         let total = left_arc + line + cr * FRAC_PI_4;
         if !total.is_finite() || total <= 0.0 {
             continue;
@@ -2451,7 +2455,7 @@ fn draw_border_patterns(
                     let a = -3.0 * FRAC_PI_4 + mid / cl;
                     (rl + cl * a.cos(), rl + cl * a.sin())
                 } else if mid <= left_arc + line {
-                    (rl + mid - left_arc, thick / 2.0)
+                    (left_inset + mid - left_arc, thick / 2.0)
                 } else {
                     let a = -FRAC_PI_2 + (mid - left_arc - line) / cr;
                     (length - rr + cr * a.cos(), rr + cr * a.sin())
@@ -2488,9 +2492,9 @@ fn draw_border_patterns(
                     let mut p = Primitive::new(PRIM_RECT, [0.0, 0.0, b - a, thick], [0.0; 4]);
                     p.color = paint;
                     p.color2 = paint;
-                    p.place(frame, rl + a - left_arc, 0.0);
+                    p.place(frame, left_inset + a - left_arc, 0.0);
                     p.push(
-                        &clipping(clips, frame, (rl + a - left_arc, 0.0), true, cull),
+                        &clipping(clips, frame, (left_inset + a - left_arc, 0.0), true, cull),
                         out,
                     );
                 }
