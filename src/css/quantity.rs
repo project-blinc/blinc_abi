@@ -68,6 +68,30 @@ pub fn angle(text: &str) -> Result<f64, String> {
 /// A length in pixels. A percentage is of something the caller does not know.
 pub fn length(text: &str, units: &PaintUnits) -> Result<f64, String> {
     let bad = || format!("expected a length, not \"{text}\"");
+    if super::calc::is_function(text) {
+        let value = super::calc::evaluate(text, &|v, unit| {
+            let px = |px| Some(super::calc::Length { px, percent: 0.0 });
+            match unit {
+                "px" => px(v),
+                "em" => px(v * units.font_size),
+                "rem" => px(v * units.root_font_size),
+                "vw" => px(v / 100.0 * units.viewport_width),
+                "vh" => px(v / 100.0 * units.viewport_height),
+                "vmin" => px(v / 100.0 * units.viewport_width.min(units.viewport_height)),
+                "vmax" => px(v / 100.0 * units.viewport_width.max(units.viewport_height)),
+                "%" => Some(super::calc::Length {
+                    px: 0.0,
+                    percent: v / 100.0,
+                }),
+                _ => None,
+            }
+        })?;
+        return if value.percent == 0.0 {
+            Ok(value.px)
+        } else {
+            Err("a percentage is not supported here".into())
+        };
+    }
     let (v, unit) = dimension(text).ok_or_else(bad)?;
     Ok(match unit.as_str() {
         "" | "px" => v,

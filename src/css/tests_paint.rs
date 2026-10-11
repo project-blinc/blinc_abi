@@ -1458,6 +1458,78 @@ mod borders {
     }
 
     #[test]
+    fn lengths_take_calc_min_max_and_clamp() {
+        let units = Units {
+            font_size: 10.0,
+            root_font_size: 16.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+        };
+        let write = |name: &str, v: &str| -> Result<Vec<(i32, f32)>, String> {
+            layout_writes(name, Some(v), &units).unwrap().map(|w| {
+                w.iter()
+                    .map(|(id, v)| match v {
+                        PropValue::Number(n) => (*id, *n),
+                        _ => panic!("not a number"),
+                    })
+                    .collect()
+            })
+        };
+        assert_eq!(
+            write("width", "calc(100vw - 2rem)"),
+            Ok(vec![(WIDTH, 768.0)])
+        );
+        assert_eq!(write("height", "calc(1em + 4px)"), Ok(vec![(HEIGHT, 14.0)]));
+        assert_eq!(
+            write("width", "clamp(100px, 50vw, 300px)"),
+            Ok(vec![(WIDTH, 300.0)])
+        );
+        assert_eq!(
+            write("min-width", "min(10px, 2rem)"),
+            Ok(vec![(MIN_WIDTH, 10.0)])
+        );
+        let third = write("width", "calc(100% / 3)").unwrap();
+        assert_eq!(third[0].0, WIDTH_PERCENT);
+        assert!((third[0].1 - 1.0 / 3.0).abs() < 1e-6);
+        // Inside a shorthand, and where only pixels can go.
+        let padding = write("padding", "calc(1rem / 2) calc(2px * 3)").unwrap();
+        assert_eq!(
+            padding,
+            [
+                (PADDING_TOP, 8.0),
+                (PADDING_RIGHT, 6.0),
+                (PADDING_BOTTOM, 8.0),
+                (PADDING_LEFT, 6.0)
+            ]
+        );
+        // A percentage added to a length is one thing layout cannot say.
+        let mixed = write("width", "calc(100% - 32px)").unwrap_err();
+        assert!(mixed.contains("cannot be added"), "{mixed}");
+        assert!(write("width", "calc(1px + )").is_err());
+        let gap = write("gap", "calc(50% + 10%)").unwrap();
+        assert_eq!(gap, [(GAP_Y_PERCENT, 0.6), (GAP_X_PERCENT, 0.6)]);
+        assert_eq!(
+            write("border-width", "calc(1px + 2px)").unwrap(),
+            [
+                (BORDER_TOP_WIDTH, 3.0),
+                (BORDER_RIGHT_WIDTH, 3.0),
+                (BORDER_BOTTOM_WIDTH, 3.0),
+                (BORDER_LEFT_WIDTH, 3.0),
+            ]
+        );
+        assert_eq!(
+            write("border", "calc(1px + 2px) solid red").unwrap(),
+            [
+                (BORDER_TOP_WIDTH, 3.0),
+                (BORDER_RIGHT_WIDTH, 3.0),
+                (BORDER_BOTTOM_WIDTH, 3.0),
+                (BORDER_LEFT_WIDTH, 3.0),
+            ]
+        );
+        assert!(write("width", "calc(1e308px * 1e308)").is_err());
+    }
+
+    #[test]
     fn display_takes_the_inline_forms_laid_out_as_their_block_ones() {
         let word = |v: &str| -> Result<i32, String> {
             layout_writes("display", Some(v), &Units::default())

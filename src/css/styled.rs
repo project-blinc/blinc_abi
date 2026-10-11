@@ -495,6 +495,7 @@ impl Styles {
                 let parent = tree.parent(raw).and_then(|p| self.computed.get(&p));
                 self.cascade.style(&tree, raw, parent)
             };
+            errors.extend(computed.errors.iter().cloned());
             // What it depends on, afresh.
             self.untrack(raw);
             for &key in &deps.states {

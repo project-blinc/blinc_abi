@@ -231,10 +231,16 @@ fn length(v: &str) -> Result<f64, String> {
         return Err("\"auto\" is not allowed here".into());
     }
     let other = || format!("a media query length is in px, em or rem, not \"{v}\"");
-    if value::call(&t)
-        .is_some_and(|(name, _)| matches!(name.as_str(), "calc" | "min" | "max" | "clamp"))
-    {
-        return Err(other());
+    if super::calc::is_function(&t) {
+        return super::calc::evaluate(&t, &|n, unit| {
+            let px = match unit {
+                "px" => n,
+                "em" | "rem" => n * 16.0,
+                _ => return None,
+            };
+            Some(super::calc::Length { px, percent: 0.0 })
+        })
+        .map(|l| l.px);
     }
     match value::dimension(&t) {
         None => Err(format!("expected a length, not \"{v}\"")),

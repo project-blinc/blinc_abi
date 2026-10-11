@@ -134,6 +134,14 @@ fn media_queries() {
     assert!(s.media_holds(&s.rules[0], &env));
     assert!(!s.media_holds(&s.rules[1], &env));
     assert!(media::parse("(frobs: 2)").is_err());
+    let s = sheet(
+        "@media (min-width: calc(20rem + 1px)) and (max-width: max(40em, 800px)) { .a { b: c } }",
+    );
+    assert!(s.media_holds(&s.rules[0], &env));
+    let compiled = compiled::decode(&compiled::encode(&s)).unwrap();
+    assert!(compiled.media_holds(&compiled.rules[0], &env));
+    assert!(media::parse("(min-width: calc(50% - 10px))").is_err());
+    assert!(media::parse("(min-width: calc(1px / 0))").is_err());
 }
 
 #[test]

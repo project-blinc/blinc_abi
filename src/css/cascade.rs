@@ -155,6 +155,8 @@ pub struct Computed {
     pub resolved: Vec<(Atom, String)>,
     /// `font-size` in pixels, computed, as its children read `em` from.
     pub font_size: f64,
+    /// Invalid computed values, reported by `Styles::restyle`.
+    pub errors: Vec<String>,
 }
 
 impl Computed {
@@ -720,8 +722,24 @@ impl Cascade {
         // `font-size` passes down computed, in pixels.
         let inherited_size = parent.map_or(self.root_font_size, |p| p.font_size);
         let mut font_size = inherited_size;
-        if let Some((_, v)) = resolved.iter().find(|(k, _)| self.str(*k) == "font-size") {
-            font_size = self.pixels_or(v, inherited_size);
+        let mut errors = Vec::new();
+        if let Some((_, v)) = resolved
+            .iter_mut()
+            .find(|(k, _)| self.str(*k) == "font-size")
+        {
+            if super::calc::is_function(v) {
+                match self.font_math(v, inherited_size) {
+                    Ok(px) if px >= 0.0 && (px as f32).is_finite() => font_size = px,
+                    Ok(_) => errors.push(format!(
+                        "font-size: {v}: expected a finite, non-negative length"
+                    )),
+                    Err(e) => errors.push(format!("font-size: {v}: {e}")),
+                }
+                // Hosts need the computed pixels too, including on a text element with its own rule.
+                *v = format!("{}px", super::json::number(font_size));
+            } else {
+                font_size = self.pixels_or(v, inherited_size);
+            }
             let px = format!("{}px", super::json::number(font_size));
             if let Some(slot) = values.iter_mut().find(|(k, _)| self.str(*k) == "font-size") {
                 slot.1 = px;
@@ -732,6 +750,7 @@ impl Cascade {
                 values,
                 resolved,
                 font_size,
+                errors,
             },
             deps,
         )
@@ -802,6 +821,25 @@ impl Cascade {
             value = out;
         }
         value
+    }
+
+    /// Font lengths have a known percentage basis: the inherited font size.
+    fn font_math(&self, text: &str, of: f64) -> Result<f64, String> {
+        super::calc::evaluate(text, &|n, unit| {
+            let px = match unit {
+                "px" => n,
+                "em" => n * of,
+                "rem" => n * self.root_font_size,
+                "vw" => n / 100.0 * self.env.width,
+                "vh" => n / 100.0 * self.env.height,
+                "vmin" => n / 100.0 * self.env.width.min(self.env.height),
+                "vmax" => n / 100.0 * self.env.width.max(self.env.height),
+                "%" => n / 100.0 * of,
+                _ => return None,
+            };
+            Some(super::calc::Length { px, percent: 0.0 })
+        })
+        .map(|l| l.px)
     }
 
     /// A length in pixels: `px`, `em` and `%` of `of`, `rem`, the viewport's units; `of` when it is none of these.

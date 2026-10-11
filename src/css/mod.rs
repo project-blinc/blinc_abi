@@ -12,6 +12,7 @@
 //! compiled form is those vectors as they are.
 
 pub mod border;
+pub mod calc;
 pub mod cascade;
 pub mod clip_path;
 pub mod color;

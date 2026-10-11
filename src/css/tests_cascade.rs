@@ -290,3 +290,44 @@ fn media_queries_follow_the_environment() {
         (Some("wide"), Some("dark"))
     );
 }
+
+#[test]
+fn font_math_is_computed_once_and_inherited_as_pixels() {
+    let mut c = Cascade::new();
+    c.set_environment(MediaEnvironment {
+        width: 800.0,
+        height: 600.0,
+        dark: false,
+    });
+    c.push(sheet(".parent { font-size: 20px } .child { font-size: calc(150% + 2px); height: 1em } text.own { font-size: clamp(14px, 2vw, 20px) }"));
+    let mut doc = Doc::default();
+    let e = el(&mut c, &["div"], &["parent"]);
+    let parent = doc.add(None, e);
+    let e = el(&mut c, &["div"], &["child"]);
+    let child = doc.add(Some(parent), e);
+    let e = el(&mut c, &["text"], &[]);
+    let inherited = doc.add(Some(child), e);
+    let e = el(&mut c, &["text"], &["own"]);
+    let own = doc.add(Some(child), e);
+    let styles = style_all(&c, &doc);
+    assert_eq!(styles[child].font_size, 32.0);
+    assert_eq!(
+        get(&c, &styles[child], "font-size").as_deref(),
+        Some("32px")
+    );
+    assert_eq!(
+        get(&c, &styles[inherited], "font-size").as_deref(),
+        Some("32px")
+    );
+    assert_eq!(styles[own].font_size, 16.0);
+    assert_eq!(get(&c, &styles[own], "font-size").as_deref(), Some("16px"));
+    assert!(styles.iter().all(|s| s.errors.is_empty()));
+    for bad in ["calc(1px / 0)", "calc(1e308px * 1e308)", "calc(-1px)"] {
+        doc.elements[child].inline = vec![(c.atoms().find("font-size").unwrap(), bad.into())];
+        let styles = style_all(&c, &doc);
+        assert_eq!(styles[child].font_size, 20.0);
+        assert!(styles[child].errors[0].contains("font-size"));
+        assert!(styles[inherited].errors.is_empty());
+        assert_eq!(styles[inherited].font_size, 20.0);
+    }
+}

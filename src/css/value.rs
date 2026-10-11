@@ -7,6 +7,14 @@ fn is_space(c: char) -> bool {
 /// `text` split at `separator` outside parentheses and quotes, each part
 /// trimmed; split at spaces, the empty parts dropped.
 pub fn split(text: &str, separator: char) -> Vec<String> {
+    split_ref(text, separator)
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+/// `split`, as slices of `text`, for what must borrow from it.
+pub fn split_ref(text: &str, separator: char) -> Vec<&str> {
     let space = separator == ' ';
     let mut out = Vec::new();
     let (mut depth, mut quote, mut start) = (0i32, None::<char>, 0usize);
@@ -22,13 +30,13 @@ pub fn split(text: &str, separator: char) -> Vec<String> {
             '(' => depth += 1,
             ')' => depth -= 1,
             _ if depth == 0 && (if space { is_space(c) } else { c == separator }) => {
-                out.push(text[start..i].trim().to_string());
+                out.push(text[start..i].trim());
                 start = i + c.len_utf8();
             }
             _ => {}
         }
     }
-    out.push(text[start..].trim().to_string());
+    out.push(text[start..].trim());
     if space {
         out.retain(|s| !s.is_empty());
     }

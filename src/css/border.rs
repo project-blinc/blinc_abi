@@ -65,7 +65,10 @@ pub fn parse(text: &str, units: &Units, outline: bool) -> Result<Parsed, String>
         let p = part.to_ascii_lowercase();
         if STYLES.contains(&p.as_str()) || (outline && p == "auto") {
             parsed.none = p == "none" || (!outline && p == "hidden");
-        } else if matches!(p.as_str(), "thin" | "medium" | "thick") || dimension(&p).is_some() {
+        } else if matches!(p.as_str(), "thin" | "medium" | "thick")
+            || dimension(&p).is_some()
+            || super::calc::is_function(&p)
+        {
             parsed.width = width(&p, units)?;
         } else {
             parsed.color = Some(part);

@@ -306,6 +306,37 @@ fn length(name: &str, text: &str, units: &Units) -> Result<(i32, f64), String> {
         return Ok((px_id, f64::NAN));
     }
     let bad = || format!("invalid value for {name}: {text}");
+    if super::calc::is_function(&t) {
+        let value = super::calc::evaluate(&t, &|v, unit| {
+            let px = |px| Some(super::calc::Length { px, percent: 0.0 });
+            match unit {
+                "px" => px(v),
+                "em" => px(v * units.font_size),
+                "rem" => px(v * units.root_font_size),
+                "vw" => px(v / 100.0 * units.viewport_width),
+                "vh" => px(v / 100.0 * units.viewport_height),
+                "vmin" => px(v / 100.0 * units.viewport_width.min(units.viewport_height)),
+                "vmax" => px(v / 100.0 * units.viewport_width.max(units.viewport_height)),
+                "%" => Some(super::calc::Length {
+                    px: 0.0,
+                    percent: v / 100.0,
+                }),
+                _ => None,
+            }
+        })
+        .map_err(|e| format!("{name}: {e}"))?;
+        return if value.percent == 0.0 {
+            Ok((px_id, value.px))
+        } else if value.px == 0.0 {
+            percent_id
+                .map(|p| (p, value.percent))
+                .ok_or_else(|| format!("{name} takes no percentage: {text}"))
+        } else {
+            Err(format!(
+                "{name}: a percentage and a length cannot be added in calc(), as layout takes one or the other: {text}"
+            ))
+        };
+    }
     let (v, unit) = super::value::dimension(&t).ok_or_else(bad)?;
     Ok(match unit.as_str() {
         "" | "px" => (px_id, v),
@@ -380,7 +411,7 @@ pub fn layout_writes<'a>(
                 .flat_map(|n| layout_writes(n, None, units).unwrap().unwrap())
                 .collect()));
         };
-        let parts: Vec<&str> = value.split_whitespace().collect();
+        let parts = super::value::split_ref(value, ' ');
         if parts.is_empty() || parts.len() > 4 {
             return Some(Err(format!("invalid value for {name}: {value}")));
         }
@@ -421,7 +452,7 @@ pub fn layout_writes<'a>(
     Some(match (name, value) {
         ("gap", None) => Ok(vec![(GAP_Y, PropValue::Unset), (GAP_X, PropValue::Unset)]),
         ("gap", Some(v)) => {
-            let parts: Vec<&str> = v.split_whitespace().collect();
+            let parts = super::value::split_ref(v, ' ');
             let row = parts.first().copied().unwrap_or("");
             let column = parts.get(1).copied().unwrap_or(row);
             length("row-gap", row, units).and_then(|r| {
@@ -447,7 +478,7 @@ pub fn layout_writes<'a>(
         ("flex", Some(v)) => {
             // `flex: N` is N 1 0%; `none` is 0 0 auto; `auto` is 1 1 auto.
             let text = v.trim();
-            let parts: Vec<&str> = text.split_whitespace().collect();
+            let parts = super::value::split_ref(text, ' ');
             let (grow, shrink, basis) = match text {
                 "none" => ("0", "0", "auto"),
                 "auto" => ("1", "1", "auto"),
