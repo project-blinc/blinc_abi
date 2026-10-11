@@ -23,14 +23,13 @@ enum Term {
 /// How a unit's number is read: as pixels, or as a fraction for `%`; none for a unit that is not one.
 pub type Unit<'a> = &'a dyn Fn(f64, &str) -> Option<Length>;
 
-/// Whether `text` is one of the functions, whole.
+/// Whether `text` starts a math function, including malformed expressions for diagnostics.
 pub fn is_function(text: &str) -> bool {
     let t = text.trim();
     let lower = t.to_ascii_lowercase();
-    t.ends_with(')')
-        && ["calc(", "min(", "max(", "clamp("]
-            .iter()
-            .any(|f| lower.starts_with(f))
+    ["calc(", "min(", "max(", "clamp("]
+        .iter()
+        .any(|f| lower.starts_with(f))
 }
 
 /// The value of the function `text`, with `unit` reading each number's unit.
@@ -434,7 +433,8 @@ mod tests {
         assert!(is_function("calc(1px + 2px)"));
         assert!(is_function(" MIN(1px, 2px) "));
         assert!(!is_function("10px"));
-        assert!(!is_function("calc(1px"));
+        assert!(is_function("calc(1px"));
+        assert!(is_function("calc(1px) extra"));
         assert!(!is_function("minimum(1px)"));
     }
 }

@@ -322,7 +322,13 @@ fn font_math_is_computed_once_and_inherited_as_pixels() {
     assert_eq!(styles[own].font_size, 16.0);
     assert_eq!(get(&c, &styles[own], "font-size").as_deref(), Some("16px"));
     assert!(styles.iter().all(|s| s.errors.is_empty()));
-    for bad in ["calc(1px / 0)", "calc(1e308px * 1e308)", "calc(-1px)"] {
+    for bad in [
+        "calc(1px / 0)",
+        "calc(1e308px * 1e308)",
+        "calc(-1px)",
+        "calc(1px",
+        "calc(1px) extra",
+    ] {
         doc.elements[child].inline = vec![(c.atoms().find("font-size").unwrap(), bad.into())];
         let styles = style_all(&c, &doc);
         assert_eq!(styles[child].font_size, 20.0);
