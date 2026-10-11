@@ -529,6 +529,7 @@ pub unsafe extern "C" fn hl_blinc_tree_flush(h: *mut c_void) -> bool {
     let mut sticky: std::collections::HashMap<LayoutNodeId, StickyUpdate> =
         std::collections::HashMap::new();
     let writes = take_pending_tree();
+    let mut orders = Vec::new();
     // Ordinary relative/absolute boxes keep their existing fast path: only sticky nodes
     // need constraint staging, even when an inset was queued before their position.
     for (node, write) in &writes {
@@ -540,6 +541,7 @@ pub unsafe extern "C" fn hl_blinc_tree_flush(h: *mut c_void) -> bool {
     }
     for (node, write) in writes {
         match write {
+            TreeWrite::Order(value) => orders.push((node, value)),
             TreeWrite::BackgroundMapping(mapping) => match mapping {
                 Some(mapping) if tree.layout.get_style(node).is_some() => {
                     tree.background_mappings.insert(node, mapping);
@@ -585,6 +587,7 @@ pub unsafe extern "C" fn hl_blinc_tree_flush(h: *mut c_void) -> bool {
         }
         painted = true;
     }
+    needs_layout |= tree.layout.set_orders(orders);
     for (node, update) in sticky {
         if let Some(mut style) = tree.layout.get_style(node) {
             tree.sync_sticky(node, &mut style, update.position, update.insets);

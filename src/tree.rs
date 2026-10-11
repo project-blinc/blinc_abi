@@ -397,7 +397,7 @@ impl Tree {
     /// only among its siblings, as if it began a stacking context. Nodes with no `z-index`, bar
     /// sticky ones, keep their tree order, as they did before `z-index` was read.
     pub(crate) fn paint_order(&self, node: LayoutNodeId) -> Vec<LayoutNodeId> {
-        let mut children = self.layout.children(node);
+        let mut children = self.layout.visual_children(node);
         if self.z_index.is_empty() && self.sticky.is_empty() {
             return children;
         }

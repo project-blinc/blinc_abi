@@ -310,13 +310,18 @@ define_prim!(
     "PXblinc_tree_lffBi_i"
 );
 
-fn order(tree: &Tree, node: LayoutNodeId, out: &mut Vec<u64>) {
+fn order(tree: &Tree, node: LayoutNodeId, out: &mut Vec<u64>, visual: bool) {
     if tree.props.get(&node).is_some_and(|p| !p.visible) {
         return;
     }
     out.push(node.to_raw());
-    for child in tree.paint_order(node) {
-        order(tree, child, out);
+    // git-bug: 62aa0b0 / Ashui 7977648: visual reordering must not reorder Tab focus.
+    for child in if visual {
+        tree.paint_order(node)
+    } else {
+        tree.layout.children(node)
+    } {
+        order(tree, child, out, visual);
     }
 }
 
@@ -335,7 +340,7 @@ pub unsafe extern "C" fn hl_blinc_tree_order(
         return 0;
     };
     let mut ids = Vec::new();
-    order(tree, LayoutNodeId::from_raw(root), &mut ids);
+    order(tree, LayoutNodeId::from_raw(root), &mut ids, false);
     if !out.is_null() {
         let n = ids.len().min(capacity.max(0) as usize);
         unsafe { std::ptr::copy_nonoverlapping(ids.as_ptr(), out as *mut u64, n) };
@@ -415,7 +420,7 @@ pub fn test(tree: &Tree, root: LayoutNodeId, x: f32, y: f32) -> Vec<Hit> {
 }
 pub fn paint_order(tree: &Tree, root: LayoutNodeId) -> Vec<u64> {
     let mut out = Vec::new();
-    order(tree, root, &mut out);
+    order(tree, root, &mut out, true);
     out
 }
 pub fn node_path(tree: &Tree, from: LayoutNodeId, to: LayoutNodeId) -> Vec<u64> {

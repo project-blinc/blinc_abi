@@ -562,7 +562,12 @@ pub fn layout_writes<'a>(
             .map(|n| vec![(Z_INDEX, PropValue::Enum(n))])
             .map_err(|_| format!("z-index takes an integer or auto, not {v}")),
         ("order", None) => Ok(vec![(ORDER, PropValue::Unset)]),
-        ("order", Some(v)) => number(v, name).map(|n| vec![(ORDER, PropValue::Enum(n as i32))]),
+        // git-bug: 62aa0b0. Parse directly as i32: f32 rounds large integers and accepts fractions.
+        ("order", Some(v)) => v
+            .trim()
+            .parse::<i32>()
+            .map(|n| vec![(ORDER, PropValue::Enum(n))])
+            .map_err(|_| "order requires a signed 32-bit integer".to_owned()),
         ("aspect-ratio", None) => Ok(vec![(ASPECT_RATIO, PropValue::Unset)]),
         ("aspect-ratio", Some(v)) if v.trim() == "auto" => {
             Ok(vec![(ASPECT_RATIO, PropValue::Unset)])
@@ -596,6 +601,24 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn integer_order_is_not_rounded_or_truncated() {
+        for value in [i32::MIN, -16777217, 0, 16777217, i32::MAX - 1, i32::MAX] {
+            assert_eq!(
+                layout_writes("order", Some(&value.to_string()), &Units::default())
+                    .unwrap()
+                    .unwrap(),
+                vec![(id::ORDER, PropValue::Enum(value))]
+            );
+        }
+        for bad in ["1.5", "2147483648", "-2147483649", "1px", "NaN"] {
+            assert!(
+                layout_writes("order", Some(bad), &Units::default())
+                    .unwrap()
+                    .is_err()
+            );
+        }
+    }
     #[test]
     fn lengths_and_units() {
         assert_eq!(w("width", "120px"), [(WIDTH, PropValue::Number(120.0))]);

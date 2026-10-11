@@ -115,6 +115,10 @@ fn handles(style: &Style) -> impl Iterator<Item = usize> {
 pub struct LayoutTree {
     base: BaseTree,
     nodes: HashSet<LayoutNodeId>,
+    // git-bug: blinc_abi 62aa0b0; Ashui 7977648. Only nonzero orders and
+    // sorted parents need storage; authored children remain the document order.
+    orders: HashMap<LayoutNodeId, i32>,
+    authored: HashMap<LayoutNodeId, Vec<LayoutNodeId>>,
     pub(crate) expressions: HashMap<usize, Expression>,
     computed: HashMap<LayoutNodeId, Layout>,
     cache: HashMap<LayoutNodeId, Cache>,
@@ -145,6 +149,8 @@ impl LayoutTree {
         Self {
             base: BaseTree::new(),
             nodes: HashSet::new(),
+            orders: HashMap::new(),
+            authored: HashMap::new(),
             expressions: HashMap::new(),
             computed: HashMap::new(),
             cache: HashMap::new(),
@@ -165,6 +171,132 @@ impl LayoutTree {
         self.nodes.insert(n);
         n
     }
+    /// Authored children, used by selectors, mutation and keyboard traversal.
+    pub fn children(&self, parent: LayoutNodeId) -> Vec<LayoutNodeId> {
+        self.authored
+            .get(&parent)
+            .cloned()
+            .unwrap_or_else(|| self.base.children(parent))
+    }
+    /// Cached order-modified children, used by layout, painting and pointer hits.
+    pub(crate) fn visual_children(&self, parent: LayoutNodeId) -> Vec<LayoutNodeId> {
+        self.base.children(parent)
+    }
+    pub fn set_style(&mut self, node: LayoutNodeId, style: Style) {
+        let display_changed = !self.orders.is_empty()
+            && self
+                .base
+                .get_style(node)
+                .is_some_and(|s| s.display != style.display);
+        self.cache.clear();
+        self.base.set_style(node, style);
+        if display_changed {
+            self.write_children(node, self.children(node));
+        }
+    }
+    /// Reuse the owned-context algorithm for every adapter (git-bug: 62aa0b0).
+    /// All changed siblings in a batch trigger a single stable sort of their parent.
+    pub(crate) fn set_orders(
+        &mut self,
+        writes: impl IntoIterator<Item = (LayoutNodeId, i32)>,
+    ) -> bool {
+        let mut parents = Vec::new();
+        let mut changed = false;
+        for (id, order) in writes {
+            if !self.base.node_exists(id) {
+                continue;
+            }
+            let update = if order == 0 {
+                self.orders.remove(&id).is_some()
+            } else {
+                self.orders.insert(id, order) != Some(order)
+            };
+            if update {
+                changed = true;
+                if let Some(&parent) = self.base.ancestors(id).first() {
+                    parents.push(parent);
+                }
+            }
+        }
+        parents.sort_unstable();
+        parents.dedup();
+        for parent in parents {
+            self.write_children(parent, self.children(parent));
+        }
+        changed
+    }
+    fn write_children(
+        &mut self,
+        parent: LayoutNodeId,
+        list: Vec<LayoutNodeId>,
+    ) -> Vec<LayoutNodeId> {
+        self.cache.clear();
+        let ordered = !self.orders.is_empty()
+            && self
+                .base
+                .get_style(parent)
+                .is_some_and(|s| matches!(s.display, Display::Flex | Display::Grid))
+            && list.iter().any(|id| self.orders.contains_key(id));
+        if ordered {
+            let mut sorted = list.clone();
+            sorted.sort_by_key(|id| self.orders.get(id).copied().unwrap_or(0));
+            self.authored.insert(parent, list);
+            self.base.replace_children(parent, sorted)
+        } else {
+            self.authored.remove(&parent);
+            self.base.replace_children(parent, list)
+        }
+    }
+    pub fn replace_children(
+        &mut self,
+        parent: LayoutNodeId,
+        list: Vec<LayoutNodeId>,
+    ) -> Vec<LayoutNodeId> {
+        if !self.base.node_exists(parent) {
+            return Vec::new();
+        }
+        // Moving a child also repairs its old parent's authored order. Most trees
+        // have no orders, so the existing native mutation path needs no extra lists.
+        if !self.orders.is_empty() {
+            let previous: HashSet<_> = list
+                .iter()
+                .filter_map(|&id| self.base.ancestors(id).first().copied())
+                .filter(|&old| old != parent)
+                .collect();
+            if !previous.is_empty() {
+                let moved: HashSet<_> = list.iter().copied().collect();
+                for old in previous {
+                    let mut siblings = self.children(old);
+                    siblings.retain(|id| !moved.contains(id));
+                    self.write_children(old, siblings);
+                }
+            }
+        }
+        let authored = self.authored.get(&parent).cloned();
+        let old = self.write_children(parent, list);
+        authored.unwrap_or(old)
+    }
+    pub fn add_child(&mut self, parent: LayoutNodeId, child: LayoutNodeId) {
+        self.cache.clear();
+        if self.orders.is_empty() {
+            self.base.add_child(parent, child);
+            return;
+        }
+        if !self.base.node_exists(parent) || !self.base.node_exists(child) {
+            return;
+        }
+        if !self.authored.contains_key(&parent)
+            && !self.orders.contains_key(&child)
+            && self.base.ancestors(child).is_empty()
+        {
+            self.base.add_child(parent, child);
+        } else {
+            let mut list = self.children(parent);
+            list.retain(|&id| id != child);
+            list.push(child);
+            self.replace_children(parent, list);
+        }
+    }
     pub fn set_text_baseline(&mut self, id: LayoutNodeId, offset: f32) {
         self.cache.clear();
         self.baselines.insert(id, offset);
@@ -183,7 +315,17 @@ impl LayoutTree {
         self.nodes.remove(&id);
         self.computed.remove(&id);
         self.baselines.remove(&id);
+        self.orders.remove(&id);
+        self.authored.remove(&id);
+        let parent = self.base.ancestors(id).first().copied();
         self.base.remove_node(id);
+        if let Some(parent) = parent
+            && let Some(list) = self.authored.get_mut(&parent)
+        {
+            list.retain(|&child| child != id);
+            let list = list.clone();
+            self.write_children(parent, list);
+        }
     }
     pub fn remove_subtree(&mut self, id: LayoutNodeId) {
         let mut nodes = vec![id];
@@ -537,5 +679,94 @@ impl RoundTree for View<'_> {
     }
     fn set_final_layout(&mut self, n: NodeId, l: &Layout) {
         self.node_mut(n).final_layout = *l;
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+    fn parent(tree: &mut LayoutTree, display: Display) -> LayoutNodeId {
+        tree.create_node(Style {
+            display,
+            ..Style::DEFAULT
+        })
+    }
+    #[test]
+    fn shared_order_keeps_authored_children_and_stable_integer_ties() {
+        let mut tree = LayoutTree::new();
+        let root = parent(&mut tree, Display::Flex);
+        let a = tree.create_node(Style::DEFAULT);
+        let b = tree.create_node(Style::DEFAULT);
+        let c = tree.create_node(Style::DEFAULT);
+        tree.replace_children(root, vec![a, b, c]);
+        assert!(tree.set_orders([(a, i32::MAX), (b, i32::MIN), (c, i32::MAX - 1)]));
+        assert_eq!(tree.children(root), vec![a, b, c]);
+        assert_eq!(tree.visual_children(root), vec![b, c, a]);
+        tree.set_orders([(a, -1), (c, -1)]);
+        assert_eq!(tree.visual_children(root), vec![b, a, c]);
+        assert!(!tree.set_orders([(a, -1)]));
+        tree.set_orders([(a, 0), (b, 0), (c, 0)]);
+        assert_eq!(tree.visual_children(root), vec![a, b, c]);
+        assert!(tree.orders.is_empty() && tree.authored.is_empty());
+    }
+    #[test]
+    fn order_only_affects_flex_and_grid_and_survives_display_changes() {
+        let mut tree = LayoutTree::new();
+        let root = parent(&mut tree, Display::Block);
+        let a = tree.create_node(Style::DEFAULT);
+        let b = tree.create_node(Style::DEFAULT);
+        tree.replace_children(root, vec![a, b]);
+        tree.set_orders([(a, 1)]);
+        assert_eq!(tree.visual_children(root), vec![a, b]);
+        for display in [Display::Flex, Display::Grid, Display::Block, Display::Flex] {
+            tree.set_style(
+                root,
+                Style {
+                    display,
+                    ..Style::DEFAULT
+                },
+            );
+            assert_eq!(
+                tree.visual_children(root),
+                if display == Display::Block {
+                    vec![a, b]
+                } else {
+                    vec![b, a]
+                }
+            );
+            assert_eq!(tree.children(root), vec![a, b]);
+        }
+    }
+    #[test]
+    fn order_tracks_appends_replacements_moves_detachment_and_deletion() {
+        let mut tree = LayoutTree::new();
+        let p = parent(&mut tree, Display::Flex);
+        let q = parent(&mut tree, Display::Grid);
+        let a = tree.create_node(Style::DEFAULT);
+        let b = tree.create_node(Style::DEFAULT);
+        let c = tree.create_node(Style::DEFAULT);
+        tree.set_orders([(a, 2), (c, -1)]);
+        tree.add_child(p, a);
+        tree.add_child(p, b);
+        tree.add_child(p, c);
+        assert_eq!(tree.visual_children(p), vec![c, b, a]);
+        assert_eq!(tree.replace_children(p, vec![b, c, a]), vec![a, b, c]);
+        assert_eq!(tree.children(p), vec![b, c, a]);
+        tree.add_child(q, c);
+        assert_eq!(tree.children(p), vec![b, a]);
+        assert_eq!(tree.visual_children(p), vec![b, a]);
+        tree.replace_children(q, vec![a, c]);
+        assert_eq!(tree.children(p), vec![b]);
+        assert!(!tree.authored.contains_key(&p));
+        assert_eq!(tree.visual_children(q), vec![c, a]);
+        tree.remove_node(c);
+        assert_eq!(tree.children(q), vec![a]);
+        tree.replace_children(q, vec![]);
+        assert_eq!(tree.children(q), vec![]);
+        tree.add_child(p, a);
+        assert_eq!(tree.visual_children(p), vec![b, a]);
+        tree.remove_subtree(p);
+        tree.remove_node(q);
+        assert!(tree.orders.is_empty() && tree.authored.is_empty());
     }
 }

@@ -31,11 +31,6 @@ pub struct LayoutContext {
     pub(crate) revision: u64,
     pub(crate) parents: HashMap<LayoutNodeId, LayoutNodeId>,
     pub(crate) bounds: HashMap<LayoutNodeId, [f32; 4]>,
-    /// CSS `order` of nodes whose order is not 0. Taffy has no `order`, so a
-    /// parent with such a child is laid out from its children stably sorted.
-    orders: HashMap<LayoutNodeId, i32>,
-    /// Children as authored, for parents laid out from a sorted list.
-    authored: HashMap<LayoutNodeId, Vec<LayoutNodeId>>,
 }
 
 /// A value written through the property router (`crate::layout_props` ids).
@@ -107,8 +102,6 @@ impl LayoutContext {
             revision: 0,
             parents: HashMap::new(),
             bounds: HashMap::new(),
-            orders: HashMap::new(),
-            authored: HashMap::new(),
         }
     }
 
@@ -308,7 +301,7 @@ impl LayoutContext {
             }
         }
         let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
-        let mut reordered = Vec::new();
+        let mut orders = Vec::new();
         for mut entry in staged {
             tree.layout.expressions.extend(entry.expressions);
             tree.sync_sticky(entry.id, &mut entry.style, entry.sticky, entry.insets);
@@ -325,22 +318,10 @@ impl LayoutContext {
                 tree.props.insert(entry.id, props);
             }
             if let Some(order) = entry.order {
-                let changed = if order == 0 {
-                    self.orders.remove(&entry.id).is_some()
-                } else {
-                    self.orders.insert(entry.id, order) != Some(order)
-                };
-                if changed && let Some(&parent) = self.parents.get(&entry.id) {
-                    reordered.push(parent);
-                }
+                orders.push((entry.id, order));
             }
         }
-        reordered.sort_unstable();
-        reordered.dedup();
-        for parent in reordered {
-            let list = self.child_list(parent);
-            self.write_children(parent, list);
-        }
+        tree.layout.set_orders(orders);
         self.bounds.clear();
         self.revision += 1;
         Ok(())
@@ -348,28 +329,14 @@ impl LayoutContext {
 
     /// Children in authored order, before any sorting by `order`.
     fn child_list(&self, parent: LayoutNodeId) -> Vec<LayoutNodeId> {
-        match self.authored.get(&parent) {
-            Some(list) => list.clone(),
-            None => self
-                .tree
-                .as_ref()
-                .map(|tree| tree.layout.children(parent))
-                .unwrap_or_default(),
-        }
+        self.tree
+            .as_ref()
+            .map(|tree| tree.layout.children(parent))
+            .unwrap_or_default()
     }
 
-    /// Lay `parent` out from `list`, stably sorted by `order` when any child has one.
     fn write_children(&mut self, parent: LayoutNodeId, list: Vec<LayoutNodeId>) {
-        let Some(tree) = self.tree.as_mut() else {
-            return;
-        };
-        if list.iter().any(|id| self.orders.contains_key(id)) {
-            let mut sorted = list.clone();
-            sorted.sort_by_key(|id| self.orders.get(id).copied().unwrap_or(0));
-            tree.layout.replace_children(parent, sorted);
-            self.authored.insert(parent, list);
-        } else {
-            self.authored.remove(&parent);
+        if let Some(tree) = self.tree.as_mut() {
             tree.layout.replace_children(parent, list);
         }
     }
@@ -417,11 +384,7 @@ impl LayoutContext {
             ancestor = self.parents.get(&id).copied();
         }
         let old = self.parents.get(&child).copied();
-        if old.is_none()
-            && before.is_none()
-            && !self.authored.contains_key(&parent)
-            && !self.orders.contains_key(&child)
-        {
+        if old.is_none() && before.is_none() {
             // Appending a free node needs no list rebuild.
             self.tree
                 .as_mut()
@@ -508,11 +471,6 @@ impl LayoutContext {
 
     pub fn remove(&mut self, node: Node) -> Result<()> {
         let id = self.check(node)?;
-        if let Some(parent) = self.parents.get(&id).copied()
-            && let Some(list) = self.authored.get_mut(&parent)
-        {
-            list.retain(|&child| child != id);
-        }
         let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
         let mut nodes = vec![id];
         let mut index = 0;
@@ -523,8 +481,6 @@ impl LayoutContext {
         // Iterative removal also handles deeply nested authored trees.
         for id in nodes.into_iter().rev() {
             self.parents.remove(&id);
-            self.orders.remove(&id);
-            self.authored.remove(&id);
             tree.remove_node(id);
             tree.forget(id);
         }
@@ -645,8 +601,6 @@ impl LayoutContext {
         self.tree.take();
         self.parents = HashMap::new();
         self.bounds = HashMap::new();
-        self.orders = HashMap::new();
-        self.authored = HashMap::new();
     }
     pub fn is_disposed(&self) -> bool {
         self.tree.is_none()
