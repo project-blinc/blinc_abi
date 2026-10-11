@@ -22,6 +22,19 @@ buffers and its own glyph atlases, with revisioned incremental uploads. It reuse
 the existing paint and hit-test logic. Text/image helpers are also available;
 Node resource bindings and GPU integration remain in progress.
 
+Owned `font::Font` resources decode TTF, OpenType and WOFF2 bytes, or retain an
+installed face through `Font::local`. `family(weight)` registers an immutable
+private alias in the same Blinc registry used by measurement and scene encoding.
+Dropping the resource unregisters its aliases; faces already retained by a
+renderer remain valid. Adapters own URL loading and stylesheet lifetime.
+
+CSS sheets collect typed `@font-face` descriptors and source locations, including
+imports and media conditions. `Cascade::font_faces` exposes active faces, and
+`css::font_face::match_face` implements CSS weight/style selection. Compiled CSS
+uses version 3 when faces are present; font-free sheets keep version 2, and both
+versions decode. WOFF2 decoding currently excludes transformed `hmtx` tables.
+Original WOFF, unicode ranges, stretch and font-display timing are follow-up work.
+
 The ABI generates display lists; GPU execution is supplied by a consuming
 renderer through xgpu. Window integration is supplied through xwindow.
 

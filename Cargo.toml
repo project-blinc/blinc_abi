@@ -13,7 +13,7 @@ default = ["hashlink"]
 hashlink = ["dep:hl_abi", "scene"]
 # The blinc-css command; build it with --no-default-features so it does not link HashLink.
 css-cli = []
-scene = ["dep:blinc_svg", "dep:blinc_text", "dep:blinc_image", "dep:swash", "blinc_layout/text_measurer"]
+scene = ["dep:blinc_svg", "dep:blinc_text", "dep:blinc_image", "dep:swash", "dep:woff2-patched", "blinc_layout/text_measurer"]
 
 [[bin]]
 name = "blinc-css"
@@ -30,6 +30,7 @@ taffy = { version = "0.14", features = ["content_size"] }
 rustc-hash = "2"
 # Glyph outlines for text drawn on a canvas, scaled as blinc_text rasterizes its faces.
 swash = { version = "0.1", optional = true }
+woff2-patched = { version = "0.4", optional = true }
 
 [workspace]
 resolver = "3"

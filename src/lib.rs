@@ -21,6 +21,8 @@ pub mod tree;
 pub mod bitmap;
 #[cfg(feature = "scene")]
 pub mod display_list;
+#[cfg(feature = "scene")]
+pub mod font;
 mod grid;
 #[cfg(feature = "scene")]
 pub mod hit;

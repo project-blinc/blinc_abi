@@ -348,6 +348,22 @@ impl Cascade {
         (self.env, self.root_font_size)
     }
 
+    /// Active font rules in stylesheet/source order. Hosts reconcile their owned loads
+    /// when sheets or media conditions change, using the sheet id and face index as keys.
+    pub fn font_faces(
+        &self,
+    ) -> impl Iterator<Item = (SheetId, usize, &Stylesheet, &super::font_face::FontFace)> {
+        self.sheets.iter().flat_map(|(id, sheet)| {
+            sheet
+                .sheet
+                .font_faces
+                .iter()
+                .enumerate()
+                .filter(|(_, face)| sheet.sheet.media_span_holds(face.media, &self.env))
+                .map(move |(index, face)| (*id, index, &sheet.sheet, face))
+        })
+    }
+
     pub fn set_root_font_size(&mut self, px: f64) {
         self.root_font_size = px;
     }

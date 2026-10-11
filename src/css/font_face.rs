@@ -37,6 +37,14 @@ fn string(text: &str) -> Result<String, String> {
     }
 }
 
+/// A font-family stack with quoted names and CSS string escapes decoded.
+pub fn families(stack: &str) -> Vec<String> {
+    value::split_ref(stack, ',')
+        .into_iter()
+        .filter_map(|s| string(s).ok())
+        .collect()
+}
+
 fn weights(text: &str) -> Result<[u16; 2], String> {
     let values = value::split_ref(text, ' ');
     let weight = |v: &str| match v.to_ascii_lowercase().as_str() {
