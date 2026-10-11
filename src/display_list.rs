@@ -1233,7 +1233,8 @@ fn append_inner(
         }
     }
 
-    // An image or a canvas is clipped to its own rounded corners, as an `<img>` is.
+    // An image or a canvas is clipped to its own rounded corners, as an `<img>` is: inside its
+    // border, when it has one, as the content of a box with a border is.
     let content = [
         (tree.images.get(&node), PRIM_IMAGE),
         (tree.canvases.get(&node), PRIM_CANVAS),
@@ -1249,7 +1250,7 @@ fn append_inner(
         match rounded {
             Some(p) => {
                 let mut own = clips.clone();
-                own.push(own_box(p, [x, y, w, h], m, &glyphs.shapes));
+                own.push(content_box(p, [x, y, w, h], m, &glyphs.shapes));
                 image_record(
                     tree,
                     node,
@@ -2111,6 +2112,55 @@ fn image_record(
         rec.bounds[1] = (rec.bounds[1] * display_scale).round() / display_scale;
     }
     rec.push(&clipping(clips, m, (x + left, y + top), true, cull), out);
+}
+
+/// A clip to what is inside a node's border: its own rounded box when it has no border, else its
+/// padding box, rounded by what is left of a uniform radius after a uniform border, as the clip
+/// its children get is.
+fn content_box(props: &RenderProps, rect: [f32; 4], m: Affine, shapes: &Shapes) -> Clip {
+    let sides = border_sides(props);
+    if sides.iter().all(|&s| s <= 0.0) {
+        return own_box(props, rect, m, shapes);
+    }
+    let [top, right, bottom, left] = sides;
+    let r = props.border_radius;
+    let uniform = sides.iter().all(|&s| s == top);
+    let inset_radius = if uniform && r.is_uniform() && r.top_left > top {
+        r.top_left - top
+    } else {
+        0.0
+    };
+    let [x, y, w, h] = rect;
+    let inner = [
+        x + left,
+        y + top,
+        (w - left - right).max(0.0),
+        (h - top - bottom).max(0.0),
+    ];
+    Clip {
+        rect: if m == IDENTITY {
+            inner
+        } else {
+            bounding(m, inner)
+        },
+        radii: if m == IDENTITY {
+            [inset_radius; 4]
+        } else {
+            [0.0; 4]
+        },
+        layout: inner,
+        layout_radii: [inset_radius; 4],
+        frame: m,
+        n: shapes.resolve(
+            props.corner_shape.to_array(),
+            [r.top_left, r.top_right, r.bottom_right, r.bottom_left],
+            w,
+            h,
+            props.corner_shape_locked,
+        )[0],
+        fade: [0.0; 4],
+        shape: None,
+    }
 }
 
 /// A clip to a node's own rounded box, `rect` in layout coordinates under `m`.
