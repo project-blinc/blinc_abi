@@ -854,6 +854,77 @@ mod tests {
         assert!(encoder.read(&tree, &mut data).is_err());
     }
     #[test]
+    fn text_out_of_its_clip_is_not_shaped_until_it_scrolls_into_view() {
+        let mut tree = LayoutContext::new();
+        let column = |w: f32, h: f32| Style {
+            flex_direction: FlexDirection::Column,
+            ..style(w, h)
+        };
+        let root = tree.create_node(column(300.0, 100.0)).unwrap();
+        let scroller = tree
+            .create_node(Style {
+                overflow: taffy::Point {
+                    x: taffy::Overflow::Hidden,
+                    y: taffy::Overflow::Hidden,
+                },
+                flex_shrink: 0.0,
+                ..column(300.0, 40.0)
+            })
+            .unwrap();
+        let text = |content: &str| TextMeasureContext {
+            content: content.into(),
+            font_size: 16.0,
+            line_height: 1.2,
+            letter_spacing: 0.0,
+            wrap: false,
+            font_name: None,
+            generic_font: blinc_layout::div::GenericFont::SansSerif,
+            font_weight: 400,
+            italic: false,
+        };
+        let seen = tree.create_text(Style::default(), text("WWWW")).unwrap();
+        let gap = tree
+            .create_node(Style {
+                flex_shrink: 0.0,
+                ..style(10.0, 400.0)
+            })
+            .unwrap();
+        let below = tree.create_text(Style::default(), text("MMMM")).unwrap();
+        tree.set_children(scroller, &[seen, gap, below]).unwrap();
+        tree.set_children(root, &[scroller]).unwrap();
+        tree.compute(root, 300.0, 100.0).unwrap();
+        let mut encoder = SceneEncoder::new();
+        let info = encoder
+            .prepare(&tree, root, PaintOptions::default())
+            .unwrap();
+        assert_eq!(info.count, 4, "the text in view, one record a glyph");
+        let atlas = encoder.atlas_info(false, 0).unwrap().unwrap();
+        // Again, as it was: nothing new to rasterize.
+        encoder
+            .prepare(&tree, root, PaintOptions::default())
+            .unwrap();
+        assert!(encoder.atlas_info(false, atlas.revision).unwrap().is_none());
+        // Scrolled to the text below, its glyphs are rasterized for the first time.
+        tree.set_scroll(
+            scroller,
+            Some(crate::tree::Scroll {
+                x: 0.0,
+                y: 400.0,
+                thumb: [0.0; 4],
+            }),
+        )
+        .unwrap();
+        let info = encoder
+            .prepare(&tree, root, PaintOptions::default())
+            .unwrap();
+        assert_eq!(info.count, 4, "the text scrolled to, and not the other");
+        assert!(
+            encoder.atlas_info(false, atlas.revision).unwrap().is_some(),
+            "the text below was not shaped while out of view"
+        );
+    }
+
+    #[test]
     fn measured_text_and_incremental_atlases() {
         let mut tree = LayoutContext::new();
         let root = tree.create_node(style(500.0, 100.0)).unwrap();

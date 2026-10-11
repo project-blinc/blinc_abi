@@ -1282,7 +1282,9 @@ fn append_inner(
             ),
         }
     }
-    if let Some(context) = tree.layout.text_context(node) {
+    if let Some(context) = tree.layout.text_context(node)
+        && !text_outside_clip(tree, node, context, [x, y, w, h], m, clips, cull)
+    {
         text_records(
             tree,
             node,
@@ -1840,6 +1842,37 @@ fn thumbs(
             THUMB,
         ]);
     }
+}
+
+/// Whether nothing a text run draws can reach the screen clip, so it need not
+/// be shaped at all: its box, grown on every side by twice its font size for
+/// ink that overhangs it and by its decorations' thickness and offset, lies
+/// wholly outside, by the same test its glyphs would each be rejected by.
+fn text_outside_clip(
+    tree: &Tree,
+    node: LayoutNodeId,
+    context: &blinc_layout::tree::TextMeasureContext,
+    [x, y, w, h]: [f32; 4],
+    m: Affine,
+    clips: &[Clip],
+    cull: bool,
+) -> bool {
+    if !cull {
+        return false;
+    }
+    let decorations = decorations_of(tree, node)
+        .iter()
+        .map(|d| d.thickness.unwrap_or(0.0).abs() + d.offset.unwrap_or(0.0).abs())
+        .fold(0.0f32, f32::max);
+    let reach = context.font_size * 2.0 + decorations;
+    let clipping = clipping(clips, m, (0.0, 0.0), true, cull);
+    let mut p = Primitive::new(
+        PRIM_TEXT,
+        [0.0, 0.0, w + 2.0 * reach, h + 2.0 * reach],
+        [0.0; 4],
+    );
+    p.place(m, x - reach, y - reach);
+    p.outside_clip(&clipping)
 }
 
 /// The glyph records of a text node laid out at `(x, y)` and `w` wide.
