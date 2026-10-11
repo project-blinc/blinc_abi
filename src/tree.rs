@@ -149,7 +149,16 @@ impl Tree {
             .copied()
             .unwrap_or([Style::Solid; 4]);
         styles[side] = style;
-        if styles == [Style::Solid; 4] {
+        self.set_border_styles(node, styles);
+    }
+
+    #[cfg(feature = "scene")]
+    pub(crate) fn set_border_styles(
+        &mut self,
+        node: LayoutNodeId,
+        styles: [crate::css::border::Style; 4],
+    ) {
+        if styles == [crate::css::border::Style::Solid; 4] {
             self.border_styles.remove(&node);
         } else {
             self.border_styles.insert(node, styles);

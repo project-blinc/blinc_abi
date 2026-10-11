@@ -371,6 +371,11 @@ impl Styles {
         self.watched_out.drain(..n).collect()
     }
 
+    /// Pending changed nodes without consuming the host's notification queue.
+    pub fn changed_nodes(&self) -> impl Iterator<Item = u64> + '_ {
+        self.changed_out.iter().copied()
+    }
+
     /// How many nodes `take_changed` would give.
     pub fn changed_count(&self) -> usize {
         self.changed_out.len()

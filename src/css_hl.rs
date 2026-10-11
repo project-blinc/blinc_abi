@@ -58,9 +58,7 @@ unsafe fn styles<'a>(h: *mut c_void) -> Option<&'a mut Styles> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_blinc_css_new() -> *mut c_void {
-    let mut styles = Styles::new();
-    styles.set_paint_output(true);
-    into_handle(styles)
+    into_handle(Styles::new())
 }
 define_prim!(hlp_blinc_css_new, hl_blinc_css_new, "P_Xblinc_css_");
 
@@ -503,17 +501,31 @@ pub unsafe extern "C" fn hl_blinc_css_restyle(h: *mut c_void, t: *mut c_void, ro
     let (Some(s), Some(tree)) = (unsafe { styles(h) }, unsafe { crate::node::tree(t) }) else {
         return 0;
     };
+    let pending = s.changed_count();
     s.restyle_host(&mut TreeHost(tree), root);
-    // Pattern storage belongs to the native display-list system. HashLink
-    // continues to apply its other layout and paint declarations itself.
-    for (node, writes) in s.take_paint() {
-        let id = LayoutNodeId::from_raw(node.raw());
-        if tree.layout.node_exists(id) {
-            for write in writes {
-                if let css::paint::PaintWrite::BorderStyle { side, style } = write {
-                    tree.set_border_style(id, side, style);
-                }
-            }
+    // Only native pattern state is ours to apply. Read it from the already
+    // resolved declarations; the host keeps its other paint declarations,
+    // without a second parse of backgrounds, gradients and shadows here.
+    let (env, root_font_size) = s.cascade().environment();
+    for raw in s.changed_nodes().skip(pending) {
+        let id = LayoutNodeId::from_raw(raw);
+        if let Some(computed) = s.computed(raw)
+            && tree.layout.node_exists(id)
+        {
+            let units = css::layout::Units {
+                font_size: computed.font_size,
+                root_font_size,
+                viewport_width: env.width,
+                viewport_height: env.height,
+            };
+            let styles = css::border::resolved_styles(
+                computed
+                    .resolved
+                    .iter()
+                    .map(|(name, value)| (s.cascade().str(*name), value.as_str())),
+                &units,
+            );
+            tree.set_border_styles(id, styles);
         }
     }
     s.changed_count() as i32
