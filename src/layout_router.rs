@@ -189,6 +189,7 @@ pub fn take_pending_text_decoration() -> Vec<(
 
 /// Effects held beside Taffy's styles, forwarded through the same reactive property queue.
 pub(crate) enum TreeWrite {
+    Order(i32),
     Position(bool),
     Inset(usize, Option<f32>),
     ZIndex(Option<i32>),
@@ -198,6 +199,7 @@ pub(crate) enum TreeWrite {
     BackgroundMapping(Option<crate::types::ImageMapping>),
 }
 
+pub const ORDER: i32 = crate::context::ORDER;
 pub const Z_INDEX: i32 = crate::context::Z_INDEX;
 pub const TEXT_OVERFLOW: i32 = 122;
 pub const LINE_CLAMP: i32 = 123;
@@ -647,6 +649,13 @@ pub unsafe extern "C" fn hl_blinc_apply_i32(
 ) {
     let node = LayoutNodeId::from_raw(node);
     let extra = match prop {
+        // git-bug: 62aa0b0; queue integer order through the existing layout bindings.
+        ORDER => Some((
+            PropertyId::FlexDirection,
+            Some(Write::Layout(Arc::new(move |_, v| {
+                record_tree(node, TreeWrite::Order(v));
+            }))),
+        )),
         VISIBILITY => Some((PropertyId::Opacity, render(|p, v| p.visible = v == 0))),
         POINTER_EVENTS => Some((
             PropertyId::Transform,
@@ -896,6 +905,13 @@ const CORNER_SHAPE: i32 = 1003;
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_unset(node: u64, raw: i32) {
     let node = LayoutNodeId::from_raw(node);
+    if raw == ORDER {
+        let prop = PropertyId::FlexDirection;
+        queue_layout_update_partial(node, prop, prop.side_effects(), move |_| {
+            record_tree(node, TreeWrite::Order(0));
+        });
+        return;
+    }
     if let Some(prop) = layout_props::unset_property(raw) {
         queue_layout_update_partial(node, prop, prop.side_effects(), move |s| {
             layout_props::unset(s, raw);
