@@ -250,6 +250,42 @@ fn read<T: Slot>(state: &State<T>) -> T {
     state.signal().get()
 }
 
+// git-bug f12b432: equal scalar writes must not notify native property bindings.
+// Read without dependency tracking: setting a signal must not subscribe a host
+// effect to it. An equal write is complete at this read; a changed write still
+// uses State::set, including all of Blinc's binding notifications.
+trait Primitive: Slot + Copy {
+    fn same(a: Self, b: Self) -> bool;
+}
+
+macro_rules! primitive {
+    ($t:ty, $same:expr) => {
+        impl Primitive for $t {
+            fn same(a: Self, b: Self) -> bool {
+                ($same)(a, b)
+            }
+        }
+    };
+}
+primitive!(i32, |a, b| a == b);
+primitive!(bool, |a, b| a == b);
+// Bit equality keeps signed zero changes observable and repeated NaNs quiet.
+primitive!(f32, |a: f32, b: f32| a.to_bits() == b.to_bits());
+primitive!(f64, |a: f64, b: f64| a.to_bits() == b.to_bits());
+
+fn set_primitive<T: Primitive>(state: &State<T>, value: T) {
+    let unchanged = {
+        let graph = global_graph();
+        let graph = graph.lock().unwrap();
+        graph
+            .get_untracked(state.signal())
+            .is_some_and(|current| T::same(current, value))
+    };
+    if !unchanged {
+        state.set(value);
+    }
+}
+
 thread_local! {
     /// What the computation in flight handed back. Nested computations finish
     /// before the outer one returns, so one slot suffices.
@@ -311,7 +347,7 @@ macro_rules! export_numeric {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $set(h: *mut c_void, v: $t) {
             if let Some(s) = unsafe { state_of::<$t>(h) } {
-                s.set(v);
+                set_primitive(s, v);
             }
         }
         define_prim!($set_prim, $set, $set_sig);
@@ -400,7 +436,7 @@ define_prim!(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_signal_set_bool(h: *mut c_void, v: i32) {
     if let Some(s) = unsafe { state_of::<bool>(h) } {
-        s.set(v != 0);
+        set_primitive(s, v != 0);
     }
 }
 define_prim!(
