@@ -561,10 +561,17 @@ impl SceneEncoder {
             }
         }
         self.count = self.records.len() / RECORD_FLOATS;
-        let base = (self.records.len() / 4) as f32;
-        for record in self.records.as_chunks_mut::<RECORD_FLOATS>().0 {
-            if record[94] == display_list::SHAPE_POLYGON {
-                record[96] += base;
+        // Ordinary scenes have no data tail: keep gradient pointer checks out
+        // of that path, including the many records produced by text.
+        if !self.points.is_empty() {
+            let base = (self.records.len() / 4) as f32;
+            for record in self.records.as_chunks_mut::<RECORD_FLOATS>().0 {
+                if record[59] >= 2.0 {
+                    record[59] += base;
+                }
+                if record[94] == display_list::SHAPE_POLYGON {
+                    record[96] += base;
+                }
             }
         }
         self.records.extend_from_slice(&self.points);
@@ -694,7 +701,7 @@ impl SceneEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use blinc_core::{Brush, Color};
+    use blinc_core::{Brush, Color, Gradient};
     use taffy::prelude::*;
     fn style(w: f32, h: f32) -> Style {
         Style {
@@ -706,6 +713,48 @@ mod tests {
             ..Default::default()
         }
     }
+    #[test]
+    fn full_gradient_stops_share_the_data_tail_without_becoming_primitives() {
+        let mut tree = LayoutContext::new();
+        let root = tree.create_node(style(120.0, 80.0)).unwrap();
+        for css in [
+            "linear-gradient(red, yellow, lime, blue)",
+            "conic-gradient(from 90deg, red 0% 25%, blue 25% 100%)",
+            "repeating-linear-gradient(red -25%, blue 25%)",
+        ] {
+            let gradient = crate::css::gradient::parse(css, None)
+                .unwrap()
+                .to_gradient();
+            let expected = match &gradient {
+                Gradient::Linear { stops, .. }
+                | Gradient::Radial { stops, .. }
+                | Gradient::Conic { stops, .. } => stops,
+            };
+            let mut props = RenderProps::default();
+            props.background = Some(Brush::Gradient(gradient.clone()));
+            tree.set_properties(root, props).unwrap();
+            tree.compute(root, 120.0, 80.0).unwrap();
+            let mut encoder = SceneEncoder::new();
+            let info = encoder
+                .prepare(&tree, root, PaintOptions::default())
+                .unwrap();
+            assert_eq!(info.count, 1);
+            assert!(info.floats > RECORD_FLOATS);
+            let records = &encoder.records;
+            let first = (records[59] as usize - 2) * 4;
+            assert!(first >= RECORD_FLOATS);
+            assert_eq!(records[first], expected.len() as f32);
+            for (i, stop) in expected.iter().enumerate() {
+                let at = first + 8 + i * 8;
+                assert_eq!(
+                    &records[at..at + 4],
+                    &[stop.color.r, stop.color.g, stop.color.b, stop.color.a]
+                );
+                assert_eq!(records[at + 4], stop.offset);
+            }
+        }
+    }
+
     #[test]
     fn a_background_image_source_is_noted_when_it_changes() {
         let mut tree = LayoutContext::new();

@@ -20,7 +20,7 @@
 //! | 11 | primitive type, fill type, clips, the clips' corner `n`         |
 //! | 12 | corner shape `n`, theme applied: top-left, top-right, bottom-right, bottom-left |
 //! | 13 | gradient middle stop colour, opacity applied                   |
-//! | 14 | gradient stop offsets: first, middle, last; 1 if there is a middle |
+//! | 14 | gradient stop offsets: first, middle, last; 0/1 for the inline stops, or 2 + the first texel of complete gradient data |
 //! | 15 | a, b, c, d: a point `(x, y)` from the box's top-left is at       |
 //! |    | `(a·x + c·y, b·x + d·y)` from its screen top-left                |
 //! | 16-19 | each side's border colour, top, right, bottom, left, opacity applied |
@@ -35,7 +35,9 @@
 //! |    | count in the points after the records                           |
 //!
 //! After the records, in whole records' room, come the points of polygon
-//! clips, two to a row; see `Glyphs::points`.
+//! clips, two to a row, and gradient tables. A gradient table has a header
+//! (count, spread: 0 pad / 1 repeat / 2 reflect, 0, 0), its average RGBA,
+//! then two rows per stop: RGBA and (offset, 0, 0, 0). See `Glyphs::points`.
 //!
 //! A text node adds one record per glyph, a `PRIM_TEXT` quad whose bounds
 //! are the glyph's, whose colour is the text's, whose gradient row is the
@@ -71,7 +73,9 @@
 use crate::css::text_decoration::TextDecoration;
 use crate::text;
 use crate::tree::Tree;
-use blinc_core::{Brush, Color, CornerRadius, Gradient, GradientSpace, ImageFit, Transform};
+use blinc_core::{
+    Brush, Color, CornerRadius, Gradient, GradientSpace, GradientSpread, ImageFit, Transform,
+};
 use blinc_layout::element::RenderProps;
 use blinc_layout::tree::LayoutNodeId;
 use blinc_text::{SubpixelX, TextError, TextRenderer};
@@ -108,6 +112,7 @@ pub const PRIM_BACKDROP: f32 = 42.0;
 const FILL_SOLID: f32 = 0.0;
 const FILL_LINEAR: f32 = 1.0;
 const FILL_RADIAL: f32 = 2.0;
+const FILL_CONIC: f32 = 3.0;
 
 /// `type_info.z`, as Blinc's `ClipType`.
 const CLIP_NONE: f32 = 0.0;
@@ -590,9 +595,9 @@ fn rgba(c: Color, opacity: f32) -> [f32; 4] {
 
 /// Sets `p`'s fill colours, gradient geometry in pixels and fill type to
 /// `brush` over its bounds; Blinc's `brush_to_colors` then
-/// `obb_to_rect_coords`, with up to three stops: the first, the last and
-/// the one between them. False for brushes drawn elsewhere.
-fn fill(p: &mut Primitive, brush: &Brush, opacity: f32) -> bool {
+/// `obb_to_rect_coords`. Ordinary two/three-stop fills stay inline; complete
+/// stop data and spread modes live in the shared data tail. False for brushes drawn elsewhere.
+fn fill(p: &mut Primitive, brush: &Brush, opacity: f32, data: &mut Vec<f32>) -> bool {
     let [x, y, w, h] = p.bounds;
     match brush {
         Brush::Solid(c) => {
@@ -601,32 +606,46 @@ fn fill(p: &mut Primitive, brush: &Brush, opacity: f32) -> bool {
             true
         }
         Brush::Gradient(g) => {
-            let (stops, space, fill_type, params) = match g {
+            let (stops, space, fill_type, params, spread) = match g {
                 Gradient::Linear {
                     start,
                     end,
                     stops,
                     space,
-                    ..
-                } => (stops, space, FILL_LINEAR, [start.x, start.y, end.x, end.y]),
+                    spread,
+                } => (
+                    stops,
+                    space,
+                    FILL_LINEAR,
+                    [start.x, start.y, end.x, end.y],
+                    *spread,
+                ),
                 Gradient::Radial {
                     center,
                     radius,
                     stops,
                     space,
+                    spread,
                     ..
                 } => (
                     stops,
                     space,
                     FILL_RADIAL,
                     [center.x, center.y, *radius, 0.0],
+                    *spread,
                 ),
                 Gradient::Conic {
                     center,
                     stops,
                     space,
-                    ..
-                } => (stops, space, FILL_RADIAL, [center.x, center.y, 100.0, 0.0]),
+                    start_angle,
+                } => (
+                    stops,
+                    space,
+                    FILL_CONIC,
+                    [center.x, center.y, *start_angle, 0.0],
+                    GradientSpread::Pad,
+                ),
             };
             let (c1, c2) = match (stops.first(), stops.last()) {
                 (Some(a), Some(b)) => (rgba(a.color, opacity), rgba(b.color, opacity)),
@@ -645,12 +664,24 @@ fn fill(p: &mut Primitive, brush: &Brush, opacity: f32) -> bool {
             } else {
                 p.offsets = [first, 0.0, last, 0.0];
             }
+            if !stops.is_empty()
+                && (stops.len() > 3
+                    || stops.windows(2).any(|s| s[0].offset == s[1].offset)
+                    || spread != GradientSpread::Pad
+                    || fill_type == FILL_CONIC)
+            {
+                p.offsets[3] = gradient_data(data, stops, spread, opacity);
+            }
             // User-space points are in the node's own coordinates.
-            let params = match (space, fill_type == FILL_RADIAL) {
+            let params = match (space, fill_type != FILL_LINEAR) {
                 (GradientSpace::ObjectBoundingBox, true) => [
                     x + params[0] * w,
                     y + params[1] * h,
-                    params[2] * w.max(h),
+                    if fill_type == FILL_RADIAL {
+                        params[2] * w.max(h)
+                    } else {
+                        params[2]
+                    },
                     params[3],
                 ],
                 (GradientSpace::ObjectBoundingBox, false) => [
@@ -674,6 +705,34 @@ fn fill(p: &mut Primitive, brush: &Brush, opacity: f32) -> bool {
         }
         Brush::Glass(_) | Brush::Blur(_) | Brush::Image(_) => false,
     }
+}
+
+/// A gradient in the shared data tail. The marker is two plus its first
+/// vec4 index (rebased after the primitive records). The header holds stop
+/// count and spread (0 pad, 1 repeat, 2 reflect); each stop is colour then offset.
+/// The ordinary first/middle/last fields remain available to older consumers.
+fn gradient_data(
+    data: &mut Vec<f32>,
+    stops: &[blinc_core::layer::GradientStop],
+    spread: GradientSpread,
+    opacity: f32,
+) -> f32 {
+    while !data.len().is_multiple_of(4) {
+        data.push(0.0);
+    }
+    let marker = 2.0 + (data.len() / 4) as f32;
+    let mode = match spread {
+        GradientSpread::Pad => 0.0,
+        GradientSpread::Repeat => 1.0,
+        GradientSpread::Reflect => 2.0,
+    };
+    data.extend_from_slice(&[stops.len() as f32, mode, 0.0, 0.0]);
+    data.extend_from_slice(&rgba(crate::css::gradient::average(stops), opacity));
+    for stop in stops {
+        data.extend_from_slice(&rgba(stop.color, opacity));
+        data.extend_from_slice(&[stop.offset, 0.0, 0.0, 0.0]);
+    }
+    marker
 }
 
 /// The fields of one record, before packing.
@@ -968,7 +1027,7 @@ fn append_inner(
             .filter(|s| s.color.a > 0.0);
         let mask = match &props.mask_image {
             Some(blinc_core::MaskImage::Gradient(g)) => {
-                Mask::of(g, [x, y, w, h], m, glyphs.display_scale)
+                Mask::of(g, [x, y, w, h], m, glyphs.display_scale, &mut glyphs.points)
             }
             _ => None,
         };
@@ -1175,7 +1234,7 @@ fn append_inner(
         let mut p = Primitive::new(PRIM_RECT, local, radii);
         p.notch = notch;
         p.shape_from(props, &glyphs.shapes);
-        if brush.is_some_and(|b| fill(&mut p, b, opacity)) {
+        if brush.is_some_and(|b| fill(&mut p, b, opacity, &mut glyphs.points)) {
             if border {
                 p.border = sides;
                 p.side_colors = std::array::from_fn(|i| {
@@ -1555,24 +1614,48 @@ struct Mask {
 }
 
 impl Mask {
-    fn of(g: &blinc_core::layer::Gradient, frame: [f32; 4], m: Affine, scale: f32) -> Option<Mask> {
+    fn of(
+        g: &blinc_core::layer::Gradient,
+        frame: [f32; 4],
+        m: Affine,
+        scale: f32,
+        data: &mut Vec<f32>,
+    ) -> Option<Mask> {
         use blinc_core::layer::{Gradient, GradientSpace};
-        let (kind, geometry, stops, space) = match g {
+        let (kind, geometry, stops, space, spread) = match g {
             Gradient::Linear {
                 start,
                 end,
                 stops,
                 space,
-                ..
-            } => (1.0, [start.x, start.y, end.x, end.y], stops, space),
+                spread,
+            } => (1.0, [start.x, start.y, end.x, end.y], stops, space, *spread),
             Gradient::Radial {
                 center,
                 radius,
                 stops,
                 space,
+                spread,
                 ..
-            } => (2.0, [center.x, center.y, *radius, 0.0], stops, space),
-            _ => return None,
+            } => (
+                2.0,
+                [center.x, center.y, *radius, 0.0],
+                stops,
+                space,
+                *spread,
+            ),
+            Gradient::Conic {
+                center,
+                start_angle,
+                stops,
+                space,
+            } => (
+                3.0,
+                [center.x, center.y, *start_angle, 0.0],
+                stops,
+                space,
+                GradientSpread::Pad,
+            ),
         };
         if stops.is_empty() {
             return None;
@@ -1593,7 +1676,11 @@ impl Mask {
                     [
                         geometry[0] / w,
                         geometry[1] / h,
-                        geometry[2] / w.max(h),
+                        if kind == 2.0 {
+                            geometry[2] / w.max(h)
+                        } else {
+                            geometry[2]
+                        },
                         0.0,
                     ]
                 }
@@ -1613,7 +1700,17 @@ impl Mask {
                 first.offset,
                 mid.offset,
                 last.offset,
-                if middle.is_some() { 1.0 } else { 0.0 },
+                if stops.len() > 3
+                    || stops.windows(2).any(|s| s[0].offset == s[1].offset)
+                    || spread != GradientSpread::Pad
+                    || kind == 3.0
+                {
+                    gradient_data(data, stops, spread, 1.0)
+                } else if middle.is_some() {
+                    1.0
+                } else {
+                    0.0
+                },
             ],
         })
     }

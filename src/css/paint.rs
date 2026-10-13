@@ -533,10 +533,10 @@ fn validate_glass(name: &str, value: &str, units: &PaintUnits) -> Result<(), Str
                 return Err("expected liquid or frosted".into());
             }
         }
-        "glass-curvature" => {
-            if !["inset", "outset"].contains(&value.trim().to_ascii_lowercase().as_str()) {
-                return Err("expected inset or outset".into());
-            }
+        "glass-curvature"
+            if !["inset", "outset"].contains(&value.trim().to_ascii_lowercase().as_str()) =>
+        {
+            return Err("expected inset or outset".into());
         }
         _ => {}
     }

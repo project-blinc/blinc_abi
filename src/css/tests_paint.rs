@@ -95,8 +95,9 @@ fn points(g: &Gradient) -> [f32; 4] {
 
 fn offsets(g: &Gradient) -> Vec<f32> {
     let stops = match g {
-        Gradient::Linear { stops, .. } | Gradient::Radial { stops, .. } => stops,
-        _ => panic!("not a colour gradient"),
+        Gradient::Linear { stops, .. }
+        | Gradient::Radial { stops, .. }
+        | Gradient::Conic { stops, .. } => stops,
     };
     stops.iter().map(|s| s.offset).collect()
 }
@@ -151,7 +152,7 @@ fn gradient_stops_are_spread_as_css_spreads_them() {
         of("linear-gradient(red 60%, lime 20%, blue)"),
         vec![0.6, 0.6, 1.0]
     ));
-    assert!(eq(of("linear-gradient(red, blue 150%)"), vec![0.0, 1.0]));
+    assert!(eq(of("linear-gradient(red, blue 150%)"), vec![0.0, 1.5]));
 }
 
 #[test]
@@ -183,7 +184,7 @@ fn radial_gradients_reach_the_farthest_corner() {
 fn gradients_that_are_not_understood_say_why() {
     let reason = |t: &str| gradient::parse(t, None).unwrap_err();
     assert!(reason("linear-gradient(red)").contains("two colour stops"));
-    assert!(reason("conic-gradient(red, blue)").contains("conic-gradient"));
+    assert!(reason("conic-gradient(from left, red, blue)").contains("angle"));
     assert!(reason("radial-gradient(closest-side, red, blue)").contains("closest-side"));
     assert!(reason("linear-gradient(to middle, red, blue)").contains("top, bottom, left or right"));
     assert!(reason("linear-gradient(red 10px, blue)").contains("number or a percentage"));
@@ -2112,4 +2113,48 @@ fn border_patterns_retain_side_styles_and_reset_shorthands() {
                 .is_err()
         );
     }
+}
+
+#[test]
+fn conic_and_repeating_gradients_keep_angles_periods_and_hard_stops() {
+    use blinc_core::layer::GradientSpread;
+    let Gradient::Conic {
+        center,
+        start_angle,
+        stops,
+        ..
+    } = gradient_of("conic-gradient(from 0.25turn at 25% 75%, red 0deg 90deg, blue 50% 1turn)")
+    else {
+        panic!("not conic")
+    };
+    assert!(near(center.x, 0.25) && near(center.y, 0.75));
+    assert!(near(start_angle, std::f32::consts::FRAC_PI_2));
+    assert_eq!(
+        stops.iter().map(|s| s.offset).collect::<Vec<_>>(),
+        vec![0.0, 0.25, 0.5, 1.0]
+    );
+    for name in ["linear", "radial"] {
+        let gradient = gradient_of(&format!("repeating-{name}-gradient(red -25%, blue 25%)"));
+        assert_eq!(offsets(&gradient), vec![-0.25, 0.25]);
+        match gradient {
+            Gradient::Linear { spread, .. } | Gradient::Radial { spread, .. } => {
+                assert_eq!(spread, GradientSpread::Repeat)
+            }
+            _ => unreachable!(),
+        }
+    }
+    assert_eq!(
+        offsets(&gradient_of("linear-gradient(red 60%, lime, blue 20%)")),
+        vec![0.6, 0.6, 0.6]
+    );
+    let repeated = offsets(&gradient_of(
+        "repeating-conic-gradient(red 0deg 45deg, blue 45deg 90deg)",
+    ));
+    assert!(repeated.len() > 8 && repeated.windows(2).all(|w| w[0] <= w[1]));
+    assert!(repeated[0] < 0.0 && repeated.last().unwrap() > &1.0);
+    assert!(
+        gradient::parse("repeating-conic-gradient(red 0deg, blue 0.00001deg)", None)
+            .unwrap_err()
+            .contains("4096")
+    );
 }
