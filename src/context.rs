@@ -1,6 +1,7 @@
 //! Owned layout contexts for language adapters. No host GC or process-global tree.
 use crate::layout_tree::LayoutTree;
 use crate::tree::{Reach, Step};
+use blinc_layout::div::TextAlign;
 use blinc_layout::element::RenderProps;
 use blinc_layout::tree::LayoutNodeId;
 use std::collections::{HashMap, HashSet};
@@ -52,6 +53,8 @@ pub enum PropValue<'a> {
 /// layout space, as CSS's box model does, and CSS `order`.
 pub const BORDER_WIDTH: i32 = 2;
 pub const BORDER_TOP_WIDTH: i32 = 60;
+/// TextAlign in the shared property router: 0 left, 1 centre, 2 right.
+pub const TEXT_ALIGN: i32 = 40;
 pub const ORDER: i32 = 118;
 /// The `position` property, its sticky value, and the first of the four insets after it.
 pub const POSITION: i32 = 29;
@@ -221,6 +224,26 @@ impl LayoutContext {
                         }
                         _ => false,
                     },
+                    _ if raw == TEXT_ALIGN => {
+                        let align = match value {
+                            PropValue::Enum(v) => Some(match v {
+                                1 => TextAlign::Center,
+                                2 => TextAlign::Right,
+                                _ => TextAlign::Left,
+                            }),
+                            PropValue::Unset => None,
+                            _ => {
+                                return Err(
+                                    "Unknown layout property, or a value of the wrong type",
+                                );
+                            }
+                        };
+                        let props = entry.props.get_or_insert_with(|| {
+                            tree.props.get(&id).cloned().unwrap_or_default()
+                        });
+                        props.text_align = align;
+                        true
+                    }
                     _ if border => {
                         let props = entry.props.get_or_insert_with(|| {
                             tree.props.get(&id).cloned().unwrap_or_default()
@@ -813,6 +836,66 @@ mod tests {
         assert_eq!(x_positions(&mut ctx, root, &[b, c]), [0.0, 20.0]);
         // Content reaches the children's far edges, not the root's own size.
         assert_eq!(ctx.content_size(root).unwrap(), [50.0, 10.0]);
+    }
+    #[test]
+    fn router_text_alignment_preserves_style_and_other_paint() {
+        let mut ctx = LayoutContext::new();
+        let node = ctx.create_node(box_style(120.0, 24.0)).unwrap();
+        let tree = ctx.tree.as_mut().unwrap();
+        tree.props.entry(node.id).or_default().opacity = 0.5;
+        let before = ctx.style(node).unwrap();
+        for (code, expected) in [
+            (1, TextAlign::Center),
+            (2, TextAlign::Right),
+            (0, TextAlign::Left),
+        ] {
+            ctx.apply(&[(node, TEXT_ALIGN, PropValue::Enum(code))])
+                .unwrap();
+            let props = ctx.tree.as_ref().unwrap().props.get(&node.id).unwrap();
+            assert_eq!(props.text_align, Some(expected));
+            assert_eq!(props.opacity, 0.5);
+            assert_eq!(ctx.style(node).unwrap(), before);
+        }
+        ctx.apply(&[(node, TEXT_ALIGN, PropValue::Unset)]).unwrap();
+        let props = ctx.tree.as_ref().unwrap().props.get(&node.id).unwrap();
+        assert_eq!(props.text_align, None);
+        assert_eq!(props.opacity, 0.5);
+        assert_eq!(ctx.style(node).unwrap(), before);
+    }
+    #[test]
+    fn router_text_alignment_validation_keeps_the_entire_batch_atomic() {
+        let mut ctx = LayoutContext::new();
+        let node = ctx.create_node(box_style(120.0, 24.0)).unwrap();
+        ctx.apply(&[(node, TEXT_ALIGN, PropValue::Enum(2))])
+            .unwrap();
+        let before = ctx.style(node).unwrap();
+        let revision = ctx.revision;
+        for invalid in [
+            (TEXT_ALIGN, PropValue::Number(1.0)),
+            (TEXT_ALIGN, PropValue::Text(Some("center"))),
+            (-1, PropValue::Enum(0)),
+        ] {
+            assert!(
+                ctx.apply(&[
+                    (node, TEXT_ALIGN, PropValue::Enum(1)),
+                    (node, 10, PropValue::Number(240.0)),
+                    (node, invalid.0, invalid.1),
+                ])
+                .is_err()
+            );
+            assert_eq!(
+                ctx.tree
+                    .as_ref()
+                    .unwrap()
+                    .props
+                    .get(&node.id)
+                    .unwrap()
+                    .text_align,
+                Some(TextAlign::Right)
+            );
+            assert_eq!(ctx.style(node).unwrap(), before);
+            assert_eq!(ctx.revision, revision);
+        }
     }
     #[test]
     fn router_writes_box_model_and_order() {

@@ -16,6 +16,11 @@ buffers. Disposing it invalidates all its nodes. The reactive context provides
 isolated signals, computed dependencies, batched effects and deferred mutation
 while callbacks run. Host adapters retain values and callback references.
 
+`LayoutContext::apply` accepts the shared `context::TEXT_ALIGN` router id (40):
+`PropValue::Enum` selects left (0), centre (1) or right (2), and `Unset` clears
+the override. The staged batch preserves the node's layout style and other
+paint fields, and a rejected write leaves the entire batch unchanged.
+
 `LayoutContext::set_grid_rows(group, rows)` opts direct rows into a shared grid
 for table row spans. Adapters assign columns and spans; native layout measures
 the shared tracks and keeps authored row/cell ancestry for styles and events.
