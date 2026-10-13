@@ -596,8 +596,21 @@ mod tests {
         let width = one.max_content + 100.0;
         let right = layout(&items, width, InlineAlign::Right, false);
         let center = layout(&items, width, InlineAlign::Center, false);
-        assert!((right.fragments[0].x - 100.0).abs() < 0.5);
-        assert!((center.fragments[0].x - 50.0).abs() < 0.5);
+        // max_content is rounded up; the free space is not necessarily 100.
+        // Check the positioned line's edges rather than the rounded intrinsic width.
+        let last = right.fragments.last().unwrap();
+        let edge = last.x + last.width;
+        assert!(
+            (edge - width).abs() < 0.01,
+            "right edge {edge}, container {width}"
+        );
+        let last = center.fragments.last().unwrap();
+        let left = center.fragments[0].x;
+        let right = width - last.x - last.width;
+        assert!(
+            (left - right).abs() < 0.01,
+            "centred margins {left}, {right}"
+        );
     }
 
     #[test]
