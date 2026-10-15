@@ -7,6 +7,7 @@ struct Doc {
     parent: Vec<Option<usize>>,
     children: Vec<Vec<usize>>,
     elements: Vec<Element>,
+    containers: std::collections::HashMap<usize, conditional::Container>,
 }
 
 impl Doc {
@@ -32,6 +33,9 @@ impl Tree for Doc {
     }
     fn element(&self, n: usize) -> Option<&Element> {
         self.elements.get(n)
+    }
+    fn container(&self, n: usize) -> Option<&conditional::Container> {
+        self.containers.get(&n)
     }
 }
 
@@ -66,6 +70,71 @@ fn style_all(c: &Cascade, doc: &Doc) -> Vec<Computed> {
         out.push(c.style(doc, n, parent.as_ref()).0);
     }
     out
+}
+
+#[test]
+fn conditional_rules_keep_inactive_fallbacks_and_native_capabilities() {
+    let source = "@keyframes move { to { opacity: 0.25 } } .x { width: 10px } @supports (display: grid) and (width: calc(100% - 1rem)) { .x { width: 20px } @font-face { font-family: Present; src: url(present.woff2); } } @supports (display: invented-mode) { .x { width: 30px } @font-face { font-family: Absent; src: url(absent.woff2); } @keyframes move { to { opacity: 1 } } } @supports not (made-up: 1) { .x { height: 40px } }";
+    for compiled in [false, true] {
+        let parsed = sheet(source);
+        let mut c = Cascade::new();
+        c.push(if compiled {
+            compiled::decode(&compiled::encode(&parsed)).unwrap()
+        } else {
+            parsed
+        });
+        let mut doc = Doc::default();
+        let element = el(&mut c, &["div"], &["x"]);
+        let n = doc.add(None, element);
+        let (computed, _) = c.style(&doc, n, None);
+        assert_eq!(get(&c, &computed, "width").as_deref(), Some("20px"));
+        assert_eq!(get(&c, &computed, "height").as_deref(), Some("40px"));
+        let faces: Vec<_> = c.font_faces().map(|(_, _, s, f)| s.str(f.family)).collect();
+        assert_eq!(faces, ["Present"]);
+        let (s, frames) = c.keyframes("move").unwrap();
+        assert_eq!(
+            s.str(s.keyframe_declarations(&s.keyframe_list(frames)[0])[0].value),
+            "0.25"
+        );
+    }
+}
+
+#[test]
+fn container_guards_select_eligible_ancestors_and_revisit_false_reads() {
+    let mut c = Cascade::new();
+    c.push(sheet(".x { width: 10px } @container Panel (width >= 20em) { .x { width: 20px } } @container (height > 100px) { .x { height: 30px } }"));
+    let mut doc = Doc::default();
+    let root = doc.add(None, el(&mut c, &["div"], &[]));
+    let parent = doc.add(Some(root), el(&mut c, &["div"], &[]));
+    let n = doc.add(Some(parent), el(&mut c, &["div"], &["x"]));
+    doc.containers.insert(
+        root,
+        conditional::Container {
+            kind: conditional::ContainerType::Size,
+            names: vec!["Panel".into()],
+            size: Some((399.0, 200.0)),
+            font_size: 20.0,
+        },
+    );
+    doc.containers.insert(
+        parent,
+        conditional::Container {
+            kind: conditional::ContainerType::InlineSize,
+            names: Vec::new(),
+            size: Some((900.0, 10.0)),
+            font_size: 16.0,
+        },
+    );
+    let (computed, deps) = c.style(&doc, n, None);
+    assert_eq!(get(&c, &computed, "width").as_deref(), Some("10px"));
+    assert_eq!(get(&c, &computed, "height").as_deref(), Some("30px"));
+    assert!(!c.containers_changed(&doc, n, &deps.containers));
+    doc.containers.get_mut(&root).unwrap().size = Some((400.0, 200.0));
+    assert!(c.containers_changed(&doc, n, &deps.containers));
+    let (computed, deps) = c.style(&doc, n, None);
+    assert_eq!(get(&c, &computed, "width").as_deref(), Some("20px"));
+    doc.containers.get_mut(&root).unwrap().names.clear();
+    assert!(c.containers_changed(&doc, n, &deps.containers));
 }
 
 #[test]

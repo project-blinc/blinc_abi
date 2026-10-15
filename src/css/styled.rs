@@ -5,7 +5,8 @@
 //! paint declarations as typed writes for the host to apply to its own store.
 //! What is neither, text for one, stays readable as resolved declarations.
 
-use super::cascade::{Cascade, Computed, Element, States, Tree};
+use super::cascade::{Cascade, Computed, ContainerRead, Element, States, Tree};
+use super::conditional::{Container, ContainerType};
 use super::generated::{Content, Generated, GeneratedNode, PseudoElement};
 use super::layout::{Units, is_layout_property, layout_writes};
 use super::paint::{PaintWrite, is_paint_property, paint_writes};
@@ -39,6 +40,12 @@ pub trait Host {
     fn context(&self) -> Option<u64> {
         None
     }
+    fn set_containment(&mut self, _node: u64, _kind: ContainerType) -> Result<(), &'static str> {
+        Ok(())
+    }
+    fn container_size(&self, _node: u64) -> Option<(f64, f64)> {
+        None
+    }
 }
 
 impl Host for LayoutContext {
@@ -67,6 +74,12 @@ impl Host for LayoutContext {
     fn context(&self) -> Option<u64> {
         Some(self.id)
     }
+    fn set_containment(&mut self, node: u64, kind: ContainerType) -> Result<(), &'static str> {
+        LayoutContext::set_containment(self, self.node(node)?, kind)
+    }
+    fn container_size(&self, node: u64) -> Option<(f64, f64)> {
+        LayoutContext::container_size(self, self.node(node).ok()?)
+    }
 }
 
 /// A node, by its context `Node` or its raw id.
@@ -90,6 +103,7 @@ impl Key for u64 {
 struct HostTree<'a, H: Host> {
     host: &'a H,
     elements: &'a FxHashMap<u64, Element>,
+    containers: &'a FxHashMap<u64, Container>,
     /// What `:root` names; none for a forest, where it is any node with no parent.
     root: Option<u64>,
 }
@@ -108,6 +122,9 @@ impl<H: Host> Tree for HostTree<'_, H> {
     fn root(&self) -> Option<u64> {
         self.root
     }
+    fn container(&self, node: u64) -> Option<&Container> {
+        self.containers.get(&node)
+    }
 }
 
 /// A cascade over one context, and what it last applied there.
@@ -115,6 +132,8 @@ pub struct Styles {
     cascade: Cascade,
     elements: FxHashMap<u64, Element>,
     computed: FxHashMap<u64, Computed>,
+    containers: FxHashMap<u64, Container>,
+    container_reads: FxHashMap<u64, Vec<ContainerRead>>,
     generated: FxHashMap<(u64, PseudoElement), Generated>,
     generated_nodes: FxHashMap<u64, GeneratedNode>,
     generated_out: Vec<(u64, PseudoElement, Option<Content>)>,
@@ -171,6 +190,8 @@ impl Styles {
             cascade: Cascade::new(),
             elements: FxHashMap::default(),
             computed: FxHashMap::default(),
+            containers: FxHashMap::default(),
+            container_reads: FxHashMap::default(),
             generated: FxHashMap::default(),
             generated_nodes: FxHashMap::default(),
             generated_out: Vec::new(),
@@ -300,6 +321,8 @@ impl Styles {
         let raw = node.key();
         self.elements.remove(&raw);
         self.computed.remove(&raw);
+        self.containers.remove(&raw);
+        self.container_reads.remove(&raw);
         self.generated_nodes.remove(&raw);
         for pseudo in [PseudoElement::Before, PseudoElement::After] {
             self.generated.remove(&(raw, pseudo));
@@ -402,6 +425,7 @@ impl Styles {
         let tree = HostTree {
             host,
             elements: &self.elements,
+            containers: &self.containers,
             root: None,
         };
         self.cascade.select(&tree, root, selectors)
@@ -412,6 +436,7 @@ impl Styles {
         let tree = HostTree {
             host,
             elements: &self.elements,
+            containers: &self.containers,
             root: None,
         };
         self.cascade.explain(&tree, node.key())
@@ -427,6 +452,7 @@ impl Styles {
     }
 
     fn untrack(&mut self, raw: u64) {
+        self.container_reads.remove(&raw);
         for key in self.depends_on.remove(&raw).unwrap_or_default() {
             if let Some(set) = self.dependents.get_mut(&key) {
                 set.remove(&raw);
@@ -463,6 +489,7 @@ impl Styles {
             let tree = HostTree {
                 host: &*host,
                 elements: &self.elements,
+                containers: &self.containers,
                 root,
             };
             work.forest = root.is_none();
@@ -554,6 +581,7 @@ impl Styles {
                 let tree = HostTree {
                     host: &*host,
                     elements: &self.elements,
+                    containers: &self.containers,
                     root,
                 };
                 let parent = tree.parent(raw).and_then(|p| self.computed.get(&p));
@@ -590,12 +618,14 @@ impl Styles {
                         let tree = HostTree {
                             host: &*host,
                             elements: &self.elements,
+                            containers: &self.containers,
                             root,
                         };
                         self.cascade
                             .style_pseudo(&tree, raw, &computed, pseudo.name())
                     };
                     deps.states.extend(read.states);
+                    deps.containers.extend(read.containers);
                     let content = c
                         .resolved
                         .iter()
@@ -665,6 +695,9 @@ impl Styles {
                 who.insert(raw);
             }
             self.depends_on.insert(raw, deps.states);
+            if !deps.containers.is_empty() {
+                self.container_reads.insert(raw, deps.containers);
+            }
 
             // Its layout declarations, and an unset for each it took before and no longer does.
             let (env, root_font_size) = self.cascade.environment();
@@ -751,6 +784,106 @@ impl Styles {
             self.applied
                 .insert(raw, now.iter().map(|(k, _)| *k).collect());
             self.read_paint(raw, &computed, units, &mut errors);
+            let old_container = self.containers.get(&raw).cloned();
+            if old_container.is_some()
+                || computed.resolved.iter().any(|(key, _)| {
+                    matches!(
+                        self.cascade.str(*key),
+                        "container" | "container-type" | "container-name"
+                    )
+                })
+            {
+                let parent_container = host
+                    .parent(raw)
+                    .and_then(|p| self.containers.get(&p))
+                    .cloned()
+                    .unwrap_or_default();
+                let mut container = Container {
+                    size: old_container.as_ref().and_then(|c| c.size),
+                    font_size: computed.font_size,
+                    ..Default::default()
+                };
+                for (key, value) in &computed.resolved {
+                    let property = self.cascade.str(*key);
+                    let inherited = value.eq_ignore_ascii_case("inherit");
+                    let reset = value.eq_ignore_ascii_case("initial")
+                        || value.eq_ignore_ascii_case("unset");
+                    match property {
+                        "container" => {
+                            if inherited {
+                                container.kind = parent_container.kind;
+                                container.names = parent_container.names.clone();
+                            } else if reset {
+                                container.kind = ContainerType::Normal;
+                                container.names.clear();
+                            } else if let Some((names, kind)) = super::conditional::container(value)
+                            {
+                                container.kind = kind;
+                                container.names = names;
+                            } else {
+                                errors.push(format!("container: {value}: invalid name/type"));
+                            }
+                        }
+                        "container-type" => {
+                            if inherited {
+                                container.kind = parent_container.kind;
+                            } else if reset {
+                                container.kind = ContainerType::Normal;
+                            } else if let Some(kind) = ContainerType::parse(value) {
+                                container.kind = kind;
+                            } else {
+                                errors.push(format!(
+                                    "container-type: {value}: expected normal, inline-size or size"
+                                ));
+                            }
+                        }
+                        "container-name" => {
+                            if inherited {
+                                container.names = parent_container.names.clone();
+                            } else if reset {
+                                container.names.clear();
+                            } else if let Some(names) = super::conditional::names(value) {
+                                container.names = names;
+                            } else {
+                                errors.push(format!("container-name: {value}: invalid name list"));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let inline = computed.resolved.iter().any(|(key, value)| {
+                    self.cascade.str(*key) == "display" && value.eq_ignore_ascii_case("inline")
+                });
+                if inline {
+                    container.size = None;
+                }
+                if let Err(error) = host.set_containment(
+                    raw,
+                    if inline {
+                        ContainerType::Normal
+                    } else {
+                        container.kind
+                    },
+                ) {
+                    errors.push(error.into());
+                }
+                if container.kind == ContainerType::Normal && container.names.is_empty() {
+                    self.containers.remove(&raw);
+                } else {
+                    self.containers.insert(raw, container);
+                }
+                if old_container.as_ref() != self.containers.get(&raw) {
+                    let tree = HostTree {
+                        host: &*host,
+                        elements: &self.elements,
+                        containers: &self.containers,
+                        root,
+                    };
+                    for child in host.children(raw) {
+                        work.subtree(&tree, child);
+                    }
+                }
+            }
             // What its children inherit changed: they are restyled too, after it.
             let inherits = |k: &Atom| self.cascade.inherits(*k);
             let old = self.computed.get(&raw);
@@ -771,6 +904,45 @@ impl Styles {
             self.computed.insert(raw, computed);
         }
         errors
+    }
+}
+
+impl Styles {
+    /// Refresh declared query containers after layout and invalidate subjects
+    /// only when a guard they read changes truth. No-container scenes return
+    /// immediately and settled queries enqueue no additional style work.
+    pub fn update_containers<H: Host>(&mut self, host: &H) -> bool {
+        if self.containers.is_empty() && self.container_reads.is_empty() {
+            return false;
+        }
+        for (&node, container) in &mut self.containers {
+            let inline = self.computed.get(&node).is_some_and(|c| {
+                c.resolved.iter().any(|(key, value)| {
+                    self.cascade.str(*key) == "display" && value.eq_ignore_ascii_case("inline")
+                })
+            });
+            container.size = if inline {
+                None
+            } else {
+                host.container_size(node)
+            };
+        }
+        let tree = HostTree {
+            host,
+            elements: &self.elements,
+            containers: &self.containers,
+            root: None,
+        };
+        let changed: Vec<_> = self
+            .container_reads
+            .iter()
+            .filter_map(|(&node, reads)| {
+                (host.live(node) && self.cascade.containers_changed(&tree, node, reads))
+                    .then_some(node)
+            })
+            .collect();
+        self.stale.extend(changed.iter().copied());
+        !changed.is_empty()
     }
 }
 

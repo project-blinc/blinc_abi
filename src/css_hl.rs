@@ -23,7 +23,7 @@ const PAIR: char = '\u{2}';
 const ITEM: char = '\u{3}';
 
 /// The process's layout tree, as the cascade walks it. Layout is the host's to apply.
-struct TreeHost<'a>(&'a Tree);
+struct TreeHost<'a>(&'a mut Tree);
 
 impl Host for TreeHost<'_> {
     fn live(&self, node: u64) -> bool {
@@ -49,6 +49,19 @@ impl Host for TreeHost<'_> {
     }
     fn lays_out(&self) -> bool {
         false
+    }
+    fn set_containment(
+        &mut self,
+        node: u64,
+        kind: css::conditional::ContainerType,
+    ) -> Result<(), &'static str> {
+        self.0
+            .layout
+            .set_containment(LayoutNodeId::from_raw(node), kind);
+        Ok(())
+    }
+    fn container_size(&self, node: u64) -> Option<(f64, f64)> {
+        self.0.layout.container_size(LayoutNodeId::from_raw(node))
     }
 }
 
@@ -536,6 +549,21 @@ define_prim!(
     "PXblinc_css_Xblinc_tree_l_i"
 );
 
+/// Called after native layout and before paint. A nonzero result requests
+/// another restyle/layout pass; settled queries return zero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_css_update_containers(h: *mut c_void, t: *mut c_void) -> i32 {
+    let (Some(s), Some(tree)) = (unsafe { styles(h) }, unsafe { crate::node::tree(t) }) else {
+        return 0;
+    };
+    s.update_containers(&TreeHost(tree)) as i32
+}
+define_prim!(
+    hlp_blinc_css_update_containers,
+    hl_blinc_css_update_containers,
+    "PXblinc_css_Xblinc_tree_i"
+);
+
 /// Writes the nodes whose styles changed, parents first, to `out`, at most
 /// `capacity`, and forgets those; the rest wait for the next call.
 #[unsafe(no_mangle)]
@@ -727,7 +755,7 @@ mod tests {
             let e = element(&mut s, &["div"], &["row"]);
             s.set_element(n.to_raw(), e);
         }
-        s.restyle_host(&mut TreeHost(&tree), root.to_raw());
+        s.restyle_host(&mut TreeHost(&mut tree), root.to_raw());
         assert_eq!(
             s.take_changed(),
             vec![root.to_raw(), a.to_raw(), b.to_raw()]
@@ -756,7 +784,7 @@ mod tests {
         );
 
         // Nothing changed: nothing listed.
-        s.restyle_host(&mut TreeHost(&tree), root.to_raw());
+        s.restyle_host(&mut TreeHost(&mut tree), root.to_raw());
         assert!(s.take_changed().is_empty());
     }
 
@@ -778,7 +806,7 @@ mod tests {
             let e = element(&mut s, &["div"], &[]);
             s.set_element(n.to_raw(), e);
         }
-        s.restyle_host(&mut TreeHost(&tree), 0u64);
+        s.restyle_host(&mut TreeHost(&mut tree), 0u64);
         let color = s.intern("color");
         let value = |s: &Styles, n: LayoutNodeId| {
             s.computed(n.to_raw())
@@ -820,7 +848,7 @@ mod tests {
         let mut e = element(&mut s, &["div"], &["row"]);
         e.anonymous = true;
         s.set_element(flow.to_raw(), e);
-        let host = TreeHost(&tree);
+        let host = TreeHost(&mut tree);
         let raw = |v: &[LayoutNodeId]| v.iter().map(|n| n.to_raw()).collect::<Vec<_>>();
         assert_eq!(
             s.select(&host, root.to_raw(), ".row").unwrap(),

@@ -56,6 +56,7 @@ struct Failure {
 struct Scope {
     parents: Option<Vec<String>>,
     media: Option<Vec<Vec<MediaQuery>>>,
+    conditions: Vec<super::conditional::Condition>,
 }
 
 impl Scope {
@@ -63,6 +64,7 @@ impl Scope {
         Scope {
             parents: None,
             media: None,
+            conditions: Vec::new(),
         }
     }
 }
@@ -184,18 +186,12 @@ impl Parser {
         let inner = Scope {
             parents: Some(selectors.iter().map(|s| s.to_string()).collect()),
             media: scope.media.clone(),
+            conditions: scope.conditions.clone(),
         };
         let order = cx.order;
         cx.order += 1;
         let declarations = self.block(cx, &inner, true);
-        self.emit(
-            cx,
-            selectors,
-            declarations,
-            scope.media.clone(),
-            order,
-            start,
-        );
+        self.emit(cx, selectors, declarations, scope, order, start);
     }
 
     /// Lays a rule out in the sheet; `:root`'s custom properties outside `@media` become its variables.
@@ -204,11 +200,12 @@ impl Parser {
         cx: &mut Cx,
         selectors: Vec<Selector>,
         declarations: Vec<Declaration>,
-        media: Option<Vec<Vec<MediaQuery>>>,
+        scope: &Scope,
         order: u32,
         start: usize,
     ) {
-        let root_only = media.is_none()
+        let root_only = scope.media.is_none()
+            && scope.conditions.is_empty()
             && selectors
                 .iter()
                 .all(|s| s.compounds.len() == 1 && is_root(&s.compounds[0]));
@@ -222,11 +219,13 @@ impl Parser {
         let sheet = &mut cx.sheet;
         let selectors = sheet.push_selectors(&selectors);
         let declarations = sheet.push_declarations(&declarations);
-        let media = media.map(|m| sheet.push_media(&m));
+        let media = scope.media.as_ref().map(|m| sheet.push_media(m));
+        let conditions = sheet.push_conditions(&scope.conditions);
         sheet.rules.push(super::Rule {
             selectors,
             declarations,
             media,
+            conditions,
             order,
             line: self.line_of(start),
         });
@@ -266,6 +265,13 @@ impl Parser {
                 match super::font_face::parse(&mut cx.sheet, &declarations) {
                     Ok(mut face) => {
                         face.media = scope.media.as_ref().map(|m| cx.sheet.push_media(m));
+                        let guards: Vec<_> = scope
+                            .conditions
+                            .iter()
+                            .copied()
+                            .filter(|c| matches!(c, super::conditional::Condition::Supports(_)))
+                            .collect();
+                        face.conditions = cx.sheet.push_conditions(&guards);
                         face.file = self.file.as_ref().map(|f| cx.sheet.atoms.intern(f));
                         face.line = self.line_of(start);
                         face.column = self.column_of(start);
@@ -302,6 +308,7 @@ impl Parser {
                 let inner = Scope {
                     parents: scope.parents.clone(),
                     media: Some(lists.clone()),
+                    conditions: scope.conditions.clone(),
                 };
                 if scope.parents.is_none() {
                     self.rules(cx, &inner, true);
@@ -310,7 +317,56 @@ impl Parser {
                     cx.order += 1;
                     let declarations = self.block(cx, &inner, true);
                     let parents = parent_selectors(scope);
-                    self.emit(cx, parents, declarations, Some(lists), order, start);
+                    self.emit(cx, parents, declarations, &inner, order, start);
+                }
+            }
+            "supports" | "container" => {
+                let prelude = self.until(cx, &['{', ';', '}']).trim().to_string();
+                if self.done() || self.peek() != '{' {
+                    self.report(
+                        cx,
+                        Severity::Error,
+                        &format!("expected {{ after @{name}"),
+                        start,
+                    );
+                    if !self.done() && self.peek() == ';' {
+                        self.at += 1;
+                    }
+                    return;
+                }
+                self.at += 1;
+                let valid = if name == "supports" {
+                    super::conditional::parse(&prelude).map(|_| ())
+                } else {
+                    super::conditional::SizeQuery::parse(&prelude).map(|_| ())
+                };
+                if let Err(e) = valid {
+                    self.report(cx, Severity::Error, &format!("@{name}: {e}"), start);
+                    self.skip_block();
+                    return;
+                }
+                let text = cx.sheet.atoms.intern(&prelude);
+                let condition = if name == "supports" {
+                    super::conditional::Condition::Supports(text)
+                } else {
+                    super::conditional::Condition::Container(text)
+                };
+                let mut inner = scope.clone();
+                inner.conditions.push(condition);
+                if scope.parents.is_none() {
+                    self.rules(cx, &inner, true);
+                } else {
+                    let order = cx.order;
+                    cx.order += 1;
+                    let declarations = self.block(cx, &inner, true);
+                    self.emit(
+                        cx,
+                        parent_selectors(scope),
+                        declarations,
+                        &inner,
+                        order,
+                        start,
+                    );
                 }
             }
             "import" => {
@@ -351,7 +407,7 @@ impl Parser {
                     self.skip_statement(cx);
                     return;
                 }
-                self.keyframes(cx, start);
+                self.keyframes(cx, scope, start);
             }
             _ => {
                 self.report(
@@ -426,6 +482,7 @@ impl Parser {
             &Scope {
                 parents: None,
                 media: lists,
+                conditions: scope.conditions.clone(),
             },
             false,
         );
@@ -572,7 +629,7 @@ impl Parser {
         into.extend(declarations);
     }
 
-    fn keyframes(&mut self, cx: &mut Cx, start: usize) {
+    fn keyframes(&mut self, cx: &mut Cx, scope: &Scope, start: usize) {
         self.skip_space(cx);
         let name = if !self.done() && (self.peek() == '"' || self.peek() == '\'') {
             self.quoted(cx)
@@ -651,7 +708,15 @@ impl Parser {
                 frames.push((offsets, declarations));
             }
         }
-        cx.sheet.set_keyframes(&name, &frames);
+        let media = scope.media.as_ref().map(|m| cx.sheet.push_media(m));
+        let guards: Vec<_> = scope
+            .conditions
+            .iter()
+            .copied()
+            .filter(|c| matches!(c, super::conditional::Condition::Supports(_)))
+            .collect();
+        let conditions = cx.sheet.push_conditions(&guards);
+        cx.sheet.set_keyframes(&name, &frames, media, conditions);
     }
 
     /// A block's declarations, to its `}` when `closed` (consumed), else to
@@ -1007,7 +1072,7 @@ fn named_argument(a: &str) -> Option<(String, String)> {
 }
 
 /// The value before a trailing `!important` (any case, spaces allowed after the `!`).
-fn strip_important(value: &str) -> Option<&str> {
+pub(super) fn strip_important(value: &str) -> Option<&str> {
     let bang = value.rfind('!')?;
     value[bang + 1..]
         .trim_start()

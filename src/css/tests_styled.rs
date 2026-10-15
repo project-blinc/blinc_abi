@@ -18,6 +18,127 @@ fn bounds(ctx: &LayoutContext, n: Node) -> [f32; 4] {
 }
 
 #[test]
+fn container_queries_use_unrounded_content_size_and_settle_without_idle_work() {
+    for compiled in [false, true] {
+        let mut ctx = LayoutContext::new();
+        let root = ctx.create_node(Default::default()).unwrap();
+        let parent = ctx.create_node(Default::default()).unwrap();
+        let child = ctx.create_node(Default::default()).unwrap();
+        ctx.insert_before(root, parent, None).unwrap();
+        ctx.insert_before(parent, child, None).unwrap();
+        let mut s = Styles::new();
+        let sheet = parse(
+            ".root { width: 800px; height: 600px; align-items: start } .panel { container: Panel / inline-size; width: 324.25px; padding: 10px; border-width: 2px; border-style: solid; font-size: 20px; flex-direction: column; } .wide { width: 424.25px } .card { width: 100px; height: 20px } @container Panel (width > 300px) { .card { width: 200px } }",
+            None,
+            &mut |_, _| None,
+        );
+        assert!(sheet.diagnostics.is_empty(), "{}", sheet.report(None));
+        s.cascade_mut().push(if compiled {
+            super::compiled::decode(&super::compiled::encode(&sheet)).unwrap()
+        } else {
+            sheet
+        });
+        for (node, classes) in [
+            (root, vec!["root"]),
+            (parent, vec!["panel"]),
+            (child, vec!["card"]),
+        ] {
+            let e = element(&mut s, &["div"], &classes);
+            s.set_element(node, e);
+        }
+        let settle = |s: &mut Styles, ctx: &mut LayoutContext| {
+            for _ in 0..10 {
+                let errors = s.restyle(ctx, root);
+                assert!(errors.is_empty(), "{errors:?}");
+                ctx.compute(root, 800.0, 600.0).unwrap();
+                if !s.update_containers(ctx) {
+                    return;
+                }
+            }
+            panic!("container guards did not settle");
+        };
+        settle(&mut s, &mut ctx);
+        assert_eq!(ctx.container_size(parent).unwrap().0, 300.25);
+        assert_eq!(bounds(&ctx, child)[2], 200.0);
+        let e = element(&mut s, &["div"], &["panel"]);
+        let mut e = e;
+        e.inline.push((s.intern("width"), "324px".into()));
+        s.set_element(parent, e);
+        settle(&mut s, &mut ctx);
+        assert_eq!(bounds(&ctx, child)[2], 100.0);
+        assert!(!s.update_containers(&ctx));
+        assert!(s.restyle(&mut ctx, root).is_empty());
+        assert_eq!(
+            s.last_restyled(),
+            0,
+            "settled queries do not schedule style work"
+        );
+    }
+}
+
+#[test]
+fn size_containment_suppresses_descendant_intrinsic_contributions() {
+    for (kind, height) in [("inline-size", 80.0), ("size", 0.0)] {
+        let mut ctx = LayoutContext::new();
+        let root = ctx.create_node(Default::default()).unwrap();
+        let parent = ctx.create_node(Default::default()).unwrap();
+        let child = ctx.create_node(Default::default()).unwrap();
+        ctx.insert_before(root, parent, None).unwrap();
+        ctx.insert_before(parent, child, None).unwrap();
+        let mut s = Styles::new();
+        s.cascade_mut().push(parse(&format!(".root {{ width: 800px; height: 600px; align-items: start }} .panel {{ container-type: {kind}; flex-shrink: 0; padding: 10px; flex-direction: column; }} .card {{ width: 700px; height: 80px; flex-shrink: 0 }}"), None, &mut |_, _| None));
+        for (node, class) in [(root, "root"), (parent, "panel"), (child, "card")] {
+            let e = element(&mut s, &["div"], &[class]);
+            s.set_element(node, e);
+        }
+        assert!(s.restyle(&mut ctx, root).is_empty());
+        ctx.compute(root, 800.0, 600.0).unwrap();
+        assert_eq!(ctx.container_size(parent), Some((0.0, height)), "{kind}");
+        assert_eq!(
+            bounds(&ctx, child)[2],
+            700.0,
+            "overflowing children retain their authored geometry"
+        );
+    }
+}
+
+#[test]
+fn containers_preserve_authored_constraints_and_block_stretching() {
+    for display in ["flex", "grid", "block"] {
+        let mut ctx = LayoutContext::new();
+        let root = ctx.create_node(Default::default()).unwrap();
+        let parent = ctx.create_node(Default::default()).unwrap();
+        let child = ctx.create_node(Default::default()).unwrap();
+        ctx.insert_before(root, parent, None).unwrap();
+        ctx.insert_before(parent, child, None).unwrap();
+        let mut s = Styles::new();
+        s.cascade_mut().push(parse(&format!(".root {{ display: block; width: 800px }} .panel {{ display: {display}; container-type: inline-size; padding: 10px; min-width: 100px; max-width: 300px; }} .card {{ width: 700px; height: 80px; flex-shrink: 0; }}"), None, &mut |_, _| None));
+        for (node, class) in [(root, "root"), (parent, "panel"), (child, "card")] {
+            let e = element(&mut s, &["div"], &[class]);
+            s.set_element(node, e);
+        }
+        assert!(s.restyle(&mut ctx, root).is_empty());
+        ctx.compute(root, 800.0, 600.0).unwrap();
+        assert_eq!(
+            bounds(&ctx, parent)[2],
+            300.0,
+            "{display}: block allocation respects max-width"
+        );
+        assert_eq!(ctx.container_size(parent).unwrap().0, 280.0);
+        let mut e = element(&mut s, &["div"], &["panel"]);
+        e.inline.push((s.intern("width"), "150px".into()));
+        s.set_element(parent, e);
+        assert!(s.restyle(&mut ctx, root).is_empty());
+        ctx.compute(root, 800.0, 600.0).unwrap();
+        assert_eq!(
+            ctx.container_size(parent).unwrap().0,
+            130.0,
+            "{display}: explicit width survives containment"
+        );
+    }
+}
+
+#[test]
 fn a_sheet_lays_a_context_out_and_follows_states_and_classes() {
     let mut ctx = LayoutContext::new();
     let root = ctx.create_node(Default::default()).unwrap();

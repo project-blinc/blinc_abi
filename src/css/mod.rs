@@ -17,6 +17,7 @@ pub mod cascade;
 pub mod clip_path;
 pub mod color;
 pub mod compiled;
+pub mod conditional;
 pub mod filter;
 pub mod font_face;
 pub mod generated;
@@ -351,6 +352,8 @@ pub struct Rule {
     /// The `@media` query lists it is inside, each of which must hold: a
     /// span of the sheet's media lists; none outside any.
     pub media: Option<Span>,
+    /// Nested feature/size guards, all required.
+    pub conditions: Span,
     /// Its place among the sheet's rules, for ties in specificity.
     pub order: u32,
     pub line: u32,
@@ -370,6 +373,8 @@ pub struct Keyframes {
     pub name: Atom,
     /// A span of the sheet's frames.
     pub frames: Span,
+    pub media: Option<Span>,
+    pub conditions: Span,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -408,6 +413,7 @@ pub struct Stylesheet {
     pub media_lists: Vec<Span>,
     pub queries: Vec<MediaQuery>,
     pub features: Vec<MediaFeature>,
+    pub conditions: Vec<conditional::Condition>,
     /// `:root`'s custom properties, by name without the `--`, in source
     /// order; a later one of a name replaces the earlier in place.
     pub variables: Vec<(Atom, Atom)>,
@@ -506,7 +512,7 @@ impl Stylesheet {
 
     pub fn keyframes_named(&self, name: &str) -> Option<&Keyframes> {
         let a = self.atoms.find(name)?;
-        self.keyframes.iter().find(|k| k.name == a)
+        self.keyframes.iter().rev().find(|k| k.name == a)
     }
 
     pub fn has_errors(&self) -> bool {
@@ -838,6 +844,8 @@ impl Stylesheet {
         &mut self,
         name: &str,
         frames: &[(Vec<f64>, Vec<tree::Declaration>)],
+        media: Option<Span>,
+        conditions: Span,
     ) {
         let laid: Vec<Keyframe> = frames
             .iter()
@@ -856,11 +864,34 @@ impl Stylesheet {
         let k = Keyframes {
             name: self.atoms.intern(name),
             frames: span_of(start, self.frames.len()),
+            media,
+            conditions,
         };
-        match self.keyframes.iter_mut().find(|x| x.name == k.name) {
+        // Keep conditional alternatives so an inactive later definition cannot
+        // erase the earlier fallback. Ordinary sheets keep their old arenas.
+        let guarded = media.is_some()
+            || !conditions.is_empty()
+            || self
+                .keyframes
+                .iter()
+                .any(|x| x.name == k.name && (x.media.is_some() || !x.conditions.is_empty()));
+        match self
+            .keyframes
+            .iter_mut()
+            .find(|x| x.name == k.name && !guarded)
+        {
             Some(slot) => *slot = k,
             None => self.keyframes.push(k),
         }
+    }
+
+    pub(crate) fn push_conditions(&mut self, list: &[conditional::Condition]) -> Span {
+        if list.is_empty() {
+            return Span::default();
+        }
+        let start = self.conditions.len();
+        self.conditions.extend_from_slice(list);
+        span_of(start, self.conditions.len())
     }
 }
 

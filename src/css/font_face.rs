@@ -15,6 +15,7 @@ pub struct FontFace {
     pub weight: [u16; 2],
     pub italic: bool,
     pub media: Option<Span>,
+    pub conditions: Span,
     /// The stylesheet defining relative URLs, including imported sheets.
     pub file: Option<Atom>,
     pub line: u32,
@@ -153,6 +154,7 @@ pub(crate) fn parse(
         weight,
         italic,
         media: None,
+        conditions: Span::default(),
         file: None,
         line: 0,
         column: 0,

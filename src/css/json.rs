@@ -76,6 +76,26 @@ fn declaration(sheet: &Stylesheet, d: &Declaration) -> String {
     )
 }
 
+fn conditions(sheet: &Stylesheet, span: Span) -> String {
+    if span.is_empty() {
+        return String::new();
+    }
+    format!(
+        ",\"conditions\":{}",
+        list(&sheet.conditions[span.range()], |c| {
+            let (kind, text) = match *c {
+                conditional::Condition::Supports(a) => ("supports", a),
+                conditional::Condition::Container(a) => ("container", a),
+            };
+            format!(
+                "{{\"type\":{},\"condition\":{}}}",
+                string(kind),
+                string(sheet.str(text))
+            )
+        })
+    )
+}
+
 pub fn to_json(sheet: &Stylesheet) -> String {
     let fonts = if sheet.font_faces.is_empty() {
         String::new()
@@ -83,7 +103,7 @@ pub fn to_json(sheet: &Stylesheet) -> String {
         format!(
             ",\"fontFaces\":{}",
             list(&sheet.font_faces, |f| format!(
-                "{{\"family\":{},\"sources\":{},\"weight\":[{},{}],\"italic\":{},\"file\":{},\"line\":{},\"column\":{}}}",
+                "{{\"family\":{},\"sources\":{},\"weight\":[{},{}],\"italic\":{},\"file\":{},\"line\":{},\"column\":{}{}}}",
                 string(sheet.str(f.family)),
                 list(&f.sources, |s| format!(
                     "{{\"name\":{},\"local\":{},\"format\":{}}}",
@@ -96,7 +116,8 @@ pub fn to_json(sheet: &Stylesheet) -> String {
                 f.italic,
                 f.file.map_or("null".into(), |a| string(sheet.str(a))),
                 f.line,
-                f.column
+                f.column,
+                conditions(sheet, f.conditions)
             ))
         )
     };
@@ -114,13 +135,14 @@ pub fn to_json(sheet: &Stylesheet) -> String {
             }),
         };
         format!(
-            "{{\"selectors\":{},\"specificity\":{},\"declarations\":{},\"media\":{},\"order\":{},\"line\":{}}}",
+            "{{\"selectors\":{},\"specificity\":{},\"declarations\":{},\"media\":{},\"order\":{},\"line\":{}{}}}",
             list(sheet.rule_selectors(r), |s| string(&sheet.selector_text(s))),
             list(sheet.rule_selectors(r), |s| s.specificity.to_string()),
             list(sheet.rule_declarations(r), |d| declaration(sheet, d)),
             media,
             r.order,
-            r.line
+            r.line,
+            conditions(sheet, r.conditions)
         )
     });
     let mut variables: Vec<(&str, &str)> = sheet
@@ -140,13 +162,14 @@ pub fn to_json(sheet: &Stylesheet) -> String {
             string(v)
         )),
         list(&keyframes, |k| format!(
-            "{{\"name\":{},\"frames\":{}}}",
+            "{{\"name\":{},\"frames\":{}{}}}",
             string(sheet.str(k.name)),
             list(sheet.keyframe_list(k), |f| format!(
                 "{{\"offsets\":{},\"declarations\":{}}}",
                 list(sheet.keyframe_offsets(f), |o| number(*o)),
                 list(sheet.keyframe_declarations(f), |d| declaration(sheet, d))
-            ))
+            )),
+            conditions(sheet, k.conditions)
         )),
         list(&sheet.imports, |&i| string(sheet.str(i))),
         list(&sheet.diagnostics, |d| format!(

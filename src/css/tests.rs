@@ -91,7 +91,8 @@ fn root_variables_keyframes_and_mixins() {
 
 #[test]
 fn errors_skip_the_rule_and_name_its_place() {
-    let s = sheet(".ok { a: b }\n.bad:frobnicate { a: b }\n.also-ok { c: d }\n@supports (x) { }");
+    let s =
+        sheet(".ok { a: b }\n.bad:frobnicate { a: b }\n.also-ok { c: d }\n@future-rule (x) { }");
     assert_eq!(s.rules.len(), 2);
     assert_eq!(s.diagnostics.len(), 2);
     assert_eq!((s.diagnostics[0].line, s.diagnostics[0].column), (2, 6));
@@ -161,6 +162,48 @@ fn compiled_bytes_give_the_same_sheet() {
     let mut other = bytes.clone();
     other[4] = 9;
     assert!(compiled::decode(&other).unwrap_err().contains("version"));
+}
+
+#[test]
+fn conditional_codec_retains_guards_and_ordinary_bytes() {
+    for (source, hex) in [
+        (
+            ".x { width: 20px }",
+            "4243535302000a787769647468323070780300010106060a0100010001000001010001000000e807010000000100000000000001000000010102000106000000000000000000",
+        ),
+        (
+            "@font-face { font-family: Example; src: url(example.woff2); }",
+            "424353530300146578616d706c652e776f6666324578616d706c6502000d0d140000000000000000000000000000000000010101000000900390030000000101",
+        ),
+    ] {
+        let original: Vec<_> = (0..hex.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+            .collect();
+        let parsed = sheet(source);
+        assert_eq!(compiled::encode(&parsed), original);
+        assert_eq!(compiled::decode(&original).unwrap(), parsed);
+    }
+    let parsed = sheet(
+        "@supports (display: grid) { :root { --size: 20px } @media (min-width: 1px) { .card { @container Panel (width > 20em) { width: 10px; & > .title { color: red } } } } @font-face { font-family: Guarded; src: url(guarded.woff2); } @keyframes k { to { opacity: 1 } } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{}", parsed.report(None));
+    assert!(
+        parsed.variables.is_empty(),
+        "conditional root variables stay in rules"
+    );
+    let bytes = compiled::encode(&parsed);
+    assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 4);
+    assert_eq!(compiled::decode(&bytes).unwrap(), parsed);
+    for i in 6..bytes.len() {
+        for byte in [0, 1, 0x7f, 0xff] {
+            let mut damaged = bytes.clone();
+            damaged[i] = byte;
+            if let Ok(decoded) = compiled::decode(&damaged) {
+                let _ = json::to_json(&decoded);
+            }
+        }
+    }
 }
 
 #[test]

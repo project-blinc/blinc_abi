@@ -127,6 +127,7 @@ pub struct LayoutTree {
     baselines: HashMap<LayoutNodeId, f32>,
     /// An opt-in layout projection; the base tree remains the authored tree.
     grid_rows: HashMap<LayoutNodeId, GridRows>,
+    containment: HashMap<LayoutNodeId, crate::css::conditional::ContainerType>,
     pub(crate) error: Option<&'static str>,
 }
 impl Default for LayoutTree {
@@ -160,6 +161,7 @@ impl LayoutTree {
             unrounded: HashMap::new(),
             baselines: HashMap::new(),
             grid_rows: HashMap::new(),
+            containment: HashMap::new(),
             error: None,
         }
     }
@@ -320,6 +322,7 @@ impl LayoutTree {
         self.computed.remove(&id);
         self.baselines.remove(&id);
         self.grid_rows.remove(&id);
+        self.containment.remove(&id);
         self.grid_rows.retain(|_, rows| !rows.contains(&id));
         self.orders.remove(&id);
         self.authored.remove(&id);
@@ -423,7 +426,7 @@ impl LayoutTree {
                 .collect();
             self.expressions.retain(|id, _| live.contains(id));
         }
-        if self.expressions.is_empty() && self.grid_rows.is_empty() {
+        if self.expressions.is_empty() && self.grid_rows.is_empty() && self.containment.is_empty() {
             self.computed.clear();
             self.cache.clear();
             self.unrounded.clear();
@@ -434,6 +437,7 @@ impl LayoutTree {
             &self.base,
             &self.expressions,
             &self.baselines,
+            &self.containment,
             root,
             &mut self.cache,
             &self.unrounded,
@@ -466,6 +470,51 @@ impl LayoutTree {
             return None;
         }
         self.computed.get(&id).or_else(|| self.base.get_layout(id))
+    }
+    pub fn set_containment(
+        &mut self,
+        id: LayoutNodeId,
+        kind: crate::css::conditional::ContainerType,
+    ) -> bool {
+        use crate::css::conditional::ContainerType;
+        if self.containment.get(&id).copied().unwrap_or_default() == kind {
+            return false;
+        }
+        if kind == ContainerType::Normal {
+            self.containment.remove(&id);
+        } else {
+            self.containment.insert(id, kind);
+        }
+        self.cache.clear();
+        true
+    }
+    /// Query sizes use the unrounded principal content box, in CSS pixels.
+    pub fn container_size(&self, id: LayoutNodeId) -> Option<(f64, f64)> {
+        for ancestor in std::iter::once(id).chain(self.base.ancestors(id)) {
+            if self.base.get_style(ancestor)?.display == Display::None {
+                return None;
+            }
+        }
+        let layout = self
+            .unrounded
+            .get(&id)
+            .or_else(|| self.base.get_layout(id))?;
+        Some((
+            (layout.size.width
+                - layout.padding.left
+                - layout.padding.right
+                - layout.border.left
+                - layout.border.right
+                - layout.scrollbar_size.width)
+                .max(0.0) as f64,
+            (layout.size.height
+                - layout.padding.top
+                - layout.padding.bottom
+                - layout.border.top
+                - layout.border.bottom
+                - layout.scrollbar_size.height)
+                .max(0.0) as f64,
+        ))
     }
     pub fn get_bounds(&self, id: LayoutNodeId, offset: (f32, f32)) -> Option<ElementBounds> {
         self.get_layout(id)
@@ -513,6 +562,7 @@ struct ViewNode {
     cache: Cache,
     unrounded: Layout,
     final_layout: Layout,
+    containment: crate::css::conditional::ContainerType,
 }
 struct View<'a> {
     base: &'a BaseTree,
@@ -613,6 +663,7 @@ impl<'a> View<'a> {
         base: &'a BaseTree,
         expressions: &'a HashMap<usize, Expression>,
         baselines: &'a HashMap<LayoutNodeId, f32>,
+        containment: &HashMap<LayoutNodeId, crate::css::conditional::ContainerType>,
         root: LayoutNodeId,
         cache: &mut HashMap<LayoutNodeId, Cache>,
         unrounded: &HashMap<LayoutNodeId, Layout>,
@@ -637,6 +688,7 @@ impl<'a> View<'a> {
                 cache: cache.remove(&id).unwrap_or_default(),
                 unrounded: unrounded.get(&id).copied().unwrap_or_default(),
                 final_layout: Layout::new(),
+                containment: containment.get(&id).copied().unwrap_or_default(),
             })
             .collect();
         Self {
@@ -662,11 +714,32 @@ impl<'a> View<'a> {
         if input.run_mode == RunMode::PerformHiddenLayout {
             return compute_hidden_layout(self, n);
         }
-        compute_cached_layout(self, n, input, |tree, n, input| {
+        compute_cached_layout(self, n, input, |tree, n, mut input| {
+            let node = tree.node(n);
+            use crate::css::conditional::ContainerType;
+            let contained =
+                node.containment != ContainerType::Normal && node.style.display != Display::None;
+            if contained {
+                let empty = compute_leaf_layout(
+                    input,
+                    &node.style,
+                    |handle, basis| tree.resolve_calc_value(handle, basis),
+                    |_, _| Size::ZERO,
+                );
+                input.known_dimensions.width.get_or_insert(empty.size.width);
+                if node.containment == ContainerType::Size {
+                    input
+                        .known_dimensions
+                        .height
+                        .get_or_insert(empty.size.height);
+                }
+            }
             let node = tree.node(n);
             match (node.style.display, node.children.is_empty()) {
                 (Display::None, _) => compute_hidden_layout(tree, n),
-                (Display::Block, false) => compute_block_layout(tree, n, input, block),
+                (Display::Block, false) => {
+                    compute_block_layout(tree, n, input, if contained { None } else { block })
+                }
                 (Display::FlowRoot, false) => compute_block_layout(tree, n, input, None),
                 (Display::Flex, false) => compute_flexbox_layout(tree, n, input),
                 (Display::Grid, false) => compute_grid_layout(tree, n, input),

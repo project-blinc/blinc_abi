@@ -87,6 +87,7 @@ pub fn longhands(name: &str) -> &'static [&'static str] {
         "inset" => &["top", "right", "bottom", "left"],
         "gap" => &["row-gap", "column-gap"],
         "flex" => &["flex-grow", "flex-shrink", "flex-basis"],
+        "container" => &["container-type", "container-name"],
         "background" => &[
             "background-color",
             "background-image",
@@ -173,6 +174,9 @@ pub trait Tree {
     fn children(&self, node: Self::Node) -> Vec<Self::Node>;
     /// The node as an element, or none for a node that is not one.
     fn element(&self, node: Self::Node) -> Option<&Element>;
+    fn container(&self, _node: Self::Node) -> Option<&super::conditional::Container> {
+        None
+    }
     /// The node `:root` names; none for the one with no parent.
     fn root(&self) -> Option<Self::Node> {
         None
@@ -211,6 +215,28 @@ pub struct Dependencies<N> {
     pub states: Vec<(N, u32)>,
     /// Whether a `var()` was answered by the theme.
     pub theme: bool,
+    pub containers: Vec<ContainerRead>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContainerRead {
+    pub sheet: SheetId,
+    pub condition: u32,
+    pub origin: bool,
+    pub matched: bool,
+}
+
+enum Guard {
+    Supports(bool),
+    Container(super::conditional::SizeQuery),
+}
+
+impl Sheet {
+    fn global_conditions(&self, span: super::Span) -> bool {
+        self.conditions[span.range()]
+            .iter()
+            .all(|c| matches!(c, Guard::Supports(true)))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -256,6 +282,7 @@ fn positional(sheet: &Stylesheet, c: &super::Compound, seen: &mut Vec<u32>) -> b
 
 struct Sheet {
     sheet: Stylesheet,
+    conditions: Vec<Guard>,
     /// Each of the sheet's atoms, as the cascade's.
     map: Vec<Atom>,
     index: Index,
@@ -359,7 +386,10 @@ impl Cascade {
                 .font_faces
                 .iter()
                 .enumerate()
-                .filter(|(_, face)| sheet.sheet.media_span_holds(face.media, &self.env))
+                .filter(|(_, face)| {
+                    sheet.sheet.media_span_holds(face.media, &self.env)
+                        && sheet.global_conditions(face.conditions)
+                })
                 .map(move |(index, face)| (*id, index, &sheet.sheet, face))
         })
     }
@@ -467,8 +497,25 @@ impl Cascade {
                 }
             }
         }
+        let conditions = sheet
+            .conditions
+            .iter()
+            .map(|c| match *c {
+                super::conditional::Condition::Supports(a) => Guard::Supports(
+                    super::conditional::parse(sheet.str(a)).ok().and_then(|e| {
+                        e.evaluate(&mut |s| Some(super::conditional::declaration_supported(s)))
+                    }) == Some(true),
+                ),
+                super::conditional::Condition::Container(a) => {
+                    super::conditional::SizeQuery::parse(sheet.str(a))
+                        .map(Guard::Container)
+                        .unwrap_or(Guard::Supports(false))
+                }
+            })
+            .collect();
         Sheet {
             sheet,
+            conditions,
             map,
             index,
             reach,
@@ -501,6 +548,7 @@ impl Cascade {
                 let mut deps = Dependencies {
                     states: Vec::new(),
                     theme: false,
+                    containers: Vec::new(),
                 };
                 if list.iter().any(|s| walk.matches(&sheet, s, n, &mut deps)) {
                     out.push(n);
@@ -527,10 +575,69 @@ impl Cascade {
 
     /// The `@keyframes` named `name` and the sheet it is in, a later sheet's over an earlier's.
     pub fn keyframes(&self, name: &str) -> Option<(&Stylesheet, &super::Keyframes)> {
-        self.sheets
-            .iter()
-            .rev()
-            .find_map(|(_, s)| s.sheet.keyframes_named(name).map(|k| (&s.sheet, k)))
+        self.sheets.iter().rev().find_map(|(_, s)| {
+            s.sheet
+                .keyframes
+                .iter()
+                .rev()
+                .find(|k| {
+                    s.sheet.str(k.name) == name
+                        && s.sheet.media_span_holds(k.media, &self.env)
+                        && s.global_conditions(k.conditions)
+                })
+                .map(|k| (&s.sheet, k))
+        })
+    }
+
+    fn container_matches<T: Tree>(
+        &self,
+        tree: &T,
+        node: T::Node,
+        query: &super::conditional::SizeQuery,
+        origin: bool,
+    ) -> bool {
+        let mut at = if origin {
+            Some(node)
+        } else {
+            tree.parent(node)
+        };
+        while let Some(n) = at {
+            if let Some(container) = tree.container(n)
+                && query.eligible(container)
+            {
+                return query.evaluate(
+                    container,
+                    &super::quantity::PaintUnits {
+                        root_font_size: self.root_font_size,
+                        viewport_width: self.env.width,
+                        viewport_height: self.env.height,
+                        ..Default::default()
+                    },
+                ) == Some(true);
+            }
+            at = tree.parent(n);
+        }
+        false
+    }
+
+    /// Revisit only guards actually read by this subject, including false
+    /// answers and missing containers; never walk unrelated styled subjects.
+    pub fn containers_changed<T: Tree>(
+        &self,
+        tree: &T,
+        node: T::Node,
+        reads: &[ContainerRead],
+    ) -> bool {
+        reads.iter().any(|read| {
+            let Some((_, sheet)) = self.sheets.iter().find(|(id, _)| *id == read.sheet) else {
+                return true;
+            };
+            let Some(Guard::Container(query)) = sheet.conditions.get(read.condition as usize)
+            else {
+                return true;
+            };
+            self.container_matches(tree, node, query, read.origin) != read.matched
+        })
     }
 
     /// Whether a selector tests `name` on an element other than the one it styles.
@@ -575,7 +682,7 @@ impl Cascade {
         pseudo: Option<&str>,
     ) -> Vec<Matched> {
         let mut matched = Vec::new();
-        for (s, (_, sheet)) in self.sheets.iter().enumerate() {
+        for (s, (id, sheet)) in self.sheets.iter().enumerate() {
             let mut entries: Vec<Entry> = sheet.index.rest.clone();
             let mut add = |list: Option<&Vec<Entry>>| {
                 if let Some(l) = list {
@@ -608,6 +715,30 @@ impl Cascade {
                     None,
                     deps,
                 ) {
+                    continue;
+                }
+                let mut holds = true;
+                for index in rule.conditions.range() {
+                    let matched = match &sheet.conditions[index] {
+                        Guard::Supports(holds) => *holds,
+                        Guard::Container(query) => {
+                            let matched =
+                                self.container_matches(walk.tree, node, query, pseudo.is_some());
+                            let read = ContainerRead {
+                                sheet: *id,
+                                condition: index as u32,
+                                origin: pseudo.is_some(),
+                                matched,
+                            };
+                            if !deps.containers.contains(&read) {
+                                deps.containers.push(read);
+                            }
+                            matched
+                        }
+                    };
+                    holds &= matched;
+                }
+                if !holds {
                     continue;
                 }
                 for (i, d) in sheet.sheet.rule_declarations(rule).iter().enumerate() {
@@ -644,6 +775,7 @@ impl Cascade {
         let mut deps = Dependencies {
             states: Vec::new(),
             theme: false,
+            containers: Vec::new(),
         };
         let matched = self.matching(&walk, element, node, &mut deps, None);
         let mut out = Vec::new();
@@ -738,6 +870,7 @@ impl Cascade {
         let mut deps = Dependencies {
             states: Vec::new(),
             theme: false,
+            containers: Vec::new(),
         };
         let Some(element) = tree.element(node) else {
             return (

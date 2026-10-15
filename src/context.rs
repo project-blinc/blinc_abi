@@ -114,6 +114,27 @@ impl LayoutContext {
             .map(|tree| &tree.layout)
             .ok_or("Layout context is disposed")
     }
+    pub fn set_containment(
+        &mut self,
+        node: Node,
+        kind: crate::css::conditional::ContainerType,
+    ) -> Result<()> {
+        let id = self.check(node)?;
+        if self
+            .tree
+            .as_mut()
+            .ok_or("Layout context is disposed")?
+            .layout
+            .set_containment(id, kind)
+        {
+            self.bounds.clear();
+            self.revision += 1;
+        }
+        Ok(())
+    }
+    pub fn container_size(&self, node: Node) -> Option<(f64, f64)> {
+        self.tree().ok()?.container_size(self.check(node).ok()?)
+    }
     pub(crate) fn check(&self, node: Node) -> Result<LayoutNodeId> {
         let tree = self.tree()?;
         if node.context != self.id {

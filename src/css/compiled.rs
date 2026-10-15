@@ -11,18 +11,21 @@
 use super::*;
 
 pub const MAGIC: &[u8; 4] = b"BCSS";
-/// Font metadata uses version 3; sheets without it still encode identically as version 2.
-pub const VERSION: u16 = 3;
+/// Guard metadata uses version 4. Ordinary sheets retain their version 2/3 bytes.
+pub const VERSION: u16 = 4;
 
 /// `sheet` as compiled bytes.
 pub fn encode(sheet: &Stylesheet) -> Vec<u8> {
     let mut w = Writer(Vec::with_capacity(1024));
     w.0.extend_from_slice(MAGIC);
-    let version = if sheet.font_faces.is_empty() {
-        2u16
-    } else {
-        VERSION
-    };
+    let version =
+        if !sheet.conditions.is_empty() || sheet.keyframes.iter().any(|k| k.media.is_some()) {
+            VERSION
+        } else if sheet.font_faces.is_empty() {
+            2u16
+        } else {
+            3u16
+        };
     w.0.extend_from_slice(&version.to_le_bytes());
     let (text, spans) = sheet.atoms.parts();
     w.n(text.len() as u64);
@@ -137,6 +140,30 @@ pub fn encode(sheet: &Stylesheet) -> Vec<u8> {
             w.n(f.column as u64);
         });
     }
+    if version >= 4 {
+        w.list(&sheet.conditions, |w, c| match *c {
+            conditional::Condition::Supports(a) => {
+                w.byte(0);
+                w.atom(a);
+            }
+            conditional::Condition::Container(a) => {
+                w.byte(1);
+                w.atom(a);
+            }
+        });
+        w.list(&sheet.rules, |w, r| w.span(r.conditions));
+        w.list(&sheet.keyframes, |w, k| {
+            w.span(k.conditions);
+            match k.media {
+                None => w.byte(0),
+                Some(m) => {
+                    w.byte(1);
+                    w.span(m);
+                }
+            }
+        });
+        w.list(&sheet.font_faces, |w, f| w.span(f.conditions));
+    }
     w.0
 }
 
@@ -146,7 +173,7 @@ pub fn decode(bytes: &[u8]) -> Result<Stylesheet, String> {
         return Err("not a compiled stylesheet".into());
     }
     let version = u16::from_le_bytes([bytes[4], bytes[5]]);
-    if version != 2 && version != VERSION {
+    if !(2..=VERSION).contains(&version) {
         return Err(format!(
             "compiled stylesheet version {version}; this reads {VERSION}"
         ));
@@ -176,6 +203,7 @@ pub fn decode(bytes: &[u8]) -> Result<Stylesheet, String> {
             selectors,
             declarations,
             media,
+            conditions: Span::default(),
             order: r.u32()?,
             line: r.u32()?,
         })
@@ -237,6 +265,8 @@ pub fn decode(bytes: &[u8]) -> Result<Stylesheet, String> {
         Ok(Keyframes {
             name: r.atom()?,
             frames: r.span()?,
+            media: None,
+            conditions: Span::default(),
         })
     })?;
     sheet.frames = r.list(|r| {
@@ -282,11 +312,39 @@ pub fn decode(bytes: &[u8]) -> Result<Stylesheet, String> {
                 ],
                 italic: r.boolean()?,
                 media: if r.boolean()? { Some(r.span()?) } else { None },
+                conditions: Span::default(),
                 file: r.opt()?,
                 line: r.u32()?,
                 column: r.u32()?,
             })
         })?;
+    }
+    if version >= 4 {
+        sheet.conditions = r.list(|r| match r.byte()? {
+            0 => Ok(conditional::Condition::Supports(r.atom()?)),
+            1 => Ok(conditional::Condition::Container(r.atom()?)),
+            _ => Err("unknown conditional guard".into()),
+        })?;
+        let rules = r.list(|r| r.span())?;
+        let keyframes =
+            r.list(|r| Ok((r.span()?, if r.boolean()? { Some(r.span()?) } else { None })))?;
+        let fonts = r.list(|r| r.span())?;
+        if rules.len() != sheet.rules.len()
+            || keyframes.len() != sheet.keyframes.len()
+            || fonts.len() != sheet.font_faces.len()
+        {
+            return Err("conditional metadata count does not match its arena".into());
+        }
+        for (rule, conditions) in sheet.rules.iter_mut().zip(rules) {
+            rule.conditions = conditions;
+        }
+        for (frames, (conditions, media)) in sheet.keyframes.iter_mut().zip(keyframes) {
+            frames.conditions = conditions;
+            frames.media = media;
+        }
+        for (font, conditions) in sheet.font_faces.iter_mut().zip(fonts) {
+            font.conditions = conditions;
+        }
     }
     if r.at != bytes.len() {
         return Err("bytes after the sheet".into());
@@ -305,6 +363,26 @@ fn check(s: &Stylesheet) -> Result<(), String> {
     };
     let atom = |a: Atom| (a.0 as usize) < s.atoms.len();
     let bad = |what: &str| Err(format!("{what} points outside the sheet"));
+    for c in &s.conditions {
+        let (conditional::Condition::Supports(a) | conditional::Condition::Container(a)) = *c;
+        if !atom(a) {
+            return bad("a conditional guard");
+        }
+        match c {
+            conditional::Condition::Supports(_) => {
+                conditional::parse(s.str(a))?;
+            }
+            conditional::Condition::Container(_) => {
+                conditional::SizeQuery::parse(s.str(a))?;
+            }
+        }
+    }
+    let global_conditions = |span: Span| {
+        within(span, s.conditions.len())
+            && s.conditions[span.range()]
+                .iter()
+                .all(|c| matches!(c, conditional::Condition::Supports(_)))
+    };
     for f in &s.font_faces {
         if !atom(f.family)
             || f.file.is_some_and(|a| !atom(a))
@@ -313,6 +391,7 @@ fn check(s: &Stylesheet) -> Result<(), String> {
                 .iter()
                 .any(|src| !atom(src.name) || src.format.is_some_and(|a| !atom(a)))
             || f.media.is_some_and(|m| !within(m, s.media_lists.len()))
+            || !global_conditions(f.conditions)
         {
             return bad("a font face");
         }
@@ -321,7 +400,9 @@ fn check(s: &Stylesheet) -> Result<(), String> {
         }
     }
     for r in &s.rules {
-        if !within(r.selectors, s.selectors.len()) || !within(r.declarations, s.declarations.len())
+        if !within(r.selectors, s.selectors.len())
+            || !within(r.declarations, s.declarations.len())
+            || !within(r.conditions, s.conditions.len())
         {
             return bad("a rule");
         }
@@ -373,9 +454,12 @@ fn check(s: &Stylesheet) -> Result<(), String> {
             .any(|d| !atom(d.name) || !atom(d.value))
         || s.variables.iter().any(|&(k, v)| !atom(k) || !atom(v))
         || s.imports.iter().any(|&a| !atom(a))
-        || s.keyframes
-            .iter()
-            .any(|k| !atom(k.name) || !within(k.frames, s.frames.len()))
+        || s.keyframes.iter().any(|k| {
+            !atom(k.name)
+                || !within(k.frames, s.frames.len())
+                || !global_conditions(k.conditions)
+                || k.media.is_some_and(|m| !within(m, s.media_lists.len()))
+        })
     {
         return bad("an atom or a span");
     }
