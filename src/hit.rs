@@ -370,7 +370,6 @@ pub unsafe extern "C" fn hl_blinc_tree_hit_test(
         &mut HitRegion::new(false),
     );
     if !out.is_null() {
-        let out = out as *mut u8;
         for (i, hit) in hits.iter().take(capacity.max(0) as usize).enumerate() {
             unsafe {
                 let at = out.add(i * 16);
@@ -549,7 +548,7 @@ pub unsafe extern "C" fn hl_blinc_tree_hit_test_region(
     if !out.is_null() {
         for (i, hit) in hits.iter().take(capacity.max(0) as usize).enumerate() {
             unsafe {
-                let at = (out as *mut u8).add(i * 16);
+                let at = out.add(i * 16);
                 (at as *mut u64).write_unaligned(hit.node.to_raw());
                 (at.add(8) as *mut f32).write_unaligned(hit.x);
                 (at.add(12) as *mut f32).write_unaligned(hit.y);

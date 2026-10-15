@@ -168,7 +168,9 @@ mod tests {
         let mut records = vec![0.; info.floats];
         encoder.read(&ctx, &mut records).unwrap();
         let colors: Vec<_> = records
-            .chunks_exact(RECORD_FLOATS)
+            .as_chunks::<RECORD_FLOATS>()
+            .0
+            .iter()
             .map(|r| &r[8..12])
             .collect();
         assert_eq!(colors.last().copied(), Some(&[1., 0., 0., 1.][..]));

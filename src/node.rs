@@ -151,7 +151,6 @@ fn clear_children(tree: &mut Tree, parent: LayoutNodeId) {
 /// Blinc measures text with real fonts once its measurer is installed, which
 /// must happen before the first tree holds text; without it every width is an
 /// estimate. Installed once per process.
-
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_blinc_tree_new() -> *mut c_void {
     // The renderer's own registry, so layout measures with the faces text is drawn with.
@@ -462,16 +461,16 @@ pub unsafe extern "C" fn hl_blinc_tree_set_children(
     };
     // A child still listed under another parent is taken from it first.
     for &child in &ids {
-        if let Some(&old) = tree.layout.ancestors(child).first() {
-            if old != parent {
-                let kept = tree
-                    .layout
-                    .children(old)
-                    .into_iter()
-                    .filter(|&c| c != child)
-                    .collect();
-                tree.layout.replace_children(old, kept);
-            }
+        if let Some(&old) = tree.layout.ancestors(child).first()
+            && old != parent
+        {
+            let kept = tree
+                .layout
+                .children(old)
+                .into_iter()
+                .filter(|&c| c != child)
+                .collect();
+            tree.layout.replace_children(old, kept);
         }
     }
     tree.layout.replace_children(parent, ids);

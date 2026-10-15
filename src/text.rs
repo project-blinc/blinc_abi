@@ -272,12 +272,15 @@ pub fn decoration_metrics(context: &TextMeasureContext, font_size: f32) -> Decor
 // ATLASES
 // ============================================================================
 
+#[cfg(feature = "hashlink")]
+type AtlasChange = (i32, (u32, u32, u32, u32), (u32, u32));
+
 /// The changes an atlas has had, newest last, each with the region it wrote
 /// and the atlas's size then; enough of them for a caller a few frames behind.
 #[cfg(feature = "hashlink")]
 struct AtlasHistory {
     revision: i32,
-    changes: std::collections::VecDeque<(i32, (u32, u32, u32, u32), (u32, u32))>,
+    changes: std::collections::VecDeque<AtlasChange>,
 }
 
 /// How many changes an atlas remembers; a caller further behind takes it whole.
@@ -400,7 +403,7 @@ pub unsafe extern "C" fn hl_blinc_text_atlas_take(
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     pixels[from..from + row].as_ptr(),
-                    (out as *mut u8).add(j * row),
+                    out.add(j * row),
                     row,
                 )
             };
@@ -886,7 +889,7 @@ pub unsafe extern "C" fn hl_blinc_text_outline(
                 if let Some(w) = face.variation_weight() {
                     builder = builder.variations([swash::Setting::from(("wght", w))]);
                 }
-                if let Some(path) = builder.build().scale_outline(g.glyph_id as u16) {
+                if let Some(path) = builder.build().scale_outline(g.glyph_id) {
                     outline.add(&path);
                 }
             }

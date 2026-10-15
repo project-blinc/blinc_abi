@@ -730,8 +730,10 @@ mod tests {
                 | Gradient::Radial { stops, .. }
                 | Gradient::Conic { stops, .. } => stops,
             };
-            let mut props = RenderProps::default();
-            props.background = Some(Brush::Gradient(gradient.clone()));
+            let props = RenderProps {
+                background: Some(Brush::Gradient(gradient.clone())),
+                ..Default::default()
+            };
             tree.set_properties(root, props).unwrap();
             tree.compute(root, 120.0, 80.0).unwrap();
             let mut encoder = SceneEncoder::new();
@@ -982,10 +984,12 @@ mod tests {
         use crate::display_list::{PRIM_RECT, RECORD_FLOATS};
         let mut tree = LayoutContext::new();
         let root = tree.create_node(style(180.0, 72.0)).unwrap();
-        let mut props = RenderProps::default();
-        props.border_width = 3.0;
-        props.border_color = Some(Color::WHITE);
-        props.border_radius = blinc_core::CornerRadius::uniform(16.0);
+        let props = RenderProps {
+            border_width: 3.0,
+            border_color: Some(Color::WHITE),
+            border_radius: blinc_core::CornerRadius::uniform(16.0),
+            ..Default::default()
+        };
         tree.set_properties(root, props).unwrap();
         tree.compute(root, 180.0, 72.0).unwrap();
         let mut encoder = SceneEncoder::new();
@@ -1010,7 +1014,7 @@ mod tests {
             .prepare(&tree, root, PaintOptions::default())
             .unwrap();
         assert!(encoder.records.len() > 20 * RECORD_FLOATS);
-        for r in encoder.records.chunks_exact(RECORD_FLOATS) {
+        for r in encoder.records.as_chunks::<RECORD_FLOATS>().0 {
             assert_eq!(
                 r[44], PRIM_RECT,
                 "both existing renderers can consume these records"
@@ -1031,7 +1035,9 @@ mod tests {
             .unwrap();
         let centres: Vec<_> = encoder
             .records
-            .chunks_exact(RECORD_FLOATS)
+            .as_chunks::<RECORD_FLOATS>()
+            .0
+            .iter()
             .map(|r| (r[0] + 1.5 * (r[60] + r[62]), r[1] + 1.5 * (r[61] + r[63])))
             .collect();
         for i in 0..centres.len() {

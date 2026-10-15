@@ -13,7 +13,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --locked
+      # Native bindings and the CSS compiler stay warning-free (85d8966).
+      - run: cargo clippy --locked --all-targets --features css-cli -- -D warnings
+      - run: cargo clippy --locked --all-targets --no-default-features --features scene -- -D warnings
       - run: cargo test --locked --no-default-features --lib
       - run: cargo check --locked --no-default-features --features scene

@@ -34,7 +34,7 @@ pub unsafe extern "C" fn hl_blinc_bitmap_decode(bytes: *const vbyte, len: i32) -
         return -1;
     }
     let _blocking = crate::hl::Blocking::enter();
-    let data = unsafe { std::slice::from_raw_parts(bytes as *const u8, len as usize) };
+    let data = unsafe { std::slice::from_raw_parts(bytes, len as usize) };
     let Ok(image) = blinc_image::DecoderRegistry::with_builtins().decode(data, None) else {
         return -1;
     };
@@ -103,8 +103,7 @@ pub unsafe extern "C" fn hl_blinc_bitmap_resample(
     let Some(b) = all.get(slot.max(0) as usize).and_then(|b| b.as_ref()) else {
         return false;
     };
-    let out =
-        unsafe { std::slice::from_raw_parts_mut(out as *mut u8, (width * height * 4) as usize) };
+    let out = unsafe { std::slice::from_raw_parts_mut(out, (width * height * 4) as usize) };
     resample(b, width as u32, height as u32, fit, out);
     true
 }
@@ -245,6 +244,81 @@ fn resample(b: &Bitmap, w: u32, h: u32, fit: i32, out: &mut [u8]) {
     }
 }
 
+/// What the bytes of an image file are, read.
+pub enum Loaded {
+    Raster(Bitmap),
+    /// SVG, which is drawn by rasterizing it at the size it covers; this is the size it says it is.
+    Svg {
+        markup: String,
+        width: u32,
+        height: u32,
+    },
+}
+
+/// Whether `bytes` are markup rather than a raster image: text that opens with an XML
+/// declaration, a comment, a doctype or an `<svg`.
+fn is_markup(bytes: &[u8]) -> bool {
+    let head = &bytes[..bytes.len().min(512)];
+    let head = head.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(head);
+    let text = String::from_utf8_lossy(head);
+    let text = text.trim_start().to_ascii_lowercase();
+    ["<?xml", "<svg", "<!doctype svg", "<!--"]
+        .iter()
+        .any(|open| text.starts_with(open))
+}
+
+/// An image file's bytes, SVG or one of the raster formats, read; the format is what the bytes
+/// say, not what they were called.
+pub fn load(bytes: &[u8]) -> Result<Loaded, String> {
+    if !is_markup(bytes) {
+        return Bitmap::decode(bytes).map(Loaded::Raster);
+    }
+    // An XML declaration must open the document, so what comes before it is dropped.
+    let markup = std::str::from_utf8(bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes))
+        .map_err(|_| "SVG is not UTF-8".to_string())?
+        .trim_start()
+        .to_string();
+    let (width, height) = crate::svg::size(&markup)?;
+    Ok(Loaded::Svg {
+        markup,
+        width,
+        height,
+    })
+}
+
+impl Bitmap {
+    pub fn decode(data: &[u8]) -> Result<Self, String> {
+        let image = blinc_image::DecoderRegistry::with_builtins()
+            .decode(data, None)
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            pixels: image.pixels,
+            width: image.width,
+            height: image.height,
+        })
+    }
+    pub fn resample(
+        &self,
+        width: u32,
+        height: u32,
+        fit: i32,
+        out: &mut [u8],
+    ) -> Result<(), &'static str> {
+        let size = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|v| v.checked_mul(4))
+            .ok_or("Image size overflow")?;
+        if width == 0 || height == 0 || out.len() < size {
+            return Err("Invalid image output size");
+        }
+        if !(0..=3).contains(&fit) {
+            return Err("Invalid image fit");
+        }
+        resample(self, width, height, fit, &mut out[..size]);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,80 +395,5 @@ mod tests {
             "markup that does not parse"
         );
         assert!(load(&PNG_1X1[..20]).is_err(), "a truncated PNG");
-    }
-}
-
-/// What the bytes of an image file are, read.
-pub enum Loaded {
-    Raster(Bitmap),
-    /// SVG, which is drawn by rasterizing it at the size it covers; this is the size it says it is.
-    Svg {
-        markup: String,
-        width: u32,
-        height: u32,
-    },
-}
-
-/// Whether `bytes` are markup rather than a raster image: text that opens with an XML
-/// declaration, a comment, a doctype or an `<svg`.
-fn is_markup(bytes: &[u8]) -> bool {
-    let head = &bytes[..bytes.len().min(512)];
-    let head = head.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(head);
-    let text = String::from_utf8_lossy(head);
-    let text = text.trim_start().to_ascii_lowercase();
-    ["<?xml", "<svg", "<!doctype svg", "<!--"]
-        .iter()
-        .any(|open| text.starts_with(open))
-}
-
-/// An image file's bytes, SVG or one of the raster formats, read; the format is what the bytes
-/// say, not what they were called.
-pub fn load(bytes: &[u8]) -> Result<Loaded, String> {
-    if !is_markup(bytes) {
-        return Bitmap::decode(bytes).map(Loaded::Raster);
-    }
-    // An XML declaration must open the document, so what comes before it is dropped.
-    let markup = std::str::from_utf8(bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes))
-        .map_err(|_| "SVG is not UTF-8".to_string())?
-        .trim_start()
-        .to_string();
-    let (width, height) = crate::svg::size(&markup)?;
-    Ok(Loaded::Svg {
-        markup,
-        width,
-        height,
-    })
-}
-
-impl Bitmap {
-    pub fn decode(data: &[u8]) -> Result<Self, String> {
-        let image = blinc_image::DecoderRegistry::with_builtins()
-            .decode(data, None)
-            .map_err(|e| e.to_string())?;
-        Ok(Self {
-            pixels: image.pixels,
-            width: image.width,
-            height: image.height,
-        })
-    }
-    pub fn resample(
-        &self,
-        width: u32,
-        height: u32,
-        fit: i32,
-        out: &mut [u8],
-    ) -> Result<(), &'static str> {
-        let size = (width as usize)
-            .checked_mul(height as usize)
-            .and_then(|v| v.checked_mul(4))
-            .ok_or("Image size overflow")?;
-        if width == 0 || height == 0 || out.len() < size {
-            return Err("Invalid image output size");
-        }
-        if !(0..=3).contains(&fit) {
-            return Err("Invalid image fit");
-        }
-        resample(self, width, height, fit, &mut out[..size]);
-        Ok(())
     }
 }

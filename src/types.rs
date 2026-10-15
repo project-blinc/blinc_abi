@@ -157,7 +157,7 @@ mod host {
         let n = count.max(0) as usize;
         let v = |k: usize| unsafe { (values as *const f32).add(k).read_unaligned() };
         let len = |k: usize| {
-            if !percent.is_null() && unsafe { *(percent as *const u8).add(k) } != 0 {
+            if !percent.is_null() && unsafe { *percent.add(k) } != 0 {
                 ClipLength::Percent(v(k))
             } else {
                 ClipLength::Px(v(k))

@@ -30,7 +30,7 @@ pub unsafe extern "C" fn hl_blinc_svg_rasterize(
     if raster.pixels.len() != size {
         return false;
     }
-    unsafe { std::ptr::copy_nonoverlapping(raster.pixels.as_ptr(), out as *mut u8, size) };
+    unsafe { std::ptr::copy_nonoverlapping(raster.pixels.as_ptr(), out, size) };
     true
 }
 #[cfg(feature = "hashlink")]
