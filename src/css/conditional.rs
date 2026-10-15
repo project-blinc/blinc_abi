@@ -557,7 +557,13 @@ pub fn declaration_supported(text: &str) -> bool {
         raw.to_ascii_lowercase().as_str(),
         "initial" | "inherit" | "unset"
     ) {
-        return true;
+        // Other routers currently receive these as ordinary values, without
+        // implementing their reset/inheritance semantics. Do not advertise
+        // that syntax merely because the property name is recognized.
+        return matches!(
+            name.as_str(),
+            "container" | "container-type" | "container-name"
+        );
     }
     // A syntactically valid var() is supported independent of its eventual value.
     if variable {
@@ -636,6 +642,8 @@ mod tests {
         assert!(holds("(font-size: 120%)"));
         assert!(holds("(font-size: calc(120% + 1px))"));
         assert!(holds("(content: attr(data-label))"));
+        assert!(holds("(container-type: inherit)"));
+        assert!(!holds("(width: inherit)"));
         assert!(!holds("(content: counter(item))"));
         assert!(holds("(width: calc(var(--size, 10px) + 2px))"));
         assert!(holds("(color: var(--colour, var(--fallback)))"));
