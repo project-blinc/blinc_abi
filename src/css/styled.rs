@@ -912,6 +912,12 @@ impl Styles {
     /// only when a guard they read changes truth. No-container scenes return
     /// immediately and settled queries enqueue no additional style work.
     pub fn update_containers<H: Host>(&mut self, host: &H) -> bool {
+        self.update_containers_under(host, None)
+    }
+
+    /// A layout of one root cannot settle detached or independently laid-out
+    /// roots. Keep their reads for when their own root is computed.
+    pub fn update_containers_under<H: Host>(&mut self, host: &H, root: Option<u64>) -> bool {
         if self.containers.is_empty() && self.container_reads.is_empty() {
             return false;
         }
@@ -933,12 +939,23 @@ impl Styles {
             containers: &self.containers,
             root: None,
         };
+        let under_root = |mut node| loop {
+            if root.is_none_or(|root| root == node) {
+                return true;
+            }
+            let Some(parent) = host.parent(node) else {
+                return false;
+            };
+            node = parent;
+        };
         let changed: Vec<_> = self
             .container_reads
             .iter()
             .filter_map(|(&node, reads)| {
-                (host.live(node) && self.cascade.containers_changed(&tree, node, reads))
-                    .then_some(node)
+                (host.live(node)
+                    && under_root(node)
+                    && self.cascade.containers_changed(&tree, node, reads))
+                .then_some(node)
             })
             .collect();
         self.stale.extend(changed.iter().copied());

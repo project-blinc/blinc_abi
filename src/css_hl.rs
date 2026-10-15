@@ -564,6 +564,24 @@ define_prim!(
     "PXblinc_css_Xblinc_tree_i"
 );
 
+/// Scoped variant for hosts that compute independent or retained roots.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_css_update_containers_under(
+    h: *mut c_void,
+    t: *mut c_void,
+    root: u64,
+) -> i32 {
+    let (Some(s), Some(tree)) = (unsafe { styles(h) }, unsafe { crate::node::tree(t) }) else {
+        return 0;
+    };
+    s.update_containers_under(&TreeHost(tree), (root != 0).then_some(root)) as i32
+}
+define_prim!(
+    hlp_blinc_css_update_containers_under,
+    hl_blinc_css_update_containers_under,
+    "PXblinc_css_Xblinc_tree_l_i"
+);
+
 /// Writes the nodes whose styles changed, parents first, to `out`, at most
 /// `capacity`, and forgets those; the rest wait for the next call.
 #[unsafe(no_mangle)]

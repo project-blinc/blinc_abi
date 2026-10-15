@@ -139,6 +139,48 @@ fn containers_preserve_authored_constraints_and_block_stretching() {
 }
 
 #[test]
+fn updating_one_root_keeps_other_roots_pending_without_blocking_it() {
+    let mut ctx = LayoutContext::new();
+    let mut s = Styles::new();
+    s.cascade_mut().push(parse(".panel { container-type: inline-size; width: 200px; align-items: start } .card { width: 20px; height: 10px } @container (width > 100px) { .card { height: 20px } }", None, &mut |_, _| None));
+    let mut roots = Vec::new();
+    let mut cards = Vec::new();
+    for _ in 0..2 {
+        let root = ctx.create_node(Default::default()).unwrap();
+        let card = ctx.create_node(Default::default()).unwrap();
+        ctx.insert_before(root, card, None).unwrap();
+        for (node, class) in [(root, "panel"), (card, "card")] {
+            let e = element(&mut s, &["div"], &[class]);
+            s.set_element(node, e);
+        }
+        roots.push(root);
+        cards.push(card);
+    }
+    assert!(s.restyle_host(&mut ctx, 0u64).is_empty());
+    for &root in &roots {
+        ctx.compute(root, 400.0, 300.0).unwrap();
+    }
+    assert!(s.update_containers_under(&ctx, Some(roots[0].raw())));
+    assert!(s.restyle(&mut ctx, roots[0]).is_empty());
+    ctx.compute(roots[0], 400.0, 300.0).unwrap();
+    assert!(
+        !s.update_containers_under(&ctx, Some(roots[0].raw())),
+        "the other root cannot keep this root settling"
+    );
+    assert_eq!(bounds(&ctx, cards[0])[3], 20.0);
+    let height = s.intern("height");
+    assert_eq!(s.computed(cards[1]).unwrap().value(height), Some("10px"));
+    assert!(
+        s.update_containers_under(&ctx, Some(roots[1].raw())),
+        "the independent root retains its false read"
+    );
+    assert!(s.restyle(&mut ctx, roots[1]).is_empty());
+    ctx.compute(roots[1], 400.0, 300.0).unwrap();
+    assert!(!s.update_containers_under(&ctx, Some(roots[1].raw())));
+    assert_eq!(bounds(&ctx, cards[1])[3], 20.0);
+}
+
+#[test]
 fn a_sheet_lays_a_context_out_and_follows_states_and_classes() {
     let mut ctx = LayoutContext::new();
     let root = ctx.create_node(Default::default()).unwrap();
