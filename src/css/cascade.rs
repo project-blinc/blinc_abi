@@ -1071,21 +1071,16 @@ impl Cascade {
 
     /// Font lengths have a known percentage basis: the inherited font size.
     fn font_math(&self, text: &str, of: f64) -> Result<f64, String> {
-        super::calc::evaluate(text, &|n, unit| {
-            let px = match unit {
-                "px" => n,
-                "em" => n * of,
-                "rem" => n * self.root_font_size,
-                "vw" => n / 100.0 * self.env.width,
-                "vh" => n / 100.0 * self.env.height,
-                "vmin" => n / 100.0 * self.env.width.min(self.env.height),
-                "vmax" => n / 100.0 * self.env.width.max(self.env.height),
-                "%" => n / 100.0 * of,
-                _ => return None,
-            };
-            Some(super::calc::Length { px, percent: 0.0 })
-        })
-        .map(|l| l.px)
+        super::quantity::font_length(
+            text,
+            &super::quantity::PaintUnits {
+                font_size: of,
+                root_font_size: self.root_font_size,
+                viewport_width: self.env.width,
+                viewport_height: self.env.height,
+                ..Default::default()
+            },
+        )
     }
 
     /// A length in pixels: `px`, `em` and `%` of `of`, `rem`, the viewport's units; `of` when it is none of these.

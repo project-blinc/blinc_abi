@@ -106,6 +106,26 @@ pub fn length(text: &str, units: &PaintUnits) -> Result<f64, String> {
     })
 }
 
+/// Font-size percentages and em both resolve from the inherited font size.
+/// Shared by computed font math and capability checks.
+pub fn font_length(text: &str, units: &PaintUnits) -> Result<f64, String> {
+    super::calc::evaluate(text, &|n, unit| {
+        let px = match unit {
+            "px" => n,
+            "em" => n * units.font_size,
+            "%" => n / 100.0 * units.font_size,
+            "rem" => n * units.root_font_size,
+            "vw" => n / 100.0 * units.viewport_width,
+            "vh" => n / 100.0 * units.viewport_height,
+            "vmin" => n / 100.0 * units.viewport_width.min(units.viewport_height),
+            "vmax" => n / 100.0 * units.viewport_width.max(units.viewport_height),
+            _ => return None,
+        };
+        Some(super::calc::Length { px, percent: 0.0 })
+    })
+    .map(|value| value.px)
+}
+
 /// One to four values as a box's sides take them: top, right, bottom, left,
 /// the missing ones copied as `margin` copies them.
 pub fn box_sides<T: Clone>(parts: Vec<T>, name: &str) -> Result<[T; 4], String> {

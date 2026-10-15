@@ -229,8 +229,9 @@ pub fn container_query(text: &str) -> Result<(Option<String>, Expression), Strin
     let text = text.trim();
     if text.starts_with('(')
         || negated(text)
-        || text.starts_with("style(")
-        || text.starts_with("scroll-state(")
+        || text
+            .split_once('(')
+            .is_some_and(|(name, _)| !name.is_empty() && !name.contains(char::is_whitespace))
     {
         return Ok((None, parse(text)?));
     }
@@ -545,6 +546,7 @@ pub fn declaration_supported(text: &str) -> bool {
             | "container-type"
             | "container-name"
             | "container"
+            | "content"
     );
     let lays = layout::is_layout_property(&name);
     let paints = paint::is_paint_property(&name);
@@ -576,9 +578,10 @@ pub fn declaration_supported(text: &str) -> bool {
                     || raw.parse::<u16>().is_ok_and(|n| (1..=1000).contains(&n))
             }
             "font-style" => choices(&["normal", "italic", "oblique"]),
-            "font-size" | "letter-spacing" => {
-                quantity::length(raw, &quantity::PaintUnits::default()).is_ok()
-            }
+            "content" => super::generated::parse(raw, &|_| None).is_ok(),
+            "font-size" => quantity::font_length(raw, &quantity::PaintUnits::default())
+                .is_ok_and(|v| v.is_finite() && v >= 0.0),
+            "letter-spacing" => quantity::length(raw, &quantity::PaintUnits::default()).is_ok(),
             "line-height" => raw.parse::<f64>().is_ok_and(|v| v.is_finite() && v >= 0.0),
             "text-align" => choices(&["start", "end", "left", "right", "center", "justify"]),
             "white-space" => choices(&["normal", "nowrap", "pre", "pre-wrap", "pre-line"]),
@@ -630,6 +633,10 @@ mod tests {
         assert!(parse("not future(foo) junk(bar)").is_err());
         assert!(holds("not\t(display: invented-mode)"));
         assert!(holds("(display: grid ! IMPORTANT)"));
+        assert!(holds("(font-size: 120%)"));
+        assert!(holds("(font-size: calc(120% + 1px))"));
+        assert!(holds("(content: attr(data-label))"));
+        assert!(!holds("(content: counter(item))"));
         assert!(holds("(width: calc(var(--size, 10px) + 2px))"));
         assert!(holds("(color: var(--colour, var(--fallback)))"));
         for text in [
@@ -657,6 +664,13 @@ mod tests {
         assert!(container("sidebar / width").is_none());
         assert!(names("and").is_none());
         assert!(names("-1").is_none());
+        assert_eq!(
+            container_query("future(foo)")
+                .unwrap()
+                .1
+                .evaluate(&mut |_| None),
+            None
+        );
     }
     #[test]
     fn sizes_use_container_font_and_required_axes() {
