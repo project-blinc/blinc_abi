@@ -358,7 +358,7 @@ fn length(name: &str, text: &str, units: &Units) -> Result<(i32, f64), String> {
     }
     let bad = || format!("invalid value for {name}: {text}");
     if super::calc::is_function(&t) {
-        let value = expression(&t, units)?.linear().ok_or_else(&bad)?;
+        let value = expression(&t, units)?.linear().ok_or_else(bad)?;
         return if value.percent == 0.0 {
             Ok((px_id, value.px))
         } else if value.px == 0.0 {

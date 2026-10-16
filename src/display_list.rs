@@ -552,9 +552,9 @@ fn clip_data(clips: impl Iterator<Item = Clip>) -> ([f32; 4], [f32; 4], f32) {
         min_y = min_y.max(y);
         max_x = max_x.min(x + w);
         max_y = max_y.min(y + h);
-        for corner in 0..4 {
-            if clip.radii[corner] > sources[corner].0 {
-                sources[corner] = (clip.radii[corner], [x, y, x + w, y + h]);
+        for (slot, &radius) in sources.iter_mut().zip(clip.radii.iter()) {
+            if radius > slot.0 {
+                *slot = (radius, [x, y, x + w, y + h]);
             }
         }
     }
