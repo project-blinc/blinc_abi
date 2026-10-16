@@ -1085,7 +1085,13 @@ fn append_inner(
         let shadow_clip = clipping(clips, m, (x, y), false, cull);
         let clip = clipping(clips, m, (x, y), true, cull);
 
-        // Outer shadows under the fill; inset ones go over it, after.
+        // A glass or blur brush draws what is behind the box, blurred and
+        // filtered, in place of a fill; the border still draws, over nothing.
+        let behind = props.background.as_ref().and_then(backdrop_of);
+        // Outer shadows under the fill; inset ones go over it, after. A box that draws what is
+        // behind it does not see its own shadow: its outer shadows follow the backdrop, which
+        // looks the same, as an outer shadow is cut out inside the box.
+        let mut own_shadows = Vec::new();
         for s in props.shadow.iter().rev() {
             let mut p = Primitive::new(PRIM_SHADOW, local, radii);
             p.shape_from(props, &glyphs.shapes);
@@ -1094,7 +1100,11 @@ fn append_inner(
             p.shadow_color = rgba(s.color, opacity);
             p.place(m, x, y);
             if p.shadow_color[3] > 0.0 {
-                p.push(&shadow_clip, out);
+                if behind.is_some() {
+                    own_shadows.push(p);
+                } else {
+                    p.push(&shadow_clip, out);
+                }
             }
         }
 
@@ -1150,9 +1160,6 @@ fn append_inner(
             rec.place(m, x, y);
             rec.push(&clipping(&ring_clips, m, (x, y), true, cull), out);
         }
-        // A glass or blur brush draws what is behind the box, blurred and
-        // filtered, in place of a fill; the border still draws, over nothing.
-        let behind = props.background.as_ref().and_then(backdrop_of);
         if let Some((blur, matrix, liquid)) = &behind {
             let blur = *blur;
             // CSS's backdrop colour filters apply to what is behind, before the background's tint is painted over it.
@@ -1224,6 +1231,9 @@ fn append_inner(
             }
             b.place(m, x, y);
             b.push(&clip, out);
+            for p in &own_shadows {
+                p.push(&shadow_clip, out);
+            }
         }
         let background = if image.is_some() || behind.is_some() {
             None

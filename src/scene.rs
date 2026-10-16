@@ -1558,6 +1558,51 @@ mod tests {
     }
 
     #[test]
+    fn a_backdrop_does_not_draw_its_own_shadow_behind_it() {
+        use crate::display_list::{PRIM_BACKDROP, PRIM_RECT, PRIM_SHADOW};
+        let mut tree = LayoutContext::new();
+        let root = tree.create_node(style(200.0, 200.0)).unwrap();
+        let node = tree.create_node(style(80.0, 80.0)).unwrap();
+        tree.set_children(root, &[node]).unwrap();
+        tree.compute(root, 200.0, 200.0).unwrap();
+        let shadow = blinc_core::Shadow {
+            offset_x: 0.0,
+            offset_y: 8.0,
+            blur: 12.0,
+            spread: 0.0,
+            color: Color::BLACK,
+        };
+        let mut encoder = SceneEncoder::new();
+        for (background, kinds) in [
+            (Brush::Solid(Color::WHITE), [PRIM_SHADOW, PRIM_RECT]),
+            (
+                Brush::Glass(blinc_core::GlassStyle::default()),
+                [PRIM_BACKDROP, PRIM_SHADOW],
+            ),
+            (
+                Brush::Blur(blinc_core::BlurStyle::default()),
+                [PRIM_BACKDROP, PRIM_SHADOW],
+            ),
+        ] {
+            let props = RenderProps {
+                background: Some(background),
+                shadow: vec![shadow],
+                ..Default::default()
+            };
+            tree.set_properties(node, props).unwrap();
+            encoder
+                .prepare(&tree, root, PaintOptions::default())
+                .unwrap();
+            let drawn: Vec<u32> = encoder
+                .records
+                .chunks(RECORD_FLOATS)
+                .map(|r| r[44] as u32)
+                .collect();
+            assert_eq!(drawn, kinds.map(|k| k as u32));
+        }
+    }
+
+    #[test]
     fn text_out_of_its_clip_is_not_shaped_until_it_scrolls_into_view() {
         let mut tree = LayoutContext::new();
         let column = |w: f32, h: f32| Style {
