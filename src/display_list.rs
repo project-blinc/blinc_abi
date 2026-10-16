@@ -482,14 +482,22 @@ fn shape_clip(
     }
 }
 
+/// A screen clip: its rect, corner radii and flag.
+type ScreenClip = ([f32; 4], [f32; 4], f32);
+/// A clip in a record's own space: its rect and corner radii.
+type LocalClip = ([f32; 4], [f32; 4]);
+
 /// The clips of one record: on screen, and in its own coordinates, and the
 /// corner `n` of the innermost rounded one.
 #[derive(Clone)]
 struct Clipping {
-    screen: ([f32; 4], [f32; 4], f32),
+    screen: ScreenClip,
     /// Layer bounds must still include clipped records until the composite is resolved.
     cull: bool,
-    local: Option<([f32; 4], [f32; 4])>,
+    local: Option<LocalClip>,
+    /// For a record whose shader takes a local clip: the screen clip and the local clip to use
+    /// instead, when a rounded clip is cut by those outside it.
+    cut: Option<(ScreenClip, LocalClip)>,
     n: f32,
     /// The innermost fading clip's rect on screen and its fade distances.
     fade: ([f32; 4], [f32; 4]),
@@ -501,11 +509,16 @@ struct Clipping {
 /// coordinates under `m`. Those pushed under `m` itself become its local
 /// clip, unless `local` is false; the rest are clipped on screen.
 fn clipping(clips: &[Clip], m: Affine, origin: (f32, f32), local: bool, cull: bool) -> Clipping {
-    let shares = |c: &Clip| local && m != IDENTITY && c.frame == m;
+    let untransformed = local && m == IDENTITY;
     // A clip-path clips by its shape alone, not as a rect.
-    let rects = clips.iter().filter(|c| c.shape.is_none());
-    let on_screen = rects.clone().filter(|c| !shares(c)).copied();
-    let in_frame = rects.filter(|c| shares(c)).map(|c| Clip {
+    let rects: Vec<Clip> = clips
+        .iter()
+        .filter(|c| c.shape.is_none())
+        .copied()
+        .collect();
+    let shares = |c: &Clip| local && m != IDENTITY && c.frame == m;
+    let on_screen = rects.iter().filter(|c| !shares(c)).copied();
+    let in_frame = rects.iter().filter(|c| shares(c)).map(|c| Clip {
         rect: c.layout,
         radii: c.layout_radii,
         ..*c
@@ -525,10 +538,33 @@ fn clipping(clips: &[Clip], m: Affine, origin: (f32, f32), local: bool, cull: bo
         .rev()
         .find(|c| c.fade.iter().any(|&f| f > 0.0))
         .map_or(([0.0; 4], [0.0; 4]), |c| (c.rect, c.fade));
+    // A rounded clip cut by those outside it is not one rounded rect on screen: its corners and
+    // the cut are each exact only as a clip of their own. The innermost such clip, pushed under
+    // the record's own untransformed frame, can clip in the record's space instead, the rest on
+    // screen, for a record whose shader takes a local clip.
+    let cut = untransformed
+        .then(|| rects.iter().rposition(|c| c.radii.iter().any(|&r| r > 0.0)))
+        .flatten()
+        .and_then(|i| {
+            let inner = &rects[i];
+            let others = rects.iter().enumerate().filter(|&(j, _)| j != i);
+            let outer = clip_data(others.map(|(_, c)| *c));
+            let [x, y, w, h] = outer.0;
+            let cuts = x > inner.rect[0]
+                || y > inner.rect[1]
+                || x + w < inner.rect[0] + inner.rect[2]
+                || y + h < inner.rect[1] + inner.rect[3];
+            let [lx, ly, lw, lh] = inner.layout;
+            (inner.frame == m && outer.2 != CLIP_NONE && cuts).then_some((
+                outer,
+                ([lx - origin.0, ly - origin.1, lw, lh], inner.layout_radii),
+            ))
+        });
     Clipping {
         screen: clip_data(on_screen),
         cull,
         local,
+        cut,
         n,
         fade,
         shape: clips.iter().rev().find_map(|c| c.shape),
@@ -849,8 +885,13 @@ impl Primitive {
         if self.outside_clip(clipping) {
             return;
         }
-        let clip = &clipping.screen;
-        let (row6, row7) = match &clipping.local {
+        // Boxes, glyphs, images and backdrops take a local clip; canvases and layers do not.
+        let takes_local = [PRIM_RECT, PRIM_TEXT, PRIM_IMAGE, PRIM_BACKDROP].contains(&self.kind);
+        let (clip, local) = match &clipping.cut {
+            Some((screen, local)) if takes_local => (screen, Some(local)),
+            _ => (&clipping.screen, clipping.local.as_ref()),
+        };
+        let (row6, row7) = match local {
             Some((rect, radii)) => (rect, radii),
             None => (&self.shadow, &self.shadow_color),
         };
@@ -869,7 +910,7 @@ impl Primitive {
         ] {
             out.extend_from_slice(row);
         }
-        let clips = clip.2 + if clipping.local.is_some() { 2.0 } else { 0.0 };
+        let clips = clip.2 + if local.is_some() { 2.0 } else { 0.0 };
         out.extend_from_slice(&[self.kind, self.fill_type, clips, clipping.n]);
         out.extend_from_slice(&self.corner_shape);
         out.extend_from_slice(&self.via);
@@ -2989,6 +3030,48 @@ mod culling_tests {
             fade: [0.0; 4],
             shape: None,
         }
+    }
+
+    #[test]
+    fn a_rounded_clip_cut_by_another_clips_in_the_records_space() {
+        // A circle, 72 across at (0, 100), in a scroll view whose bottom edge is at 150.
+        let circle = Clip {
+            radii: [36.0; 4],
+            layout_radii: [36.0; 4],
+            ..rect_clip([0.0, 100.0, 72.0, 72.0])
+        };
+        let view = rect_clip([0.0, 0.0, 400.0, 150.0]);
+        let clip = clipping(&[view, circle], IDENTITY, (0.0, 100.0), true, true);
+        // The circle whole, from the record's origin; the view's edge on screen, square.
+        let (screen, local) = clip.cut.expect("a cut circle");
+        assert_eq!(local, ([0.0, 0.0, 72.0, 72.0], [36.0; 4]));
+        assert_eq!((screen.0, screen.1), ([0.0, 0.0, 400.0, 150.0], [0.0; 4]));
+        // A box takes it, as its own local clip; a canvas keeps the screen's one rounded clip.
+        let rows = |kind: f32| {
+            let mut out = Vec::new();
+            Primitive::new(kind, [0.0, 100.0, 72.0, 72.0], [0.0; 4]).push(&clip, &mut out);
+            (out[24..28].to_vec(), out[32..36].to_vec(), out[46])
+        };
+        let (local_rect, screen_rect, clips) = rows(PRIM_RECT);
+        assert_eq!(
+            (local_rect, screen_rect),
+            (vec![0.0, 0.0, 72.0, 72.0], vec![0.0, 0.0, 400.0, 150.0])
+        );
+        assert_eq!(clips, CLIP_RECT + 2.0);
+        let (_, screen_rect, clips) = rows(PRIM_CANVAS);
+        assert_eq!(screen_rect, vec![0.0, 100.0, 72.0, 50.0]);
+        assert_eq!(clips, CLIP_RECT);
+        // In full view there is no cut: one rounded clip on screen, as before.
+        let tall = rect_clip([0.0, 0.0, 400.0, 400.0]);
+        let clip = clipping(&[tall, circle], IDENTITY, (0.0, 100.0), true, true);
+        assert!(clip.cut.is_none());
+        assert_eq!(
+            (clip.screen.0, clip.screen.1),
+            ([0.0, 100.0, 72.0, 72.0], [36.0; 4])
+        );
+        // A shadow takes no local clip: it keeps the screen's.
+        let clip = clipping(&[view, circle], IDENTITY, (0.0, 100.0), false, true);
+        assert!(clip.cut.is_none());
     }
 
     #[test]
