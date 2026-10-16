@@ -517,6 +517,23 @@ define_prim!(
     "PXblinc_signal_B_v"
 );
 
+// git-bug 2059910: lets a caller cache the decoded Haxe string and skip the
+// UTF-8 round trip when the native value hasn't changed since it last read
+// this version. Untracked — pair with `blinc_signal_touch` to still
+// register the dependency.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_signal_string_version(h: *mut c_void) -> i32 {
+    unsafe { state_of::<Option<String>>(h) }
+        .and_then(|s| s.signal().version())
+        .map(|v| v as i32)
+        .unwrap_or(-1)
+}
+define_prim!(
+    hlp_blinc_signal_string_version,
+    hl_blinc_signal_string_version,
+    "PXblinc_signal__i"
+);
+
 #[unsafe(no_mangle)]
 pub extern "C" fn hl_blinc_computed_string(closure: *mut c_void) -> *mut c_void {
     into_handle(AnyComputed::Str(computed_from::<Option<String>>(closure)))
