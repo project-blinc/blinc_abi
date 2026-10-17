@@ -52,7 +52,11 @@ pub fn ensure_face(context: &TextMeasureContext) {
 const SYSTEM_UI: &[&str] = &[".SF NS", "Helvetica Neue"];
 #[cfg(target_os = "windows")]
 const SYSTEM_UI: &[&str] = &["Segoe UI Variable", "Segoe UI"];
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+/// A page has no platform face: the first of these the program has registered, so a Helvetica
+/// of its own takes the place of the Arimo it is built with.
+#[cfg(target_family = "wasm")]
+const SYSTEM_UI: &[&str] = &["Helvetica Neue", "Helvetica", "Arial", "Arimo"];
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_family = "wasm")))]
 const SYSTEM_UI: &[&str] = &[];
 
 /// A CSS font stack resolved as a browser does: the first family installed,
@@ -93,6 +97,14 @@ pub fn resolve_family(stack: &str) -> (Option<String>, LayoutGeneric) {
             if g == LayoutGeneric::System && platform.is_none() {
                 drop(registry);
                 return (system_ui(), LayoutGeneric::System);
+            }
+            // A page has no generic sans-serif; its one face is the system UI face.
+            if cfg!(target_family = "wasm") && g == LayoutGeneric::SansSerif && platform.is_none() {
+                drop(registry);
+                if let Some(face) = system_ui() {
+                    return (Some(face), LayoutGeneric::System);
+                }
+                return (None, g);
             }
             return (None, platform.unwrap_or(g));
         }
