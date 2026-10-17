@@ -1,5 +1,7 @@
 //! Owned bundled faces. Adapters load bytes; decoding and registry lifetime live here.
 use blinc_text::{FontFace, font::FontData, global_font_registry};
+#[cfg(feature = "hashlink")]
+use hl_abi::{define_prim, vbyte};
 use std::collections::HashMap;
 use std::sync::{
     Arc, Mutex,
@@ -7,6 +9,42 @@ use std::sync::{
 };
 
 static NEXT_NAME: AtomicU64 = AtomicU64::new(1);
+
+/// TTF or OpenType bytes: WOFF2 is unpacked, anything else is passed through.
+fn plain(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    if bytes.starts_with(b"wOF2") {
+        woff2_patched::convert_woff2_to_ttf(&mut std::io::Cursor::new(bytes))
+            .map_err(|e| format!("WOFF2: {e}"))
+    } else {
+        Ok(bytes)
+    }
+}
+
+/// Registers the faces in `len` bytes of TTF, OpenType, a collection or WOFF2 as installed
+/// fonts, found by the family names they carry; how many faces it added. A page has no system
+/// fonts, so its program bundles its own.
+#[cfg(feature = "hashlink")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_font_register(bytes: *const vbyte, len: i32) -> i32 {
+    if bytes.is_null() || len <= 0 {
+        return 0;
+    }
+    let _blocking = crate::hl::Blocking::enter();
+    let data = unsafe { std::slice::from_raw_parts(bytes, len as usize) }.to_vec();
+    let Ok(data) = plain(data) else {
+        return 0;
+    };
+    let registry = global_font_registry();
+    let mut registry = registry.lock().unwrap_or_else(|e| e.into_inner());
+    let added = registry.load_font_data(data);
+    if added > 0 {
+        // A generic family that found no face before may find this one.
+        registry.invalidate_generic_cache();
+    }
+    added as i32
+}
+#[cfg(feature = "hashlink")]
+define_prim!(hlp_blinc_font_register, hl_blinc_font_register, "Bi_i");
 
 pub struct Font {
     data: FontData,
@@ -17,13 +55,7 @@ pub struct Font {
 impl Font {
     /// TTF, OpenType or WOFF2. The first face of a collection is used.
     pub fn decode(bytes: Vec<u8>) -> Result<Self, String> {
-        let bytes = if bytes.starts_with(b"wOF2") {
-            woff2_patched::convert_woff2_to_ttf(&mut std::io::Cursor::new(bytes))
-                .map_err(|e| format!("WOFF2: {e}"))?
-        } else {
-            bytes
-        };
-        let data = FontData::from_vec(bytes);
+        let data = FontData::from_vec(plain(bytes)?);
         FontFace::from_font_data(data.clone(), 0).map_err(|e| e.to_string())?;
         Ok(Self {
             data,
