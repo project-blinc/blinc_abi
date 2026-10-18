@@ -760,6 +760,91 @@ define_prim!(
     "PXblinc_tree_lB_v"
 );
 
+/// One walk of a frame: its records and polygon points, and whether its glyphs overflowed the atlases.
+struct Attempt {
+    records: Vec<f32>,
+    points: Vec<f32>,
+    atlas_full: bool,
+}
+
+/// A frame whose glyphs overflow the atlases starts them afresh, once. The second walk stands even
+/// if it overflows too: its records name the glyphs that did fit, so they must stay in the atlases,
+/// and the glyphs that did not are left out.
+fn build_with_retry<R>(
+    mut walk: impl FnMut(&mut R) -> Attempt,
+    renderer: &mut R,
+    mut clear: impl FnMut(&mut R),
+) -> (Vec<f32>, Vec<f32>) {
+    let first = walk(renderer);
+    if !first.atlas_full {
+        return (first.records, first.points);
+    }
+    clear(renderer);
+    let second = walk(renderer);
+    (second.records, second.points)
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    fn attempt(tag: f32, atlas_full: bool) -> Attempt {
+        Attempt {
+            records: vec![tag],
+            points: vec![tag + 100.0],
+            atlas_full,
+        }
+    }
+
+    #[test]
+    fn a_frame_that_fits_is_walked_once_and_the_atlases_kept() {
+        let (mut walks, mut clears) = (0, 0);
+        let (records, points) = build_with_retry(
+            |_: &mut ()| {
+                walks += 1;
+                attempt(1.0, false)
+            },
+            &mut (),
+            |_| clears += 1,
+        );
+        assert_eq!((walks, clears), (1, 0));
+        assert_eq!((records, points), (vec![1.0], vec![101.0]));
+    }
+
+    #[test]
+    fn an_overflowing_frame_is_walked_again_after_the_atlases_start_afresh() {
+        let (mut walks, mut clears) = (0, 0);
+        let (records, points) = build_with_retry(
+            |_: &mut ()| {
+                walks += 1;
+                attempt(walks as f32, walks == 1)
+            },
+            &mut (),
+            |_| clears += 1,
+        );
+        assert_eq!((walks, clears), (2, 1));
+        assert_eq!((records, points), (vec![2.0], vec![102.0]));
+    }
+
+    #[test]
+    fn a_frame_that_overflows_twice_keeps_the_atlases_its_records_name() {
+        // The atlases are cleared between the walks, never after the last: clearing then
+        // would empty what the records refer to, and every glyph would draw blank.
+        let (mut walks, mut clears) = (0, 0);
+        let (records, points) = build_with_retry(
+            |_: &mut ()| {
+                walks += 1;
+                attempt(walks as f32, true)
+            },
+            &mut (),
+            |_| clears += 1,
+        );
+        assert_eq!((walks, clears), (2, 1));
+        // The second walk's records and its polygon points, not the first's, and not none.
+        assert_eq!((records, points), (vec![2.0], vec![102.0]));
+    }
+}
+
 /// Pack the primitives to draw under `root` into `out` (see `display_list`), at
 /// most `capacity` records. `params` is eight f32s: the device pixels per
 /// layout unit text is rasterized for; the theme's corner `n` (0 for no
@@ -793,39 +878,40 @@ pub unsafe extern "C" fn hl_blinc_tree_display_list(
     };
     let text_color = [p(4), p(5), p(6), p(7)];
     let mut renderer = crate::text::renderer();
-    let mut records = Vec::new();
-    let mut points = Vec::new();
-    // A frame whose glyphs overflow the atlases starts them afresh, once.
-    for _ in 0..2 {
-        let mut glyphs = crate::display_list::Glyphs {
-            renderer: &mut renderer,
-            display_scale: if display_scale > 0.0 {
-                display_scale
-            } else {
-                1.0
-            },
-            atlas_full: false,
-            shapes,
-            points: Vec::new(),
-        };
-        records.clear();
-        crate::display_list::append(
-            tree,
-            id(root),
-            (0.0, 0.0),
-            1.0,
-            text_color,
-            crate::display_list::IDENTITY,
-            &mut Vec::new(),
-            &mut glyphs,
-            &mut records,
-        );
-        if !glyphs.atlas_full {
-            points = std::mem::take(&mut glyphs.points);
-            break;
-        }
-        renderer.clear();
-    }
+    let (mut records, points) = build_with_retry(
+        |renderer: &mut blinc_text::TextRenderer| {
+            let mut glyphs = crate::display_list::Glyphs {
+                renderer,
+                display_scale: if display_scale > 0.0 {
+                    display_scale
+                } else {
+                    1.0
+                },
+                atlas_full: false,
+                shapes,
+                points: Vec::new(),
+            };
+            let mut records = Vec::new();
+            crate::display_list::append(
+                tree,
+                id(root),
+                (0.0, 0.0),
+                1.0,
+                text_color,
+                crate::display_list::IDENTITY,
+                &mut Vec::new(),
+                &mut glyphs,
+                &mut records,
+            );
+            Attempt {
+                records,
+                points: std::mem::take(&mut glyphs.points),
+                atlas_full: glyphs.atlas_full,
+            }
+        },
+        &mut *renderer,
+        |renderer| renderer.clear(),
+    );
     use crate::display_list::{RECORD_FLOATS, SHAPE_POLYGON};
     let drawn = records.len() / RECORD_FLOATS;
     // Polygon offsets count rows from the points' start, which is right after the records.
