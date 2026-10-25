@@ -5,6 +5,10 @@
 //! removes them. Node ids cross as `i64` (a node's raw id), and results that HashLink writes into
 //! a caller's buffer are written into a `BufferMut` the same way.
 
+use crate::css::Stylesheet;
+use crate::css::cascade::States;
+use crate::css::styled::Styles;
+use crate::css_hl;
 use crate::hit;
 use crate::ops::{self, TextSpec};
 use crate::shared::{
@@ -539,6 +543,214 @@ impl Tree {
     }
 }
 
+/// The CSS engine: sheets in force, the elements described to it and their states, and the styles it resolves.
+pub struct Css {
+    styles: Styles,
+    /// The diagnostics of the last sheet `add` parsed.
+    diagnostics: String,
+}
+
+impl Css {
+    pub extern "C" fn new() -> Box<Css> {
+        Box::new(Css {
+            styles: Styles::new(),
+            diagnostics: String::new(),
+        })
+    }
+
+    /// Parses `source` and adds it at position `at` (past the end for last); its id. Its diagnostics are in
+    /// `diagnostics` until the next `add`.
+    pub extern "C" fn add(this: &mut Css, source: Text, file: Text, at: i32) -> i32 {
+        let (id, diagnostics) =
+            css_hl::add_source(&mut this.styles, source.as_str(), file.as_str(), at);
+        this.diagnostics = diagnostics;
+        id
+    }
+
+    /// Each diagnostic of the last `add` as `error|warning`, line, column, file and message split by U+0002, one
+    /// per record split by U+0001.
+    pub extern "C" fn diagnostics(this: &Css) -> Text {
+        Text::new(&this.diagnostics)
+    }
+
+    pub extern "C" fn add_parsed(this: &mut Css, sheet: &Sheet, at: i32) -> i32 {
+        css_hl::add_parsed(&mut this.styles, &sheet.0, at)
+    }
+
+    /// Adds a compiled sheet; its id, or -1 for bytes that do not decode.
+    pub extern "C" fn add_compiled(this: &mut Css, bytes: Buffer, at: i32) -> i32 {
+        css_hl::add_compiled(&mut this.styles, unsafe { bytes.as_slice() }, at)
+    }
+
+    pub extern "C" fn remove(this: &mut Css, id: i32) -> i32 {
+        css_hl::remove_sheet(&mut this.styles, id)
+    }
+
+    /// The `@keyframes` named `name` (see `css_hl::keyframes`); empty when no sheet has one.
+    pub extern "C" fn keyframes(this: &Css, name: Text) -> Text {
+        Text::new(&css_hl::keyframes(&this.styles, name.as_str()).unwrap_or_default())
+    }
+
+    /// `:root`'s custom property `name` (no `--`); empty when none declares it.
+    pub extern "C" fn root_variable(this: &Css, name: Text) -> Text {
+        Text::new(&css_hl::root_variable(&this.styles, name.as_str()).unwrap_or_default())
+    }
+
+    /// The theme's variables, each `name` without `--` and its value split by U+0002, records split by U+0001.
+    pub extern "C" fn set_theme(this: &mut Css, vars: Text) {
+        css_hl::set_theme(&mut this.styles, vars.as_str());
+    }
+
+    pub extern "C" fn set_environment(
+        this: &mut Css,
+        width: f64,
+        height: f64,
+        dark: bool,
+        root_font_size: f64,
+    ) {
+        css_hl::set_environment(&mut this.styles, width, height, dark, root_font_size);
+    }
+
+    /// Describes `node` (see `css_hl::set_element` for the six records).
+    pub extern "C" fn set_element(this: &mut Css, node: i64, desc: Text) {
+        css_hl::set_element(&mut this.styles, node as u64, desc.as_str());
+    }
+
+    /// The bit of state `name` in `set_states`'s mask, or 0 for a state the engine does not know.
+    pub extern "C" fn state_bit(name: Text) -> i32 {
+        css_hl::state_bit(name.as_str())
+    }
+
+    pub extern "C" fn set_states(this: &mut Css, node: i64, mask: i32) {
+        this.styles.set_states(node as u64, States(mask as u32));
+    }
+
+    /// `node` was placed under a new parent.
+    pub extern "C" fn moved(this: &mut Css, node: i64) {
+        this.styles.moved(node as u64);
+    }
+
+    /// A child was placed under `parent`, removed from it, or moved among its siblings.
+    pub extern "C" fn children_changed(this: &mut Css, parent: i64) {
+        this.styles.children_changed(parent as u64);
+    }
+
+    pub extern "C" fn forget(this: &mut Css, node: i64) {
+        this.styles.forget(node as u64);
+    }
+
+    /// Restyles what changed under `root`; how many nodes' styles changed. `take_changed` lists them.
+    pub extern "C" fn restyle(this: &mut Css, tree: &Tree, root: i64) -> i32 {
+        if tree.released {
+            return 0;
+        }
+        css_hl::restyle(&mut this.styles, shared(), root as u64)
+    }
+
+    /// After native layout and before paint; nonzero asks for another restyle and layout pass.
+    pub extern "C" fn update_containers(this: &mut Css, tree: &Tree) -> i32 {
+        if tree.released {
+            return 0;
+        }
+        css_hl::update_containers(&mut this.styles, shared())
+    }
+
+    pub extern "C" fn update_containers_under(this: &mut Css, tree: &Tree, root: i64) -> i32 {
+        if tree.released {
+            return 0;
+        }
+        css_hl::update_containers_under(&mut this.styles, shared(), root as u64)
+    }
+
+    /// Writes the nodes whose styles changed, parents first, into `out` as ids, as many as fit, and forgets those.
+    pub extern "C" fn take_changed(this: &mut Css, out: BufferMut) -> i32 {
+        let changed = this.styles.take_changed_upto(out.len() / 8);
+        put_ids(&changed, out);
+        changed.len() as i32
+    }
+
+    /// Writes the states selectors began to test since the last call as node ids into `nodes` and state bits
+    /// into `bits`, as many as fit, and forgets those.
+    pub extern "C" fn take_watched(this: &mut Css, nodes: BufferMut, bits: BufferMut) -> i32 {
+        let room = (nodes.len() / 8).min(bits.len() / 4);
+        let watched = this.styles.take_watched_upto(room);
+        let (n, b) = (
+            nodes.as_mut_ptr() as *mut u64,
+            bits.as_mut_ptr() as *mut i32,
+        );
+        for (i, (node, bit)) in watched.iter().enumerate() {
+            unsafe {
+                n.add(i).write_unaligned(*node);
+                b.add(i).write_unaligned(*bit as i32);
+            }
+        }
+        watched.len() as i32
+    }
+
+    /// The elements under `root` that the comma-separated `selectors` match, in document order, as ids in
+    /// `out`; how many match (more than fit, perhaps), or -1 for selectors that do not read.
+    pub extern "C" fn select(
+        this: &mut Css,
+        tree: &Tree,
+        root: i64,
+        selectors: Text,
+        out: BufferMut,
+    ) -> i32 {
+        if tree.released {
+            return -1;
+        }
+        match css_hl::select(&mut this.styles, shared(), root as u64, selectors.as_str()) {
+            Some(found) => {
+                put_ids(&found, out);
+                found.len() as i32
+            }
+            None => -1,
+        }
+    }
+
+    /// Every declaration that applies to `node` and where it came from (see `css_hl::explain`).
+    pub extern "C" fn explain(this: &mut Css, tree: &Tree, node: i64) -> Text {
+        if tree.released {
+            return Text::new("");
+        }
+        Text::new(&css_hl::explain(&mut this.styles, shared(), node as u64))
+    }
+
+    /// `node`'s resolved declarations, its values and its font size (see `css_hl::style`).
+    pub extern "C" fn style(this: &Css, node: i64) -> Text {
+        Text::new(&css_hl::style(&this.styles, node as u64))
+    }
+}
+
+/// A stylesheet parsed or decoded, to add to an engine more than once.
+pub struct Sheet(Stylesheet);
+
+impl Sheet {
+    pub extern "C" fn parse(source: Text, file: Text) -> Box<Sheet> {
+        Box::new(Sheet(css_hl::parse_sheet(source.as_str(), file.as_str())))
+    }
+
+    /// A compiled sheet decoded; check `valid`, since bytes that do not decode give an empty sheet.
+    pub extern "C" fn decode(bytes: Buffer) -> Box<Sheet> {
+        let sheet = css_hl::decode_sheet(unsafe { bytes.as_slice() });
+        Box::new(Sheet(sheet.unwrap_or_else(|| css_hl::parse_sheet("", ""))))
+    }
+
+    pub extern "C" fn diagnostics(this: &Sheet) -> Text {
+        Text::new(&css_hl::report(&this.0))
+    }
+
+    /// The files the sheet imported, one per record.
+    pub extern "C" fn imports(this: &Sheet) -> Text {
+        Text::new(&css_hl::sheet_imports(&this.0))
+    }
+
+    /// Every declaration of the sheet's rules, as name, line and column.
+    pub extern "C" fn declared(this: &Sheet) -> Text {
+        Text::new(&css_hl::sheet_declared(&this.0))
+    }
+}
+
 /// Decoded images, rasterized SVG and registered fonts: what a node's image slot, a page and the text
 /// measurer draw from. All are statics of one class.
 pub struct Resources;
@@ -926,6 +1138,39 @@ caribou_abi::plugin! {
         fn unset(&Tree, i64, i32);
         fn flush(&Tree) -> bool;
         fn dispose(&mut Tree);
+    }
+    class Css {
+        fn new() -> Box<Css>;
+        fn add(&mut Css, Text, Text, i32) -> i32;
+        fn diagnostics(&Css) -> Text;
+        fn add_parsed(&mut Css, &Sheet, i32) -> i32;
+        fn add_compiled(&mut Css, Buffer, i32) -> i32;
+        fn remove(&mut Css, i32) -> i32;
+        fn keyframes(&Css, Text) -> Text;
+        fn root_variable(&Css, Text) -> Text;
+        fn set_theme(&mut Css, Text);
+        fn set_environment(&mut Css, f64, f64, bool, f64);
+        fn set_element(&mut Css, i64, Text);
+        fn state_bit(Text) -> i32;
+        fn set_states(&mut Css, i64, i32);
+        fn moved(&mut Css, i64);
+        fn children_changed(&mut Css, i64);
+        fn forget(&mut Css, i64);
+        fn restyle(&mut Css, &Tree, i64) -> i32;
+        fn update_containers(&mut Css, &Tree) -> i32;
+        fn update_containers_under(&mut Css, &Tree, i64) -> i32;
+        fn take_changed(&mut Css, BufferMut) -> i32;
+        fn take_watched(&mut Css, BufferMut, BufferMut) -> i32;
+        fn select(&mut Css, &Tree, i64, Text, BufferMut) -> i32;
+        fn explain(&mut Css, &Tree, i64) -> Text;
+        fn style(&Css, i64) -> Text;
+    }
+    class Sheet {
+        fn parse(Text, Text) -> Box<Sheet>;
+        fn decode(Buffer) -> Box<Sheet>;
+        fn diagnostics(&Sheet) -> Text;
+        fn imports(&Sheet) -> Text;
+        fn declared(&Sheet) -> Text;
     }
     class Resources {
         fn decode_bitmap(Buffer) -> i32;
