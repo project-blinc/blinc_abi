@@ -10,8 +10,6 @@
 
 use crate::hl::{handle_mut, into_handle, opt_string_from, string_from, take_handle};
 use crate::reactive::collect_released;
-use blinc_layout::div::GenericFont;
-use blinc_layout::tree::{LayoutNodeId, TextMeasureContext};
 use hl_abi::{define_prim, vbyte};
 use std::ffi::c_void;
 use taffy::prelude::{AvailableSpace, Size, Style};
@@ -105,33 +103,16 @@ pub unsafe extern "C" fn hl_blinc_tree_create_text_node(
     let Some(tree) = (unsafe { tree(h) }) else {
         return 0;
     };
-    let context = TextMeasureContext {
+    let spec = crate::ops::TextSpec {
         content: unsafe { string_from(content) },
+        font_name: unsafe { opt_string_from(font_name) },
         font_size,
         line_height,
-        letter_spacing: 0.0,
-        wrap: flags & 1 != 0,
-        // No family of its own is the system face: the platform's UI face where it is installed.
-        font_name: unsafe { opt_string_from(font_name) }.or_else(|| {
-            if generic_font == 0 {
-                crate::text::system_ui()
-            } else {
-                None
-            }
-        }),
-        generic_font: match generic_font {
-            1 => GenericFont::Monospace,
-            2 => GenericFont::Serif,
-            3 => GenericFont::SansSerif,
-            _ => GenericFont::System,
-        },
-        font_weight: font_weight.clamp(1, 1000) as u16,
-        italic: flags & 2 != 0,
+        font_weight,
+        generic_font,
+        flags,
     };
-    crate::text::ensure_face(&context);
-    let node = tree.layout.create_text_node(Style::default(), context);
-    tree.owners.insert(node, unsafe { owner(h) });
-    node.to_raw()
+    crate::ops::create_text_node(tree, unsafe { owner(h) }, spec)
 }
 define_prim!(
     hlp_blinc_tree_create_text_node,
@@ -196,20 +177,9 @@ define_prim!(
 /// detached but not deleted. Nothing happens when `old` has no parent.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_tree_replace_node(h: *mut c_void, old: u64, new: u64) {
-    let Some(tree) = (unsafe { tree(h) }) else {
-        return;
-    };
-    let (old, new) = (id(old), id(new));
-    let Some(&parent) = tree.layout.ancestors(old).first() else {
-        return;
-    };
-    let children = tree
-        .layout
-        .children(parent)
-        .into_iter()
-        .map(|child| if child == old { new } else { child })
-        .collect();
-    tree.layout.replace_children(parent, children);
+    if let Some(tree) = unsafe { tree(h) } {
+        crate::ops::replace_node(tree, old, new);
+    }
 }
 define_prim!(
     hlp_blinc_tree_replace_node,
@@ -228,14 +198,8 @@ pub unsafe extern "C" fn hl_blinc_tree_replace_children(
     let Some(tree) = (unsafe { tree(h) }) else {
         return;
     };
-    if children.is_null() || len <= 0 {
-        clear_children(tree, id(parent));
-        return;
-    }
-    let ids = (0..len as usize)
-        .map(|i| id(unsafe { (children as *const u64).add(i).read_unaligned() }))
-        .collect();
-    tree.layout.replace_children(id(parent), ids);
+    let ids = unsafe { ids_from(children, len) };
+    crate::ops::replace_children(tree, parent, &ids);
 }
 define_prim!(
     hlp_blinc_tree_replace_children,
@@ -252,23 +216,15 @@ pub unsafe extern "C" fn hl_blinc_tree_set_grid_rows(
     rows: *const vbyte,
     len: i32,
 ) -> bool {
-    if len < 0 || len >= i16::MAX as i32 || (len > 0 && rows.is_null()) {
+    if len < 0 || (len > 0 && rows.is_null()) {
         return false;
     }
     let owner = unsafe { owner(h) };
     let Some(tree) = (unsafe { tree(h) }) else {
         return false;
     };
-    let group = id(group);
-    let rows: Vec<_> = (0..len as usize)
-        .map(|i| id(unsafe { (rows as *const u64).add(i).read_unaligned() }))
-        .collect();
-    if tree.owners.get(&group) != Some(&owner)
-        || rows.iter().any(|r| tree.owners.get(r) != Some(&owner))
-    {
-        return false;
-    }
-    tree.layout.set_grid_rows(group, &rows).is_ok()
+    let rows = unsafe { ids_from(rows, len) };
+    crate::ops::set_grid_rows(tree, owner, group, &rows)
 }
 define_prim!(
     hlp_blinc_tree_set_grid_rows,
@@ -288,20 +244,10 @@ pub unsafe extern "C" fn hl_blinc_tree_children(
     let Some(tree) = (unsafe { tree(h) }) else {
         return 0;
     };
-    if !tree.owners.contains_key(&id(node)) {
+    let Some(ids) = crate::ops::children(tree, node) else {
         return 0;
-    }
-    let ids: Vec<u64> = tree
-        .layout
-        .children(id(node))
-        .iter()
-        .map(|c| c.to_raw())
-        .collect();
-    if !out.is_null() {
-        let n = ids.len().min(capacity.max(0) as usize);
-        unsafe { std::ptr::copy_nonoverlapping(ids.as_ptr(), out as *mut u64, n) };
-    }
-    ids.len() as i32
+    };
+    unsafe { write_ids(&ids, out, capacity) }
 }
 define_prim!(
     hlp_blinc_tree_children,
@@ -322,20 +268,10 @@ pub unsafe extern "C" fn hl_blinc_tree_ancestors(
     let Some(tree) = (unsafe { tree(h) }) else {
         return 0;
     };
-    if !tree.owners.contains_key(&id(node)) {
+    let Some(ids) = crate::ops::ancestors(tree, node) else {
         return 0;
-    }
-    let ids: Vec<u64> = tree
-        .layout
-        .ancestors(id(node))
-        .iter()
-        .map(|a| a.to_raw())
-        .collect();
-    if !out.is_null() {
-        let n = ids.len().min(capacity.max(0) as usize);
-        unsafe { std::ptr::copy_nonoverlapping(ids.as_ptr(), out as *mut u64, n) };
-    }
-    ids.len() as i32
+    };
+    unsafe { write_ids(&ids, out, capacity) }
 }
 define_prim!(
     hlp_blinc_tree_ancestors,
@@ -358,39 +294,44 @@ pub unsafe extern "C" fn hl_blinc_tree_set_children(
     let Some(tree) = (unsafe { tree(h) }) else {
         return;
     };
-    let parent = id(parent);
-    if !tree.owners.contains_key(&parent) {
-        return;
-    }
-    let ids: Vec<LayoutNodeId> = if children.is_null() || len <= 0 {
-        Vec::new()
-    } else {
-        (0..len as usize)
-            .map(|i| id(unsafe { (children as *const u64).add(i).read_unaligned() }))
-            .filter(|c| tree.owners.contains_key(c))
-            .collect()
-    };
-    // A child still listed under another parent is taken from it first.
-    for &child in &ids {
-        if let Some(&old) = tree.layout.ancestors(child).first() {
-            if old != parent {
-                let kept = tree
-                    .layout
-                    .children(old)
-                    .into_iter()
-                    .filter(|&c| c != child)
-                    .collect();
-                tree.layout.replace_children(old, kept);
-            }
-        }
-    }
-    tree.layout.replace_children(parent, ids);
+    let ids = unsafe { ids_from(children, len) };
+    crate::ops::set_children(tree, parent, &ids);
 }
 define_prim!(
     hlp_blinc_tree_set_children,
     hl_blinc_tree_set_children,
     "PXblinc_tree_lBi_v"
 );
+
+/// `len` consecutive 64-bit node ids at `ids`; none for a null pointer or a length of zero or less.
+unsafe fn ids_from(ids: *const vbyte, len: i32) -> Vec<u64> {
+    if ids.is_null() || len <= 0 {
+        return Vec::new();
+    }
+    (0..len as usize)
+        .map(|i| unsafe { (ids as *const u64).add(i).read_unaligned() })
+        .collect()
+}
+
+/// Writes at most `capacity` of `ids` to `out`; how many there are.
+unsafe fn write_ids(ids: &[u64], out: *mut vbyte, capacity: i32) -> i32 {
+    if !out.is_null() {
+        let n = ids.len().min(capacity.max(0) as usize);
+        unsafe { std::ptr::copy_nonoverlapping(ids.as_ptr(), out as *mut u64, n) };
+    }
+    ids.len() as i32
+}
+
+/// Writes `values` to `out`; false for a null `out`.
+unsafe fn write_floats(values: &[f32], out: *mut vbyte) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    for (i, v) in values.iter().enumerate() {
+        unsafe { (out as *mut f32).add(i).write_unaligned(*v) };
+    }
+    true
+}
 
 fn drain_released_handles() -> Vec<u64> {
     std::mem::take(&mut *RELEASED_HANDLES.lock().unwrap_or_else(|e| e.into_inner()))
@@ -463,28 +404,13 @@ pub unsafe extern "C" fn hl_blinc_tree_text_limits(h: *mut c_void, node: u64, ou
     if out.is_null() {
         return;
     }
-    let mut lines = None;
-    let mut overflow = None;
-    if let Some(tree) = unsafe { tree(h) }
-        && (!tree.line_clamps.is_empty() || !tree.text_overflows.is_empty())
-    {
-        for n in std::iter::once(id(node)).chain(tree.layout.ancestors(id(node))) {
-            if lines.is_none() {
-                lines = tree.line_clamps.get(&n).copied();
-            }
-            if overflow.is_none() {
-                overflow = tree.text_overflows.get(&n).copied();
-            }
-            if lines.is_some() && overflow.is_some() {
-                break;
-            }
-        }
-    }
+    let (lines, overflow) = match unsafe { tree(h) } {
+        Some(tree) => crate::ops::text_limits(tree, node),
+        None => (0, -1),
+    };
     unsafe {
-        (out as *mut i32).write_unaligned(lines.unwrap_or(0) as i32);
-        (out as *mut i32)
-            .add(1)
-            .write_unaligned(overflow.map_or(-1, i32::from));
+        (out as *mut i32).write_unaligned(lines);
+        (out as *mut i32).add(1).write_unaligned(overflow);
     }
 }
 define_prim!(
@@ -769,22 +695,10 @@ pub unsafe extern "C" fn hl_blinc_tree_get_box(h: *mut c_void, node: u64, out: *
     let Some(tree) = (unsafe { tree(h) }) else {
         return false;
     };
-    let Some(l) = tree.layout.get_layout(id(node)) else {
+    let Some(values) = crate::ops::box_model(tree, node) else {
         return false;
     };
-    if out.is_null() {
-        return false;
-    }
-    let out = out as *mut f32;
-    let sides = |r: taffy::Rect<f32>| [r.top, r.right, r.bottom, r.left];
-    for (i, v) in [sides(l.padding), sides(l.border), sides(l.margin)]
-        .concat()
-        .into_iter()
-        .enumerate()
-    {
-        unsafe { out.add(i).write_unaligned(v) };
-    }
-    true
+    unsafe { write_floats(&values, out) }
 }
 define_prim!(
     hlp_blinc_tree_get_box,
@@ -818,40 +732,10 @@ pub unsafe extern "C" fn hl_blinc_tree_box_edges(
     let Some(tree) = (unsafe { tree(h) }) else {
         return false;
     };
-    let Some(layout) = tree.layout.get_layout(id(node)) else {
+    let Some(values) = crate::ops::box_edges(tree, node) else {
         return false;
     };
-    if out.is_null() {
-        return false;
-    }
-    let p = layout.padding;
-    let painted = tree.props.get(&id(node)).is_some_and(|r| {
-        let visible_bg = match &r.background {
-            Some(blinc_core::Brush::Solid(c)) => c.a > 0.0,
-            Some(_) => true,
-            None => false,
-        };
-        let sides = &r.border_sides;
-        let border = r.border_width > 0.0
-            || [&sides.top, &sides.right, &sides.bottom, &sides.left]
-                .iter()
-                .any(|s| s.as_ref().is_some_and(|s| s.width > 0.0));
-        visible_bg || border || !r.shadow.is_empty() || !r.inner_shadow.is_empty()
-    });
-    let out = out as *mut f32;
-    for (i, v) in [
-        p.top,
-        p.right,
-        p.bottom,
-        p.left,
-        if painted { 1.0 } else { 0.0 },
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        unsafe { out.add(i).write_unaligned(v) };
-    }
-    true
+    unsafe { write_floats(&values, out) }
 }
 define_prim!(
     hlp_blinc_tree_box_edges,
@@ -865,12 +749,7 @@ pub unsafe extern "C" fn hl_blinc_tree_text_align(h: *mut c_void, node: u64) -> 
     let Some(tree) = (unsafe { tree(h) }) else {
         return -1;
     };
-    match tree.props.get(&id(node)).and_then(|p| p.text_align) {
-        Some(blinc_layout::div::TextAlign::Left) => 0,
-        Some(blinc_layout::div::TextAlign::Center) => 1,
-        Some(blinc_layout::div::TextAlign::Right) => 2,
-        None => -1,
-    }
+    crate::ops::text_align(tree, node)
 }
 define_prim!(
     hlp_blinc_tree_text_align,
