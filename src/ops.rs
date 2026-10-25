@@ -226,3 +226,262 @@ pub(crate) fn text_limits(tree: &Tree, node: u64) -> (i32, i32) {
     }
     (lines.unwrap_or(0) as i32, overflow.map_or(-1, i32::from))
 }
+
+/// One walk of a frame: its records and polygon points, and whether its glyphs overflowed the atlases.
+pub(crate) struct Attempt {
+    records: Vec<f32>,
+    points: Vec<f32>,
+    atlas_full: bool,
+}
+
+/// A frame whose glyphs overflow the atlases starts them afresh, once. The second walk stands even
+/// if it overflows too: its records name the glyphs that did fit, so they must stay in the atlases,
+/// and the glyphs that did not are left out.
+pub(crate) fn build_with_retry<R>(
+    mut walk: impl FnMut(&mut R) -> Attempt,
+    renderer: &mut R,
+    mut clear: impl FnMut(&mut R),
+) -> (Vec<f32>, Vec<f32>) {
+    let first = walk(renderer);
+    if !first.atlas_full {
+        return (first.records, first.points);
+    }
+    clear(renderer);
+    let second = walk(renderer);
+    (second.records, second.points)
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    fn attempt(tag: f32, atlas_full: bool) -> Attempt {
+        Attempt {
+            records: vec![tag],
+            points: vec![tag + 100.0],
+            atlas_full,
+        }
+    }
+
+    #[test]
+    fn a_frame_that_fits_is_walked_once_and_the_atlases_kept() {
+        let (mut walks, mut clears) = (0, 0);
+        let (records, points) = build_with_retry(
+            |_: &mut ()| {
+                walks += 1;
+                attempt(1.0, false)
+            },
+            &mut (),
+            |_| clears += 1,
+        );
+        assert_eq!((walks, clears), (1, 0));
+        assert_eq!((records, points), (vec![1.0], vec![101.0]));
+    }
+
+    #[test]
+    fn an_overflowing_frame_is_walked_again_after_the_atlases_start_afresh() {
+        let (mut walks, mut clears) = (0, 0);
+        let (records, points) = build_with_retry(
+            |_: &mut ()| {
+                walks += 1;
+                attempt(walks as f32, walks == 1)
+            },
+            &mut (),
+            |_| clears += 1,
+        );
+        assert_eq!((walks, clears), (2, 1));
+        assert_eq!((records, points), (vec![2.0], vec![102.0]));
+    }
+
+    #[test]
+    fn a_frame_that_overflows_twice_keeps_the_atlases_its_records_name() {
+        // The atlases are cleared between the walks, never after the last: clearing then
+        // would empty what the records refer to, and every glyph would draw blank.
+        let (mut walks, mut clears) = (0, 0);
+        let (records, points) = build_with_retry(
+            |_: &mut ()| {
+                walks += 1;
+                attempt(walks as f32, true)
+            },
+            &mut (),
+            |_| clears += 1,
+        );
+        assert_eq!((walks, clears), (2, 1));
+        // The second walk's records and its polygon points, not the first's, and not none.
+        assert_eq!((records, points), (vec![2.0], vec![102.0]));
+    }
+}
+
+/// The primitives to draw under `root`, as a display list (see `display_list`): `params` is eight f32s: the
+/// device pixels per layout unit text is rasterized for; the theme's corner `n` (0 for no smoothing),
+/// smoothing threshold and full radius; and the colour, straight RGBA, of text that neither it nor an
+/// ancestor sets. Returns the packed records, polygon points after them, and how many records are to draw.
+pub(crate) fn display_list(tree: &mut Tree, root: u64, params: [f32; 8]) -> (Vec<f32>, usize) {
+    let display_scale = params[0];
+    let shapes = crate::display_list::Shapes {
+        n: params[1],
+        threshold: params[2],
+        radius_full: params[3],
+    };
+    let text_color = [params[4], params[5], params[6], params[7]];
+    let mut renderer = crate::text::renderer();
+    let (mut records, points) = build_with_retry(
+        |renderer: &mut blinc_text::TextRenderer| {
+            let mut glyphs = crate::display_list::Glyphs {
+                renderer,
+                display_scale: if display_scale > 0.0 {
+                    display_scale
+                } else {
+                    1.0
+                },
+                atlas_full: false,
+                shapes,
+                points: Vec::new(),
+            };
+            let mut records = Vec::new();
+            crate::display_list::append(
+                tree,
+                id(root),
+                (0.0, 0.0),
+                1.0,
+                text_color,
+                crate::display_list::IDENTITY,
+                &mut Vec::new(),
+                &mut glyphs,
+                &mut records,
+            );
+            Attempt {
+                records,
+                points: std::mem::take(&mut glyphs.points),
+                atlas_full: glyphs.atlas_full,
+            }
+        },
+        &mut *renderer,
+        |renderer| {
+            renderer.clear();
+            crate::text::note_atlas_cleared();
+        },
+    );
+    use crate::display_list::{RECORD_FLOATS, SHAPE_POLYGON};
+    let drawn = records.len() / RECORD_FLOATS;
+    // Polygon offsets count rows from the points' start, which is right after the records.
+    let base = (drawn * RECORD_FLOATS / 4) as f32;
+    for r in 0..drawn {
+        if records[r * RECORD_FLOATS + 94] == SHAPE_POLYGON {
+            records[r * RECORD_FLOATS + 96] += base;
+        }
+    }
+    records.extend_from_slice(&points);
+    while records.len() % RECORD_FLOATS != 0 {
+        records.push(0.0);
+    }
+    (records, drawn)
+}
+
+/// Makes `node` draw the image the caller knows as `slot` in its content box; a negative `slot` stops it.
+pub(crate) fn set_image(tree: &mut Tree, node: u64, slot: i32) {
+    if slot < 0 {
+        tree.images.remove(&id(node));
+        tree.image_mappings.remove(&id(node));
+    } else {
+        tree.images.insert(id(node), slot);
+    }
+}
+
+/// Makes `node` paint itself in its content box as the canvas known as `slot`; a negative `slot` stops it.
+pub(crate) fn set_canvas(tree: &mut Tree, node: u64, slot: i32) {
+    tree.set_canvas(id(node), (slot >= 0).then_some(slot));
+}
+
+/// Draws `node` as a notch from twelve f32s (see `Tree.setNotch`); `None` draws it as a box again.
+pub(crate) fn set_notch(tree: &mut Tree, node: u64, data: Option<[f32; 12]>) {
+    match data {
+        None => {
+            tree.notches.remove(&id(node));
+        }
+        Some(d) => {
+            let mut rows = [[0.0f32; 4]; 3];
+            for (i, row) in rows.iter_mut().enumerate() {
+                for (j, v) in row.iter_mut().enumerate() {
+                    *v = d[i * 4 + j];
+                }
+            }
+            tree.notches.insert(id(node), rows);
+        }
+    }
+}
+
+/// Draws `node` moved by `(dx, dy)` and at size `(w, h)` with its children clipped when `w` is not negative, as
+/// a layout animation does; `clear` draws it at its layout again.
+pub(crate) fn set_visual(
+    tree: &mut Tree,
+    node: u64,
+    dx: f32,
+    dy: f32,
+    w: f32,
+    h: f32,
+    clear: bool,
+) {
+    if clear {
+        tree.visuals.remove(&id(node));
+    } else {
+        tree.visuals.insert(id(node), [dx, dy, w, h]);
+    }
+}
+
+/// Makes the hit test pass through `node` and everything inside it, or not.
+pub(crate) fn set_pass_through(tree: &mut Tree, node: u64, through: bool) {
+    tree.set_pointer_events(id(node), Some(!through));
+}
+
+/// Styles an overlay scrollbar: width zero hides it; `track` is straight-alpha 0xAARRGGBB, zero transparent.
+pub(crate) fn set_scrollbar_style(tree: &mut Tree, node: u64, width: f32, track: i32) {
+    let node = id(node);
+    if tree.layout.get_style(node).is_none() || !width.is_finite() || width < 0.0 {
+        return;
+    }
+    if width == 4.0 && track == 0 {
+        tree.scrollbar_styles.remove(&node);
+    } else {
+        let c = |shift: i32| ((track >> shift) & 0xff) as f32 / 255.0;
+        tree.scrollbar_styles.insert(
+            node,
+            crate::tree::ScrollbarStyle {
+                width,
+                track: [c(16), c(8), c(0), c(24)],
+            },
+        );
+    }
+}
+
+/// Scrolls container `node`'s content by `(x, y)` and colours its thumb `0xAARRGGBB` (0 hides it).
+pub(crate) fn set_scroll(tree: &mut Tree, node: u64, x: f32, y: f32, thumb: i32) {
+    let c = |shift: i32| ((thumb >> shift) & 0xff) as f32 / 255.0;
+    tree.scrolls.insert(
+        id(node),
+        crate::tree::Scroll {
+            x,
+            y,
+            thumb: [c(16), c(8), c(0), c(24)],
+        },
+    );
+}
+
+/// Container `node`'s viewport width and height (inside its border) and its content's width and height;
+/// `None` before it is laid out.
+pub(crate) fn scroll_extent(tree: &Tree, node: u64) -> Option<[f32; 4]> {
+    let layout = tree.layout.get_layout(id(node))?;
+    let b = layout.border;
+    Some([
+        layout.size.width - b.left - b.right,
+        layout.size.height - b.top - b.bottom,
+        layout.scrollable_overflow_rect.right,
+        layout.scrollable_overflow_rect.bottom,
+    ])
+}
+
+/// `node`'s absolute `x, y, width, height`; `None` for a node not laid out.
+pub(crate) fn bounds(tree: &Tree, node: u64) -> Option<[f32; 4]> {
+    let b = tree.layout.get_absolute_bounds(id(node))?;
+    Some([b.x, b.y, b.width, b.height])
+}
