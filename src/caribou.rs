@@ -5,6 +5,7 @@
 //! removes them. Node ids cross as `i64` (a node's raw id), and results that HashLink writes into
 //! a caller's buffer are written into a `BufferMut` the same way.
 
+use crate::hit;
 use crate::ops::{self, TextSpec};
 use crate::shared::{
     NEXT_HANDLE, RELEASED_HANDLES, clear_children as clear, forget, id, release_handle, shared,
@@ -51,6 +52,22 @@ fn put_floats(values: &[f32], out: BufferMut) -> bool {
         unsafe { at.add(i).write_unaligned(*v) };
     }
     true
+}
+
+/// Writes as many hit records as fit into `out`, sixteen bytes each; how many there are.
+fn put_hits(hits: &[hit::Hit], out: BufferMut) -> i32 {
+    let at = out.as_mut_ptr();
+    if !at.is_null() {
+        for (i, hit) in hits.iter().take(out.len() / 16).enumerate() {
+            unsafe {
+                let p = at.add(i * 16);
+                (p as *mut u64).write_unaligned(hit.node.to_raw());
+                (p.add(8) as *mut f32).write_unaligned(hit.x);
+                (p.add(12) as *mut f32).write_unaligned(hit.y);
+            }
+        }
+    }
+    hits.len() as i32
 }
 
 /// A text parameter's string, or `None` for none or the empty text.
@@ -385,6 +402,54 @@ impl Tree {
                 .is_some_and(|values| put_floats(&values, out))
     }
 
+    /// Writes the nodes under `(x, y)` into `out`, the topmost first and then each ancestor up to `root`, as
+    /// sixteen-byte records of an id and the point in that node's coordinates as two f32s; as many as fit.
+    /// Returns how many there are.
+    pub extern "C" fn hit_test(this: &Tree, root: i64, x: f32, y: f32, out: BufferMut) -> i32 {
+        if this.released {
+            return 0;
+        }
+        let hits = hit::test(shared(), id(root as u64), x, y);
+        put_hits(&hits, out)
+    }
+
+    /// As `hit_test`, also writing the conservative (left, top, right, bottom) bounds the answer holds for, as
+    /// four f32s into `bounds`.
+    pub extern "C" fn hit_test_region(
+        this: &Tree,
+        root: i64,
+        x: f32,
+        y: f32,
+        out: BufferMut,
+        bounds: BufferMut,
+    ) -> i32 {
+        if this.released {
+            return 0;
+        }
+        let (hits, region) = hit::test_region(shared(), id(root as u64), x, y);
+        put_floats(&region.bounds, bounds);
+        put_hits(&hits, out)
+    }
+
+    /// Writes the visible nodes under `root`, `root` first, in document order, as ids; how many there are.
+    pub extern "C" fn order(this: &Tree, root: i64, out: BufferMut) -> i32 {
+        if this.released {
+            return 0;
+        }
+        put_ids(&hit::document_order(shared(), id(root as u64)), out)
+    }
+
+    /// Writes `node` and its ancestors up to `root`, `node` first, as ids; 0 when `node` is not under `root`.
+    pub extern "C" fn path(this: &Tree, root: i64, node: i64, out: BufferMut) -> i32 {
+        if this.released {
+            return 0;
+        }
+        put_ids(
+            &hit::node_path(shared(), id(root as u64), id(node as u64)),
+            out,
+        )
+    }
+
     /// Applies a `Single` property (`prop` is ashui's `PropertyId`) to `node`; takes effect at the next `flush`.
     pub extern "C" fn apply_f32(this: &Tree, node: i64, prop: i32, value: f32) {
         if !this.released {
@@ -441,6 +506,70 @@ impl Tree {
             release_handle(shared(), this.id);
             this.released = true;
         }
+    }
+}
+
+/// Decoded images, rasterized SVG and registered fonts: what a node's image slot, a page and the text
+/// measurer draw from. All are statics of one class.
+pub struct Resources;
+
+impl Resources {
+    /// Decodes PNG or JPEG bytes; the bitmap's slot, or -1 when they are not an image.
+    pub extern "C" fn decode_bitmap(bytes: Buffer) -> i32 {
+        crate::bitmap::decode(unsafe { bytes.as_slice() })
+    }
+
+    /// The width, or with `height` the height, of the bitmap in `slot`; 0 when there is none.
+    pub extern "C" fn bitmap_size(slot: i32, height: bool) -> i32 {
+        crate::bitmap::size(slot, height)
+    }
+
+    pub extern "C" fn release_bitmap(slot: i32) {
+        crate::bitmap::release(slot);
+    }
+
+    /// Writes the bitmap in `slot` into `out` as `width` by `height` straight RGBA pixels, fitted by `fit`.
+    pub extern "C" fn resample_bitmap(
+        slot: i32,
+        width: i32,
+        height: i32,
+        fit: i32,
+        out: BufferMut,
+    ) -> bool {
+        let at = out.as_mut_ptr();
+        if at.is_null() || width <= 0 || height <= 0 || out.len() < (width * height * 4) as usize {
+            return false;
+        }
+        let pixels = unsafe { std::slice::from_raw_parts_mut(at, (width * height * 4) as usize) };
+        crate::bitmap::resample_into(slot, width, height, fit, pixels)
+    }
+
+    /// Shrinks the bitmap so neither side is over `max_side`, each rounded to a multiple of 4.
+    pub extern "C" fn shrink_bitmap(slot: i32, max_side: i32) -> bool {
+        crate::bitmap::shrink(slot, max_side)
+    }
+
+    /// Rasterizes SVG `markup` into `out` as `width` by `height` straight-alpha RGBA pixels; false when it does
+    /// not parse or `out` is too small.
+    pub extern "C" fn rasterize_svg(markup: Text, width: i32, height: i32, out: BufferMut) -> bool {
+        let at = out.as_mut_ptr();
+        let size = (width.max(0) as usize) * (height.max(0) as usize) * 4;
+        if at.is_null() || width <= 0 || height <= 0 || out.len() < size {
+            return false;
+        }
+        let Ok(raster) = crate::svg::rasterize(markup.as_str(), width as u32, height as u32) else {
+            return false;
+        };
+        if raster.pixels.len() != size {
+            return false;
+        }
+        unsafe { std::ptr::copy_nonoverlapping(raster.pixels.as_ptr(), at, size) };
+        true
+    }
+
+    /// Registers the faces in TTF, OpenType, collection or WOFF2 bytes as installed fonts; how many it added.
+    pub extern "C" fn register_font(bytes: Buffer) -> i32 {
+        crate::font::register(bytes.to_vec())
     }
 }
 
@@ -698,6 +827,10 @@ caribou_abi::plugin! {
         fn in_view(&Tree, i64) -> bool;
         fn text_align(&Tree, i64) -> i32;
         fn text_limits(&Tree, i64, BufferMut);
+        fn hit_test(&Tree, i64, f32, f32, BufferMut) -> i32;
+        fn hit_test_region(&Tree, i64, f32, f32, BufferMut, BufferMut) -> i32;
+        fn order(&Tree, i64, BufferMut) -> i32;
+        fn path(&Tree, i64, i64, BufferMut) -> i32;
         fn display_list(&Tree, i64, BufferMut, BufferMut) -> i32;
         fn set_image(&Tree, i64, i32);
         fn set_image_mapping(&Tree, i64, i32, f32, f32, f32, f32);
@@ -715,6 +848,15 @@ caribou_abi::plugin! {
         fn unset(&Tree, i64, i32);
         fn flush(&Tree) -> bool;
         fn dispose(&mut Tree);
+    }
+    class Resources {
+        fn decode_bitmap(Buffer) -> i32;
+        fn bitmap_size(i32, bool) -> i32;
+        fn release_bitmap(i32);
+        fn resample_bitmap(i32, i32, i32, i32, BufferMut) -> bool;
+        fn shrink_bitmap(i32, i32) -> bool;
+        fn rasterize_svg(Text, i32, i32, BufferMut) -> bool;
+        fn register_font(Buffer) -> i32;
     }
     class StyleValue {
         fn color(i32, f32) -> Box<StyleValue>;

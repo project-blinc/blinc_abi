@@ -5,7 +5,6 @@
 
 #[cfg(feature = "hashlink")]
 use hl_abi::{define_prim, vbyte};
-#[cfg(feature = "hashlink")]
 use std::sync::Mutex;
 
 pub struct Bitmap {
@@ -15,7 +14,6 @@ pub struct Bitmap {
     pub height: u32,
 }
 
-#[cfg(feature = "hashlink")]
 static BITMAPS: Mutex<Vec<Option<Bitmap>>> = Mutex::new(Vec::new());
 
 /// How an image fills a box of another shape, as ashui's `ImageFit`
@@ -23,18 +21,13 @@ static BITMAPS: Mutex<Vec<Option<Bitmap>>> = Mutex::new(Vec::new());
 /// stretched (2, CSS's `fill`; 3, a tile, is stretched for now).
 const FIT_COVER: i32 = 0;
 const FIT_CONTAIN: i32 = 1;
-#[cfg(feature = "hashlink")]
 const FIT_FILL: i32 = 2;
 
-/// Decodes `len` bytes of PNG or JPEG; its slot, or -1 when they are not one.
-#[cfg(feature = "hashlink")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_bitmap_decode(bytes: *const vbyte, len: i32) -> i32 {
-    if bytes.is_null() || len <= 0 {
+/// Decodes PNG or JPEG bytes; the slot they are kept in, or -1 when they are not one.
+pub fn decode(data: &[u8]) -> i32 {
+    if data.is_empty() {
         return -1;
     }
-    let _blocking = crate::hl::Blocking::enter();
-    let data = unsafe { std::slice::from_raw_parts(bytes, len as usize) };
     let Ok(image) = blinc_image::DecoderRegistry::with_builtins().decode(data, None) else {
         return -1;
     };
@@ -55,76 +48,50 @@ pub unsafe extern "C" fn hl_blinc_bitmap_decode(bytes: *const vbyte, len: i32) -
         }
     }
 }
-#[cfg(feature = "hashlink")]
-define_prim!(hlp_blinc_bitmap_decode, hl_blinc_bitmap_decode, "Bi_i");
 
 /// The width, or with `height` the height, of the bitmap in `slot`; 0 when there is none.
-#[cfg(feature = "hashlink")]
-#[unsafe(no_mangle)]
-pub extern "C" fn hl_blinc_bitmap_size(slot: i32, height: bool) -> i32 {
+pub fn size(slot: i32, height: bool) -> i32 {
     let all = BITMAPS.lock().unwrap_or_else(|e| e.into_inner());
     all.get(slot.max(0) as usize)
         .and_then(|b| b.as_ref())
         .map_or(0, |b| if height { b.height } else { b.width } as i32)
 }
-#[cfg(feature = "hashlink")]
-define_prim!(hlp_blinc_bitmap_size, hl_blinc_bitmap_size, "ib_i");
 
 /// Frees the bitmap in `slot`, whose slot may then name another.
-#[cfg(feature = "hashlink")]
-#[unsafe(no_mangle)]
-pub extern "C" fn hl_blinc_bitmap_release(slot: i32) {
-    // A large bitmap's pixels take a while to give back, so they are dropped while blocking.
-    let _blocking = crate::hl::Blocking::enter();
+pub fn release(slot: i32) {
     let mut all = BITMAPS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(b) = all.get_mut(slot.max(0) as usize) {
         *b = None;
     }
 }
-#[cfg(feature = "hashlink")]
-define_prim!(hlp_blinc_bitmap_release, hl_blinc_bitmap_release, "i_v");
 
-/// Writes the bitmap in `slot` into `out`, `width` × `height` straight RGBA
-/// pixels, fitted by `fit`. False when there is no such bitmap.
-#[cfg(feature = "hashlink")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_bitmap_resample(
-    slot: i32,
-    width: i32,
-    height: i32,
-    fit: i32,
-    out: *mut vbyte,
-) -> bool {
-    if width <= 0 || height <= 0 || out.is_null() {
+/// Writes the bitmap in `slot` into `out`, `width` × `height` straight RGBA pixels, fitted by `fit`. False
+/// when there is no such bitmap or `out` is too small.
+pub fn resample_into(slot: i32, width: i32, height: i32, fit: i32, out: &mut [u8]) -> bool {
+    if width <= 0 || height <= 0 || out.len() < (width * height * 4) as usize {
         return false;
     }
-    let _blocking = crate::hl::Blocking::enter();
     let all = BITMAPS.lock().unwrap_or_else(|e| e.into_inner());
     let Some(b) = all.get(slot.max(0) as usize).and_then(|b| b.as_ref()) else {
         return false;
     };
-    let out = unsafe { std::slice::from_raw_parts_mut(out, (width * height * 4) as usize) };
-    resample(b, width as u32, height as u32, fit, out);
+    resample(
+        b,
+        width as u32,
+        height as u32,
+        fit,
+        &mut out[..(width * height * 4) as usize],
+    );
     true
 }
-#[cfg(feature = "hashlink")]
-define_prim!(
-    hlp_blinc_bitmap_resample,
-    hl_blinc_bitmap_resample,
-    "iiiiB_b"
-);
 
-/// Shrinks the bitmap in `slot` so that neither side is over `max_side`,
-/// keeping its shape, each side rounded to a multiple of 4 (so the texture
-/// made of it can be block-compressed); its full-size pixels are freed.
-/// False when there is no such bitmap or it is small enough already.
-#[cfg(feature = "hashlink")]
-#[unsafe(no_mangle)]
-pub extern "C" fn hl_blinc_bitmap_shrink(slot: i32, max_side: i32) -> bool {
+/// Shrinks the bitmap in `slot` so that neither side is over `max_side`, keeping its shape, each side
+/// rounded to a multiple of 4 (so the texture made of it can be block-compressed); its full-size pixels
+/// are freed. False when there is no such bitmap or it is small enough already.
+pub fn shrink(slot: i32, max_side: i32) -> bool {
     if max_side < 4 {
         return false;
     }
-    let _blocking = crate::hl::Blocking::enter();
     let mut all = BITMAPS.lock().unwrap_or_else(|e| e.into_inner());
     let Some(b) = all.get_mut(slot.max(0) as usize).and_then(|b| b.as_mut()) else {
         return false;
@@ -144,6 +111,68 @@ pub extern "C" fn hl_blinc_bitmap_shrink(slot: i32, max_side: i32) -> bool {
         height: h,
     };
     true
+}
+
+/// Decodes `len` bytes of PNG or JPEG; its slot, or -1 when they are not one.
+#[cfg(feature = "hashlink")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_bitmap_decode(bytes: *const vbyte, len: i32) -> i32 {
+    if bytes.is_null() || len <= 0 {
+        return -1;
+    }
+    let _blocking = crate::hl::Blocking::enter();
+    decode(unsafe { std::slice::from_raw_parts(bytes as *const u8, len as usize) })
+}
+#[cfg(feature = "hashlink")]
+define_prim!(hlp_blinc_bitmap_decode, hl_blinc_bitmap_decode, "Bi_i");
+
+#[cfg(feature = "hashlink")]
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_blinc_bitmap_size(slot: i32, height: bool) -> i32 {
+    size(slot, height)
+}
+#[cfg(feature = "hashlink")]
+define_prim!(hlp_blinc_bitmap_size, hl_blinc_bitmap_size, "ib_i");
+
+#[cfg(feature = "hashlink")]
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_blinc_bitmap_release(slot: i32) {
+    // A large bitmap's pixels take a while to give back, so they are dropped while blocking.
+    let _blocking = crate::hl::Blocking::enter();
+    release(slot);
+}
+#[cfg(feature = "hashlink")]
+define_prim!(hlp_blinc_bitmap_release, hl_blinc_bitmap_release, "i_v");
+
+#[cfg(feature = "hashlink")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_bitmap_resample(
+    slot: i32,
+    width: i32,
+    height: i32,
+    fit: i32,
+    out: *mut vbyte,
+) -> bool {
+    if width <= 0 || height <= 0 || out.is_null() {
+        return false;
+    }
+    let _blocking = crate::hl::Blocking::enter();
+    let out =
+        unsafe { std::slice::from_raw_parts_mut(out as *mut u8, (width * height * 4) as usize) };
+    resample_into(slot, width, height, fit, out)
+}
+#[cfg(feature = "hashlink")]
+define_prim!(
+    hlp_blinc_bitmap_resample,
+    hl_blinc_bitmap_resample,
+    "iiiiB_b"
+);
+
+#[cfg(feature = "hashlink")]
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_blinc_bitmap_shrink(slot: i32, max_side: i32) -> bool {
+    let _blocking = crate::hl::Blocking::enter();
+    shrink(slot, max_side)
 }
 #[cfg(feature = "hashlink")]
 define_prim!(hlp_blinc_bitmap_shrink, hl_blinc_bitmap_shrink, "ii_b");
