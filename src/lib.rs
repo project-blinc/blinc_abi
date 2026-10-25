@@ -21,6 +21,8 @@ pub mod tree;
 
 #[cfg(feature = "scene")]
 pub mod bitmap;
+#[cfg(feature = "caribou")]
+mod caribou;
 #[cfg(feature = "scene")]
 pub mod display_list;
 #[cfg(feature = "scene")]
@@ -42,6 +44,8 @@ pub mod node;
 mod notch;
 #[cfg(feature = "hashlink")]
 pub mod reactive;
+#[cfg(feature = "scene")]
+pub(crate) mod shared;
 #[cfg(feature = "scene")]
 pub mod svg;
 #[cfg(feature = "scene")]
