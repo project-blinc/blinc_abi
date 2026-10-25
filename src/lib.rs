@@ -10,7 +10,7 @@ static ALLOCATOR: alloc::BigBlocksMapped = alloc::BigBlocksMapped;
 
 pub mod context;
 pub mod css;
-#[cfg(feature = "hashlink")]
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 mod css_hl;
 pub mod graph;
 #[cfg(test)]
