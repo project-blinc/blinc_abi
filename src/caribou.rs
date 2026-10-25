@@ -10,8 +10,12 @@ use crate::shared::{
     NEXT_HANDLE, RELEASED_HANDLES, clear_children as clear, forget, id, release_handle, shared,
     subtree,
 };
-use crate::types::Value;
-use blinc_core::{Brush, Color, CornerRadius};
+use crate::types::{
+    self, Value, blur_value, clip_path_value, clip_polygon_value, glass_value, gradient_value,
+    hex_color, image_mapping, image_value, linear_gradient_value, shadow_value,
+    text_decoration_value,
+};
+use blinc_core::{Brush, CornerRadius, Transform};
 use caribou_abi::{Buffer, BufferMut, host::Text};
 use std::sync::atomic::Ordering;
 use taffy::prelude::{AvailableSpace, Size, Style};
@@ -328,20 +332,230 @@ pub struct StyleValue(Value);
 
 impl StyleValue {
     pub extern "C" fn color(hex: i32, alpha: f32) -> Box<StyleValue> {
-        Box::new(StyleValue(Value::Color(
-            Color::from_hex(hex as u32).with_alpha(alpha),
-        )))
+        Box::new(StyleValue(Value::Color(hex_color(hex, alpha))))
     }
 
     pub extern "C" fn brush_solid(hex: i32, alpha: f32) -> Box<StyleValue> {
-        Box::new(StyleValue(Value::Brush(Brush::Solid(
-            Color::from_hex(hex as u32).with_alpha(alpha),
-        ))))
+        Box::new(StyleValue(Value::Brush(Brush::Solid(hex_color(
+            hex, alpha,
+        )))))
+    }
+
+    /// A frosted-glass brush; `simple` nonzero is the cheaper blur.
+    pub extern "C" fn brush_glass(
+        blur: f32,
+        tint_hex: i32,
+        tint_alpha: f32,
+        simple: i32,
+        noise: f32,
+    ) -> Box<StyleValue> {
+        Box::new(StyleValue(glass_value(
+            blur,
+            tint_hex,
+            tint_alpha,
+            simple != 0,
+            noise,
+        )))
+    }
+
+    /// Sets a glass brush's aberration, 0 to 1, while it is being built.
+    pub extern "C" fn glass_aberration(this: &mut StyleValue, strength: f32) {
+        types::glass_aberration(&mut this.0, strength);
+    }
+
+    /// Sets a glass brush's bevel, 0 to 1; `inset` reverses its curvature.
+    pub extern "C" fn glass_bevel(this: &mut StyleValue, strength: f32, inset: bool) {
+        types::glass_bevel(&mut this.0, strength, inset);
+    }
+
+    /// What is behind the box, blurred by `radius`, tinted when `tint_alpha` is above zero.
+    pub extern "C" fn brush_blur(radius: f32, tint_hex: i32, tint_alpha: f32) -> Box<StyleValue> {
+        Box::new(StyleValue(blur_value(radius, tint_hex, tint_alpha)))
+    }
+
+    /// An image brush; `fit` is 0 cover, 1 contain, 2 fill, 3 tile.
+    pub extern "C" fn brush_image(src: Text, fit: i32) -> Box<StyleValue> {
+        Box::new(StyleValue(image_value(src.as_str().to_string(), fit)))
+    }
+
+    /// Positions an image brush: fractions `x`, `y` and pixel offsets `ox`, `oy`, and the repeat axes (0 to 3).
+    pub extern "C" fn brush_image_mapping(
+        this: &mut StyleValue,
+        x: f32,
+        y: f32,
+        ox: f32,
+        oy: f32,
+        repeat: i32,
+    ) {
+        image_mapping(&mut this.0, x, y, ox, oy, repeat);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub extern "C" fn brush_linear_gradient(
+        sx: f32,
+        sy: f32,
+        ex: f32,
+        ey: f32,
+        from_hex: i32,
+        from_alpha: f32,
+        to_hex: i32,
+        to_alpha: f32,
+    ) -> Box<StyleValue> {
+        Box::new(StyleValue(linear_gradient_value(
+            sx, sy, ex, ey, from_hex, from_alpha, to_hex, to_alpha,
+        )))
+    }
+
+    /// A gradient with no stops: linear from (x1, y1) to (x2, y2), or radial about (x1, y1) of radius x2.
+    pub extern "C" fn brush_gradient(
+        radial: bool,
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        bbox: bool,
+    ) -> Box<StyleValue> {
+        Box::new(StyleValue(gradient_value(radial, x1, y1, x2, y2, bbox)))
+    }
+
+    /// Adds a stop at `offset`, 0 to 1, to a gradient brush.
+    pub extern "C" fn gradient_stop(this: &mut StyleValue, offset: f32, hex: i32, alpha: f32) {
+        types::gradient_stop(&mut this.0, offset, hex, alpha);
     }
 
     pub extern "C" fn corner_radius(tl: f32, tr: f32, br: f32, bl: f32) -> Box<StyleValue> {
         Box::new(StyleValue(Value::Radius(CornerRadius::new(tl, tr, br, bl))))
     }
+
+    /// Each corner's superellipse exponent, top-left first; `locked` keeps it from the theme's squircle.
+    pub extern "C" fn corner_shape(
+        tl: f32,
+        tr: f32,
+        br: f32,
+        bl: f32,
+        locked: bool,
+    ) -> Box<StyleValue> {
+        Box::new(StyleValue(Value::CornerShape([tl, tr, br, bl], locked)))
+    }
+
+    pub extern "C" fn transform_identity() -> Box<StyleValue> {
+        Box::new(StyleValue(Value::Transform(Transform::identity())))
+    }
+
+    pub extern "C" fn transform_translate(x: f32, y: f32) -> Box<StyleValue> {
+        Box::new(StyleValue(Value::Transform(Transform::translate(x, y))))
+    }
+
+    /// The 2D affine `x' = a*x + c*y + tx`, `y' = b*x + d*y + ty`.
+    pub extern "C" fn transform_affine(
+        a: f32,
+        b: f32,
+        c: f32,
+        d: f32,
+        tx: f32,
+        ty: f32,
+    ) -> Box<StyleValue> {
+        Box::new(StyleValue(Value::Transform(Transform::Affine2D(
+            blinc_core::Affine2D {
+                elements: [a, b, c, d, tx, ty],
+            },
+        ))))
+    }
+
+    /// A shadow of one layer, inside the box when `inset`; `shadow_push` adds more.
+    pub extern "C" fn shadow(
+        offset_x: f32,
+        offset_y: f32,
+        blur: f32,
+        spread: f32,
+        hex: i32,
+        alpha: f32,
+        inset: bool,
+    ) -> Box<StyleValue> {
+        Box::new(StyleValue(shadow_value(
+            offset_x, offset_y, blur, spread, hex, alpha, inset,
+        )))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub extern "C" fn shadow_push(
+        this: &mut StyleValue,
+        offset_x: f32,
+        offset_y: f32,
+        blur: f32,
+        spread: f32,
+        hex: i32,
+        alpha: f32,
+        inset: bool,
+    ) {
+        types::shadow_push(
+            &mut this.0,
+            offset_x,
+            offset_y,
+            blur,
+            spread,
+            hex,
+            alpha,
+            inset,
+        );
+    }
+
+    /// `lines` is underline, overline and line-through as bits; `style` 0 solid, 1 double, 2 dotted, 3 dashed.
+    /// A negative alpha is no colour of its own, a negative thickness or a NaN offset none.
+    pub extern "C" fn text_decoration(
+        lines: i32,
+        style: i32,
+        hex: i32,
+        alpha: f32,
+        thickness: f32,
+        offset: f32,
+    ) -> Box<StyleValue> {
+        Box::new(StyleValue(text_decoration_value(
+            lines, style, hex, alpha, thickness, offset,
+        )))
+    }
+
+    /// A `clip-path` shape (see `types::clip_path_value`); `values` is f32s, four at most. A negative kind is no clip.
+    pub extern "C" fn clip_path(
+        kind: i32,
+        values: Buffer,
+        percent: i32,
+        none: i32,
+        round: f32,
+    ) -> Box<StyleValue> {
+        let floats = floats_of(values);
+        Box::new(StyleValue(clip_path_value(
+            kind, &floats, percent, none, round,
+        )))
+    }
+
+    /// A polygon clip: `count` points as f32 pairs; a nonzero byte of `percent` makes that value a percentage.
+    pub extern "C" fn clip_polygon(
+        values: Buffer,
+        percent: Buffer,
+        count: i32,
+        path: bool,
+    ) -> Box<StyleValue> {
+        let floats = floats_of(values);
+        let flags = unsafe { percent.as_slice() }.to_vec();
+        Box::new(StyleValue(clip_polygon_value(&floats, &flags, count, path)))
+    }
+
+    /// The clip filling by the even-odd rule, as a new value; a value that is no clip gives none.
+    pub extern "C" fn clip_even_odd(this: &StyleValue) -> Box<StyleValue> {
+        Box::new(StyleValue(match &this.0 {
+            Value::ClipPath(path, _) => Value::ClipPath(path.clone(), true),
+            _ => Value::None,
+        }))
+    }
+}
+
+/// The f32s packed in `buffer`, four bytes each.
+fn floats_of(buffer: Buffer) -> Vec<f32> {
+    unsafe { buffer.as_slice() }
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .collect()
 }
 
 caribou_abi::plugin! {
@@ -378,7 +592,26 @@ caribou_abi::plugin! {
     class StyleValue {
         fn color(i32, f32) -> Box<StyleValue>;
         fn brush_solid(i32, f32) -> Box<StyleValue>;
+        fn brush_glass(f32, i32, f32, i32, f32) -> Box<StyleValue>;
+        fn glass_aberration(&mut StyleValue, f32);
+        fn glass_bevel(&mut StyleValue, f32, bool);
+        fn brush_blur(f32, i32, f32) -> Box<StyleValue>;
+        fn brush_image(Text, i32) -> Box<StyleValue>;
+        fn brush_image_mapping(&mut StyleValue, f32, f32, f32, f32, i32);
+        fn brush_linear_gradient(f32, f32, f32, f32, i32, f32, i32, f32) -> Box<StyleValue>;
+        fn brush_gradient(bool, f32, f32, f32, f32, bool) -> Box<StyleValue>;
+        fn gradient_stop(&mut StyleValue, f32, i32, f32);
         fn corner_radius(f32, f32, f32, f32) -> Box<StyleValue>;
+        fn corner_shape(f32, f32, f32, f32, bool) -> Box<StyleValue>;
+        fn transform_identity() -> Box<StyleValue>;
+        fn transform_translate(f32, f32) -> Box<StyleValue>;
+        fn transform_affine(f32, f32, f32, f32, f32, f32) -> Box<StyleValue>;
+        fn shadow(f32, f32, f32, f32, i32, f32, bool) -> Box<StyleValue>;
+        fn shadow_push(&mut StyleValue, f32, f32, f32, f32, i32, f32, bool);
+        fn text_decoration(i32, i32, i32, f32, f32, f32) -> Box<StyleValue>;
+        fn clip_path(i32, Buffer, i32, i32, f32) -> Box<StyleValue>;
+        fn clip_polygon(Buffer, Buffer, i32, bool) -> Box<StyleValue>;
+        fn clip_even_odd(&StyleValue) -> Box<StyleValue>;
     }
 }
 
