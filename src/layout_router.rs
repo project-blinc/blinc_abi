@@ -16,11 +16,9 @@
 #[cfg(feature = "hashlink")]
 use crate::hl::{handle_ref, opt_string_from};
 use crate::layout_props;
-#[cfg(feature = "hashlink")]
 use crate::reactive::{AnyComputed, AnySignal, Slot};
 use crate::types::{GlassEffects, Value};
 use blinc_core::CornerShape;
-#[cfg(feature = "hashlink")]
 use blinc_layout::binding::{
     register_typed, register_typed_computed, register_typed_layout, register_typed_layout_computed,
 };
@@ -37,11 +35,8 @@ use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 use taffy::prelude::*;
 
-#[cfg(feature = "hashlink")]
 const KIND_CONST: i32 = 0;
-#[cfg(feature = "hashlink")]
 const KIND_SIGNAL: i32 = 1;
-#[cfg(feature = "hashlink")]
 const KIND_COMPUTED: i32 = 2;
 
 /// `PropertyId` in declaration order, which `ashui.layout.PropertyId` mirrors.
@@ -326,11 +321,25 @@ unsafe fn bind<T: Slot>(
     comp: *mut c_void,
     write: Write<T>,
 ) {
+    let sig = unsafe { handle_ref::<AnySignal>(sig) };
+    let comp = unsafe { handle_ref::<AnyComputed>(comp) };
+    bind_to(node, prop, kind, constant, sig, comp, write);
+}
+
+/// Connects `prop` of `node` to a constant, a signal or a computed, as `kind` says.
+fn bind_to<T: Slot>(
+    node: LayoutNodeId,
+    prop: PropertyId,
+    kind: i32,
+    constant: T,
+    sig: Option<&AnySignal>,
+    comp: Option<&AnyComputed>,
+    write: Write<T>,
+) {
     match kind {
         KIND_CONST => write.queue(node, prop, constant),
         KIND_SIGNAL => {
-            let Some(state) = (unsafe { handle_ref::<AnySignal>(sig) }).and_then(T::state_view)
-            else {
+            let Some(state) = sig.and_then(T::state_view) else {
                 return;
             };
             match &write {
@@ -354,8 +363,7 @@ unsafe fn bind<T: Slot>(
             write.queue(node, prop, state.try_get().unwrap_or_default());
         }
         KIND_COMPUTED => {
-            let Some(c) = (unsafe { handle_ref::<AnyComputed>(comp) }).and_then(T::computed_view)
-            else {
+            let Some(c) = comp.and_then(T::computed_view) else {
                 return;
             };
             match &write {
@@ -589,6 +597,21 @@ pub(crate) fn apply_f32_const(node: u64, raw: i32, value: f32) {
     }
 }
 
+/// Connects a f32 property of `node` to `signal` or `computed` (the one that is given).
+#[cfg(feature = "caribou")]
+pub(crate) fn bind_f32(
+    node: u64,
+    raw: i32,
+    signal: Option<&AnySignal>,
+    computed: Option<&AnyComputed>,
+) {
+    let node = LayoutNodeId::from_raw(node);
+    if let Some((prop, write)) = f32_target(node, raw) {
+        let kind = if signal.is_some() { KIND_SIGNAL } else { KIND_COMPUTED };
+        bind_to(node, prop, kind, <f32>::default(), signal, computed, write);
+    }
+}
+
 #[cfg(feature = "hashlink")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_apply_f32(
@@ -719,6 +742,21 @@ pub(crate) fn apply_i32_const(node: u64, raw: i32, value: i32) {
     }
 }
 
+/// Connects a i32 property of `node` to `signal` or `computed` (the one that is given).
+#[cfg(feature = "caribou")]
+pub(crate) fn bind_i32(
+    node: u64,
+    raw: i32,
+    signal: Option<&AnySignal>,
+    computed: Option<&AnyComputed>,
+) {
+    let node = LayoutNodeId::from_raw(node);
+    if let Some((prop, write)) = i32_target(node, raw) {
+        let kind = if signal.is_some() { KIND_SIGNAL } else { KIND_COMPUTED };
+        bind_to(node, prop, kind, <i32>::default(), signal, computed, write);
+    }
+}
+
 #[cfg(feature = "hashlink")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_apply_i32(
@@ -840,6 +878,21 @@ pub(crate) fn apply_value_const(node: u64, raw: i32, value: Value) {
     }
 }
 
+/// Connects a value property of `node` to `signal` or `computed` (the one that is given).
+#[cfg(feature = "caribou")]
+pub(crate) fn bind_value(
+    node: u64,
+    raw: i32,
+    signal: Option<&AnySignal>,
+    computed: Option<&AnyComputed>,
+) {
+    let node = LayoutNodeId::from_raw(node);
+    if let Some((prop, write)) = value_target(node, raw) {
+        let kind = if signal.is_some() { KIND_SIGNAL } else { KIND_COMPUTED };
+        bind_to(node, prop, kind, <Value>::default(), signal, computed, write);
+    }
+}
+
 #[cfg(feature = "hashlink")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_apply_value(
@@ -919,6 +972,21 @@ pub(crate) fn apply_string_const(node: u64, raw: i32, value: Option<String>) {
     let node = LayoutNodeId::from_raw(node);
     if let Some((prop, write)) = string_target(node, raw) {
         write.queue(node, prop, value);
+    }
+}
+
+/// Connects a string property of `node` to `signal` or `computed` (the one that is given).
+#[cfg(feature = "caribou")]
+pub(crate) fn bind_string(
+    node: u64,
+    raw: i32,
+    signal: Option<&AnySignal>,
+    computed: Option<&AnyComputed>,
+) {
+    let node = LayoutNodeId::from_raw(node);
+    if let Some((prop, write)) = string_target(node, raw) {
+        let kind = if signal.is_some() { KIND_SIGNAL } else { KIND_COMPUTED };
+        bind_to(node, prop, kind, <Option<String>>::default(), signal, computed, write);
     }
 }
 

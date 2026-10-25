@@ -8,6 +8,7 @@
 use crate::css::Stylesheet;
 use crate::css::cascade::States;
 use crate::css::styled::Styles;
+use crate::caribou_reactive::{Computed, Effects, Signal};
 use crate::css_hl;
 use crate::hit;
 use crate::ops::{self, TextSpec};
@@ -513,6 +514,62 @@ impl Tree {
         }
     }
 
+    /// Binds a f32 property of `node` to `signal`: it follows the signal from the next `flush`.
+    pub extern "C" fn bind_f32(this: &Tree, node: i64, prop: i32, signal: &Signal) {
+        if !this.released {
+            crate::layout_router::bind_f32(node as u64, prop, Some(&signal.0), None);
+        }
+    }
+
+    /// Binds a f32 property of `node` to `computed`: it follows the computed from the next `flush`.
+    pub extern "C" fn bind_f32_computed(this: &Tree, node: i64, prop: i32, computed: &Computed) {
+        if !this.released {
+            crate::layout_router::bind_f32(node as u64, prop, None, Some(&computed.0));
+        }
+    }
+
+    /// Binds a i32 property of `node` to `signal`: it follows the signal from the next `flush`.
+    pub extern "C" fn bind_i32(this: &Tree, node: i64, prop: i32, signal: &Signal) {
+        if !this.released {
+            crate::layout_router::bind_i32(node as u64, prop, Some(&signal.0), None);
+        }
+    }
+
+    /// Binds a i32 property of `node` to `computed`: it follows the computed from the next `flush`.
+    pub extern "C" fn bind_i32_computed(this: &Tree, node: i64, prop: i32, computed: &Computed) {
+        if !this.released {
+            crate::layout_router::bind_i32(node as u64, prop, None, Some(&computed.0));
+        }
+    }
+
+    /// Binds a string property of `node` to `signal`: it follows the signal from the next `flush`.
+    pub extern "C" fn bind_string(this: &Tree, node: i64, prop: i32, signal: &Signal) {
+        if !this.released {
+            crate::layout_router::bind_string(node as u64, prop, Some(&signal.0), None);
+        }
+    }
+
+    /// Binds a string property of `node` to `computed`: it follows the computed from the next `flush`.
+    pub extern "C" fn bind_string_computed(this: &Tree, node: i64, prop: i32, computed: &Computed) {
+        if !this.released {
+            crate::layout_router::bind_string(node as u64, prop, None, Some(&computed.0));
+        }
+    }
+
+    /// Binds a value property of `node` to `signal`: it follows the signal from the next `flush`.
+    pub extern "C" fn bind_value(this: &Tree, node: i64, prop: i32, signal: &Signal) {
+        if !this.released {
+            crate::layout_router::bind_value(node as u64, prop, Some(&signal.0), None);
+        }
+    }
+
+    /// Binds a value property of `node` to `computed`: it follows the computed from the next `flush`.
+    pub extern "C" fn bind_value_computed(this: &Tree, node: i64, prop: i32, computed: &Computed) {
+        if !this.released {
+            crate::layout_router::bind_value(node as u64, prop, None, Some(&computed.0));
+        }
+    }
+
     /// Puts a property back to what a new node has.
     pub extern "C" fn unset(this: &Tree, node: i64, prop: i32) {
         if !this.released {
@@ -531,6 +588,7 @@ impl Tree {
         for handle in handles {
             release_handle(tree, handle);
         }
+        crate::reactive::collect_released();
         crate::shared::apply_pending(tree)
     }
 
@@ -866,6 +924,12 @@ impl Resources {
 pub struct StyleValue(Value);
 
 impl StyleValue {
+    pub(crate) fn inner(&self) -> &Value {
+        &self.0
+    }
+}
+
+impl StyleValue {
     pub extern "C" fn color(hex: i32, alpha: f32) -> Box<StyleValue> {
         Box::new(StyleValue(Value::Color(hex_color(hex, alpha))))
     }
@@ -1135,9 +1199,67 @@ caribou_abi::plugin! {
         fn apply_i32(&Tree, i64, i32, i32);
         fn apply_string(&Tree, i64, i32, Text);
         fn apply_value(&Tree, i64, i32, &StyleValue);
+        fn bind_f32(&Tree, i64, i32, &Signal);
+        fn bind_f32_computed(&Tree, i64, i32, &Computed);
+        fn bind_i32(&Tree, i64, i32, &Signal);
+        fn bind_i32_computed(&Tree, i64, i32, &Computed);
+        fn bind_string(&Tree, i64, i32, &Signal);
+        fn bind_string_computed(&Tree, i64, i32, &Computed);
+        fn bind_value(&Tree, i64, i32, &Signal);
+        fn bind_value_computed(&Tree, i64, i32, &Computed);
         fn unset(&Tree, i64, i32);
         fn flush(&Tree) -> bool;
         fn dispose(&mut Tree);
+    }
+    class Signal {
+        fn int(i32) -> Box<Signal>;
+        fn float(f32) -> Box<Signal>;
+        fn double(f64) -> Box<Signal>;
+        fn bool(bool) -> Box<Signal>;
+        fn text(Text) -> Box<Signal>;
+        fn none() -> Box<Signal>;
+        fn value(&StyleValue) -> Box<Signal>;
+        fn get_int(&Signal) -> i32;
+        fn get_float(&Signal) -> f32;
+        fn get_double(&Signal) -> f64;
+        fn get_bool(&Signal) -> bool;
+        fn get_text(&Signal) -> Text;
+        fn has_text(&Signal) -> bool;
+        fn text_version(&Signal) -> i32;
+        fn set_int(&Signal, i32);
+        fn set_float(&Signal, f32);
+        fn set_double(&Signal, f64);
+        fn set_bool(&Signal, bool);
+        fn set_text(&Signal, Text);
+        fn set_none(&Signal);
+        fn set_value(&Signal, &StyleValue);
+        fn touch(&Signal);
+    }
+    class Computed {
+        fn int(caribou_abi::Value) -> Box<Computed>;
+        fn float(caribou_abi::Value) -> Box<Computed>;
+        fn double(caribou_abi::Value) -> Box<Computed>;
+        fn bool(caribou_abi::Value) -> Box<Computed>;
+        fn text(caribou_abi::Value) -> Box<Computed>;
+        fn value(caribou_abi::Value) -> Box<Computed>;
+        fn return_value(&StyleValue);
+        fn get_int(&Computed) -> i32;
+        fn get_float(&Computed) -> f32;
+        fn get_double(&Computed) -> f64;
+        fn get_bool(&Computed) -> bool;
+        fn get_text(&Computed) -> Text;
+        fn has_text(&Computed) -> bool;
+        fn touch(&Computed);
+        fn release(&Computed);
+    }
+    class Effects {
+        fn create() -> i32;
+        fn due(BufferMut) -> i32;
+        fn begin(i32) -> bool;
+        fn end(i32);
+        fn release(i32);
+        fn is_dirty() -> bool;
+        fn clear_dirty();
     }
     class Css {
         fn new() -> Box<Css>;
