@@ -497,6 +497,12 @@ pub fn test(tree: &Tree, root: LayoutNodeId, x: f32, y: f32) -> Vec<Hit> {
     );
     out
 }
+/// The visible nodes under `root`, `root` first, in document order.
+pub fn document_order(tree: &Tree, root: LayoutNodeId) -> Vec<u64> {
+    let mut out = Vec::new();
+    order(tree, root, &mut out, false);
+    out
+}
 pub fn paint_order(tree: &Tree, root: LayoutNodeId) -> Vec<u64> {
     let mut out = Vec::new();
     order(tree, root, &mut out, true);

@@ -20,18 +20,10 @@ fn plain(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     }
 }
 
-/// Registers the faces in `len` bytes of TTF, OpenType, a collection or WOFF2 as installed
-/// fonts, found by the family names they carry; how many faces it added. A page has no system
-/// fonts, so its program bundles its own.
-#[cfg(feature = "hashlink")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_font_register(bytes: *const vbyte, len: i32) -> i32 {
-    if bytes.is_null() || len <= 0 {
-        return 0;
-    }
-    let _blocking = crate::hl::Blocking::enter();
-    let data = unsafe { std::slice::from_raw_parts(bytes, len as usize) }.to_vec();
-    let Ok(data) = plain(data) else {
+/// Registers the faces in TTF, OpenType, collection or WOFF2 `bytes` as installed fonts, found by the family
+/// names they carry; how many faces it added. A page has no system fonts, so its program bundles its own.
+pub fn register(bytes: Vec<u8>) -> i32 {
+    let Ok(data) = plain(bytes) else {
         return 0;
     };
     let registry = global_font_registry();
@@ -42,6 +34,16 @@ pub unsafe extern "C" fn hl_blinc_font_register(bytes: *const vbyte, len: i32) -
         registry.invalidate_generic_cache();
     }
     added as i32
+}
+
+#[cfg(feature = "hashlink")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_font_register(bytes: *const vbyte, len: i32) -> i32 {
+    if bytes.is_null() || len <= 0 {
+        return 0;
+    }
+    let _blocking = crate::hl::Blocking::enter();
+    register(unsafe { std::slice::from_raw_parts(bytes, len as usize) }.to_vec())
 }
 #[cfg(feature = "hashlink")]
 define_prim!(hlp_blinc_font_register, hl_blinc_font_register, "Bi_i");
