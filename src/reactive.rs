@@ -7,17 +7,22 @@
 //! result back through `blinc_return_*` rather than as a return value, so no
 //! value has to be boxed through `hl_dyn_call`.
 
+#[cfg(feature = "hashlink")]
 use crate::hl::{Rooted, call_void, handle_ref, into_handle, opt_string_from, string_to_hl};
 use crate::types::Value;
 use blinc_core::reactive::{
     Computed, DerivedId, Effect, EffectId, SignalId, State, begin_host_effect, computed,
-    dispose_derived, dispose_host_effect, dispose_signal, effect, end_host_effect,
+    dispose_derived, dispose_host_effect, dispose_signal, end_host_effect,
     global_dirty_flag, global_graph, host_effect, signal, take_due_host_effects,
 };
+#[cfg(feature = "hashlink")]
+use blinc_core::reactive::effect;
 use blinc_layout::binding::with_registry;
+#[cfg(feature = "hashlink")]
 use hl_abi::{define_prim, vbyte};
 use std::any::Any;
 use std::cell::RefCell;
+#[cfg(feature = "hashlink")]
 use std::ffi::c_void;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -84,7 +89,7 @@ impl AnyComputed {
         }
     }
 
-    fn release(&self) {
+    pub(crate) fn release(&self) {
         RELEASED_DERIVEDS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -225,6 +230,7 @@ impl Slot for f32 {
     }
 }
 
+#[cfg(feature = "hashlink")]
 /// The state behind a signal handle, if it holds a `T`.
 ///
 /// # Safety
@@ -233,6 +239,7 @@ pub unsafe fn state_of<'a, T: Slot>(h: *mut c_void) -> Option<&'a State<T>> {
     unsafe { handle_ref::<AnySignal>(h) }.and_then(T::state)
 }
 
+#[cfg(feature = "hashlink")]
 /// The computed behind a computed handle, if it holds a `T`.
 ///
 /// # Safety
@@ -241,12 +248,12 @@ pub unsafe fn computed_of<'a, T: Slot>(h: *mut c_void) -> Option<&'a Computed<T>
     unsafe { handle_ref::<AnyComputed>(h) }.and_then(T::computed)
 }
 
-fn new_state<T: Clone + Send + 'static>(initial: T) -> State<T> {
+pub(crate) fn new_state<T: Clone + Send + 'static>(initial: T) -> State<T> {
     State::new(signal(initial), global_graph(), global_dirty_flag())
 }
 
 /// Reads through `Signal::get`, not `State::get`; see the module comment.
-fn read<T: Slot>(state: &State<T>) -> T {
+pub(crate) fn read<T: Slot>(state: &State<T>) -> T {
     state.signal().get()
 }
 
@@ -254,7 +261,7 @@ fn read<T: Slot>(state: &State<T>) -> T {
 // Read without dependency tracking: setting a signal must not subscribe a host
 // effect to it. An equal write is complete at this read; a changed write still
 // uses State::set, including all of Blinc's binding notifications.
-trait Primitive: Slot + Copy {
+pub(crate) trait Primitive: Slot + Copy {
     fn same(a: Self, b: Self) -> bool;
 }
 
@@ -273,7 +280,7 @@ primitive!(bool, |a, b| a == b);
 primitive!(f32, |a: f32, b: f32| a.to_bits() == b.to_bits());
 primitive!(f64, |a: f64, b: f64| a.to_bits() == b.to_bits());
 
-fn set_primitive<T: Primitive>(state: &State<T>, value: T) {
+pub(crate) fn set_primitive<T: Primitive>(state: &State<T>, value: T) {
     let unchanged = {
         let graph = global_graph();
         let graph = graph.lock().unwrap();
@@ -292,31 +299,41 @@ thread_local! {
     static RETURNED: RefCell<Option<Box<dyn Any>>> = const { RefCell::new(None) };
 }
 
-fn give<T: 'static>(v: T) {
+pub(crate) fn give<T: 'static>(v: T) {
     RETURNED.with(|r| *r.borrow_mut() = Some(Box::new(v)));
 }
 
-fn take<T: 'static>() -> Option<T> {
+pub(crate) fn take<T: 'static>() -> Option<T> {
     RETURNED
         .with(|r| r.borrow_mut().take())
         .and_then(|b| b.downcast::<T>().ok())
         .map(|b| *b)
 }
 
+/// A computed whose value is what `f` returns.
+pub(crate) fn computed_with<T: Slot>(f: impl Fn() -> T + Send + Sync + 'static) -> Computed<T> {
+    computed(move |_graph| f())
+}
+
+#[cfg(feature = "hashlink")]
 /// A computed whose value is whatever `closure` hands back. A closure that
 /// throws or returns nothing leaves the default.
 fn computed_from<T: Slot>(closure: *mut c_void) -> Computed<T> {
     let closure = Rooted::new(closure);
-    computed(move |_graph| {
+    computed_with(move || {
         take::<T>();
         unsafe { call_void(closure.get()) };
         take::<T>().unwrap_or_default()
     })
 }
 
-fn computed_value<T: Slot>(c: &Computed<T>) -> T {
+pub(crate) fn computed_value<T: Slot>(c: &Computed<T>) -> T {
     c.try_get().unwrap_or_default()
 }
+
+#[cfg(feature = "hashlink")]
+mod exports {
+    use super::*;
 
 // ============================================================================
 // NUMERIC SIGNALS
@@ -747,6 +764,8 @@ define_prim!(
     "PXblinc_effect__v"
 );
 
+}
+
 // ============================================================================
 // HOST-RUN EFFECTS
 // ============================================================================
@@ -809,8 +828,7 @@ fn collect_released_host_effects() {
 /// A new host effect's slot. It starts due; its first run is the caller's,
 /// between `begin` and `end`. Not to be called while the graph is locked:
 /// from inside a computed's closure.
-#[unsafe(no_mangle)]
-pub extern "C" fn hl_blinc_host_effect_new() -> i32 {
+pub fn host_effect_new() -> i32 {
     // Made before the table is locked: making it flushes the graph, which may run closure effects into Haxe.
     let id = host_effect().id();
     let mut h = host_effects();
@@ -827,13 +845,11 @@ pub extern "C" fn hl_blinc_host_effect_new() -> i32 {
     h.by_id.insert(id, slot);
     slot as i32
 }
-define_prim!(hlp_blinc_host_effect_new, hl_blinc_host_effect_new, "_i");
 
 /// Writes up to `capacity` due host effects' slots into `out`, in the order
 /// they became due, and returns how many. Call again while it fills `out`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_host_effects_due(out: *mut vbyte, capacity: i32) -> i32 {
-    if out.is_null() || capacity <= 0 {
+pub fn host_effects_due(out: &mut [i32]) -> i32 {
+    if out.is_empty() {
         return 0;
     }
     if host_effects().pending.is_empty() {
@@ -852,45 +868,30 @@ pub unsafe extern "C" fn hl_blinc_host_effects_due(out: *mut vbyte, capacity: i3
         }
     }
     let mut h = host_effects();
-    let n = h.pending.len().min(capacity as usize);
-    let out = unsafe { std::slice::from_raw_parts_mut(out as *mut i32, n) };
-    for o in out.iter_mut() {
+    let n = h.pending.len().min(out.len());
+    for o in out[..n].iter_mut() {
         *o = h.pending.pop_front().map_or(-1, |s| s as i32);
     }
     n as i32
 }
-define_prim!(
-    hlp_blinc_host_effects_due,
-    hl_blinc_host_effects_due,
-    "Bi_i"
-);
 
 /// Opens the effect in `slot` for its body: what it reads until `end` is
 /// what it depends on. False for a slot with no effect.
-#[unsafe(no_mangle)]
-pub extern "C" fn hl_blinc_host_effect_begin(slot: i32) -> bool {
+pub fn host_effect_begin(slot: i32) -> bool {
     host_effect_id(slot).is_some_and(begin_host_effect)
 }
-define_prim!(
-    hlp_blinc_host_effect_begin,
-    hl_blinc_host_effect_begin,
-    "i_b"
-);
 
 /// Closes the effect in `slot`, and applies the signal writes its body made.
 /// Called on every way out of the body, an exception's included.
-#[unsafe(no_mangle)]
-pub extern "C" fn hl_blinc_host_effect_end(slot: i32) {
+pub fn host_effect_end(slot: i32) {
     if let Some(id) = host_effect_id(slot) {
         end_host_effect(id);
     }
 }
-define_prim!(hlp_blinc_host_effect_end, hl_blinc_host_effect_end, "i_v");
 
 /// Releases the effect in `slot`; the next flush removes it from the graph,
 /// and the slot may then name another.
-#[unsafe(no_mangle)]
-pub extern "C" fn hl_blinc_host_effect_release(slot: i32) {
+pub fn host_effect_release(slot: i32) {
     let mut h = host_effects();
     if h.slots
         .get(slot.max(0) as usize)
@@ -902,25 +903,79 @@ pub extern "C" fn hl_blinc_host_effect_release(slot: i32) {
         h.released.push(slot as u32);
     }
 }
-define_prim!(
-    hlp_blinc_host_effect_release,
-    hl_blinc_host_effect_release,
-    "i_v"
-);
 
 // ============================================================================
 // RENDER LOOP
 // ============================================================================
 
 /// Whether any state changed since the last `blinc_clear_dirty`.
-#[unsafe(no_mangle)]
-pub extern "C" fn hl_blinc_is_dirty() -> bool {
+pub fn is_dirty() -> bool {
     global_dirty_flag().load(Ordering::Relaxed)
 }
-define_prim!(hlp_blinc_is_dirty, hl_blinc_is_dirty, "P_b");
 
-#[unsafe(no_mangle)]
-pub extern "C" fn hl_blinc_clear_dirty() {
+pub fn clear_dirty() {
     global_dirty_flag().store(false, Ordering::Relaxed);
 }
-define_prim!(hlp_blinc_clear_dirty, hl_blinc_clear_dirty, "P_v");
+
+#[cfg(feature = "hashlink")]
+mod host_exports {
+    use super::*;
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn hl_blinc_host_effect_new() -> i32 {
+        host_effect_new()
+    }
+    define_prim!(hlp_blinc_host_effect_new, hl_blinc_host_effect_new, "_i");
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_host_effects_due(out: *mut vbyte, capacity: i32) -> i32 {
+        if out.is_null() || capacity <= 0 {
+            return 0;
+        }
+        let out = unsafe { std::slice::from_raw_parts_mut(out as *mut i32, capacity as usize) };
+        host_effects_due(out)
+    }
+    define_prim!(
+        hlp_blinc_host_effects_due,
+        hl_blinc_host_effects_due,
+        "Bi_i"
+    );
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn hl_blinc_host_effect_begin(slot: i32) -> bool {
+        host_effect_begin(slot)
+    }
+    define_prim!(
+        hlp_blinc_host_effect_begin,
+        hl_blinc_host_effect_begin,
+        "i_b"
+    );
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn hl_blinc_host_effect_end(slot: i32) {
+        host_effect_end(slot)
+    }
+    define_prim!(hlp_blinc_host_effect_end, hl_blinc_host_effect_end, "i_v");
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn hl_blinc_host_effect_release(slot: i32) {
+        host_effect_release(slot)
+    }
+    define_prim!(
+        hlp_blinc_host_effect_release,
+        hl_blinc_host_effect_release,
+        "i_v"
+    );
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn hl_blinc_is_dirty() -> bool {
+        is_dirty()
+    }
+    define_prim!(hlp_blinc_is_dirty, hl_blinc_is_dirty, "P_b");
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn hl_blinc_clear_dirty() {
+        clear_dirty()
+    }
+    define_prim!(hlp_blinc_clear_dirty, hl_blinc_clear_dirty, "P_v");
+}
