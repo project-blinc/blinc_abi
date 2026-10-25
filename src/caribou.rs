@@ -149,17 +149,8 @@ impl Tree {
     /// Writes the node's absolute `x, y, width, height` as four f32s into `out`. False, with `out`
     /// untouched, for a node not laid out or a buffer under sixteen bytes.
     pub extern "C" fn get_bounds(this: &Tree, node: i64, out: BufferMut) -> bool {
-        if this.released || out.len() < 16 {
-            return false;
-        }
-        let Some(b) = shared().layout.get_absolute_bounds(id(node as u64)) else {
-            return false;
-        };
-        let out = out.as_mut_ptr() as *mut f32;
-        for (i, v) in [b.x, b.y, b.width, b.height].into_iter().enumerate() {
-            unsafe { out.add(i).write_unaligned(v) };
-        }
-        true
+        !this.released
+            && ops::bounds(shared(), node as u64).is_some_and(|values| put_floats(&values, out))
     }
 
     /// A text node of `content` in the named font (none for the system face), `flags` bit 0 wrapping and bit 1 italic.
@@ -266,6 +257,132 @@ impl Tree {
             at.write_unaligned(lines);
             at.add(1).write_unaligned(overflow);
         }
+    }
+
+    /// Packs the primitives to draw under `root` into `out` (see `display_list`). `params` is nine f32s: eight in
+    /// (the device pixels per layout unit, the theme's corner n, smoothing threshold and full radius, then the
+    /// default text colour as straight RGBA) and room for a ninth, where the number of records to draw is
+    /// written. Returns how many records the list takes, which may be more than `out` holds: grow it and ask again.
+    pub extern "C" fn display_list(
+        this: &Tree,
+        root: i64,
+        params: BufferMut,
+        out: BufferMut,
+    ) -> i32 {
+        if this.released || params.len() < 36 {
+            return 0;
+        }
+        let p = params.as_mut_ptr() as *mut f32;
+        let read = |i: usize| unsafe { p.add(i).read_unaligned() };
+        let input = [
+            read(0),
+            read(1),
+            read(2),
+            read(3),
+            read(4),
+            read(5),
+            read(6),
+            read(7),
+        ];
+        let (records, drawn) = ops::display_list(shared(), root as u64, input);
+        unsafe { p.add(8).write_unaligned(drawn as f32) };
+        let record_bytes = crate::display_list::RECORD_FLOATS * 4;
+        let count = records.len() / crate::display_list::RECORD_FLOATS;
+        let written = count.min(out.len() / record_bytes) * crate::display_list::RECORD_FLOATS;
+        let at = out.as_mut_ptr() as *mut f32;
+        if !at.is_null() && written > 0 {
+            unsafe { std::ptr::copy_nonoverlapping(records.as_ptr(), at, written) };
+        }
+        count as i32
+    }
+
+    /// Makes `node` draw the image known as `slot` in its content box; a negative slot stops it.
+    pub extern "C" fn set_image(this: &Tree, node: i64, slot: i32) {
+        if !this.released {
+            ops::set_image(shared(), node as u64, slot);
+        }
+    }
+
+    /// Fits and positions the image: `fit` (0 cover, 1 contain, 2 fill, 3 tile, 4 none, 5 scale-down), fractions
+    /// `x`, `y` and pixel offsets.
+    pub extern "C" fn set_image_mapping(
+        this: &Tree,
+        node: i64,
+        fit: i32,
+        x: f32,
+        y: f32,
+        offset_x: f32,
+        offset_y: f32,
+    ) {
+        if !this.released {
+            shared().set_image_mapping(id(node as u64), fit, [x, y, offset_x, offset_y]);
+        }
+    }
+
+    /// Makes `node` paint itself as the canvas known as `slot`; a negative slot stops it.
+    pub extern "C" fn set_canvas(this: &Tree, node: i64, slot: i32) {
+        if !this.released {
+            ops::set_canvas(shared(), node as u64, slot);
+        }
+    }
+
+    /// Draws `node` as a notch from twelve f32s (corner radii, then the top and bottom edges as kind, width,
+    /// height, corner radius); a buffer of fewer than twelve draws it as a box again.
+    pub extern "C" fn set_notch(this: &Tree, node: i64, data: Buffer) {
+        if this.released {
+            return;
+        }
+        let floats = floats_of(data);
+        let rows = (floats.len() >= 12).then(|| {
+            let mut d = [0.0f32; 12];
+            d.copy_from_slice(&floats[..12]);
+            d
+        });
+        ops::set_notch(shared(), node as u64, rows);
+    }
+
+    /// Draws `node` moved by `(dx, dy)` and at size `(w, h)` (children clipped when `w` is not negative), as a
+    /// layout animation does; `clear` draws it at its layout again.
+    pub extern "C" fn set_visual(
+        this: &Tree,
+        node: i64,
+        dx: f32,
+        dy: f32,
+        w: f32,
+        h: f32,
+        clear: bool,
+    ) {
+        if !this.released {
+            ops::set_visual(shared(), node as u64, dx, dy, w, h, clear);
+        }
+    }
+
+    /// Makes the hit test pass through `node` and everything inside it, or not.
+    pub extern "C" fn set_pass_through(this: &Tree, node: i64, through: bool) {
+        if !this.released {
+            ops::set_pass_through(shared(), node as u64, through);
+        }
+    }
+
+    /// Styles an overlay scrollbar: width zero hides it; `track` is straight-alpha 0xAARRGGBB.
+    pub extern "C" fn set_scrollbar_style(this: &Tree, node: i64, width: f32, track: i32) {
+        if !this.released {
+            ops::set_scrollbar_style(shared(), node as u64, width, track);
+        }
+    }
+
+    /// Scrolls container `node` by `(x, y)` and colours its thumb `0xAARRGGBB` (0 hides it).
+    pub extern "C" fn set_scroll(this: &Tree, node: i64, x: f32, y: f32, thumb: i32) {
+        if !this.released {
+            ops::set_scroll(shared(), node as u64, x, y, thumb);
+        }
+    }
+
+    /// Writes container `node`'s viewport size and its content size as four f32s; false before it is laid out.
+    pub extern "C" fn scroll_extent(this: &Tree, node: i64, out: BufferMut) -> bool {
+        !this.released
+            && ops::scroll_extent(shared(), node as u64)
+                .is_some_and(|values| put_floats(&values, out))
     }
 
     /// Applies a `Single` property (`prop` is ashui's `PropertyId`) to `node`; takes effect at the next `flush`.
@@ -581,6 +698,16 @@ caribou_abi::plugin! {
         fn in_view(&Tree, i64) -> bool;
         fn text_align(&Tree, i64) -> i32;
         fn text_limits(&Tree, i64, BufferMut);
+        fn display_list(&Tree, i64, BufferMut, BufferMut) -> i32;
+        fn set_image(&Tree, i64, i32);
+        fn set_image_mapping(&Tree, i64, i32, f32, f32, f32, f32);
+        fn set_canvas(&Tree, i64, i32);
+        fn set_notch(&Tree, i64, Buffer);
+        fn set_visual(&Tree, i64, f32, f32, f32, f32, bool);
+        fn set_pass_through(&Tree, i64, bool);
+        fn set_scrollbar_style(&Tree, i64, f32, i32);
+        fn set_scroll(&Tree, i64, f32, f32, i32);
+        fn scroll_extent(&Tree, i64, BufferMut) -> bool;
         fn apply_f32(&Tree, i64, i32, f32);
         fn apply_i32(&Tree, i64, i32, i32);
         fn apply_string(&Tree, i64, i32, Text);

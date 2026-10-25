@@ -419,91 +419,6 @@ define_prim!(
     "PXblinc_tree_lB_v"
 );
 
-/// One walk of a frame: its records and polygon points, and whether its glyphs overflowed the atlases.
-struct Attempt {
-    records: Vec<f32>,
-    points: Vec<f32>,
-    atlas_full: bool,
-}
-
-/// A frame whose glyphs overflow the atlases starts them afresh, once. The second walk stands even
-/// if it overflows too: its records name the glyphs that did fit, so they must stay in the atlases,
-/// and the glyphs that did not are left out.
-fn build_with_retry<R>(
-    mut walk: impl FnMut(&mut R) -> Attempt,
-    renderer: &mut R,
-    mut clear: impl FnMut(&mut R),
-) -> (Vec<f32>, Vec<f32>) {
-    let first = walk(renderer);
-    if !first.atlas_full {
-        return (first.records, first.points);
-    }
-    clear(renderer);
-    let second = walk(renderer);
-    (second.records, second.points)
-}
-
-#[cfg(test)]
-mod retry_tests {
-    use super::*;
-
-    fn attempt(tag: f32, atlas_full: bool) -> Attempt {
-        Attempt {
-            records: vec![tag],
-            points: vec![tag + 100.0],
-            atlas_full,
-        }
-    }
-
-    #[test]
-    fn a_frame_that_fits_is_walked_once_and_the_atlases_kept() {
-        let (mut walks, mut clears) = (0, 0);
-        let (records, points) = build_with_retry(
-            |_: &mut ()| {
-                walks += 1;
-                attempt(1.0, false)
-            },
-            &mut (),
-            |_| clears += 1,
-        );
-        assert_eq!((walks, clears), (1, 0));
-        assert_eq!((records, points), (vec![1.0], vec![101.0]));
-    }
-
-    #[test]
-    fn an_overflowing_frame_is_walked_again_after_the_atlases_start_afresh() {
-        let (mut walks, mut clears) = (0, 0);
-        let (records, points) = build_with_retry(
-            |_: &mut ()| {
-                walks += 1;
-                attempt(walks as f32, walks == 1)
-            },
-            &mut (),
-            |_| clears += 1,
-        );
-        assert_eq!((walks, clears), (2, 1));
-        assert_eq!((records, points), (vec![2.0], vec![102.0]));
-    }
-
-    #[test]
-    fn a_frame_that_overflows_twice_keeps_the_atlases_its_records_name() {
-        // The atlases are cleared between the walks, never after the last: clearing then
-        // would empty what the records refer to, and every glyph would draw blank.
-        let (mut walks, mut clears) = (0, 0);
-        let (records, points) = build_with_retry(
-            |_: &mut ()| {
-                walks += 1;
-                attempt(walks as f32, true)
-            },
-            &mut (),
-            |_| clears += 1,
-        );
-        assert_eq!((walks, clears), (2, 1));
-        // The second walk's records and its polygon points, not the first's, and not none.
-        assert_eq!((records, points), (vec![2.0], vec![102.0]));
-    }
-}
-
 /// Pack the primitives to draw under `root` into `out` (see `display_list`), at
 /// most `capacity` records. `params` is eight f32s: the device pixels per
 /// layout unit text is rasterized for; the theme's corner `n` (0 for no
@@ -529,65 +444,12 @@ pub unsafe extern "C" fn hl_blinc_tree_display_list(
         }
         unsafe { (params as *const f32).add(i).read_unaligned() }
     };
-    let display_scale = p(0);
-    let shapes = crate::display_list::Shapes {
-        n: p(1),
-        threshold: p(2),
-        radius_full: p(3),
-    };
-    let text_color = [p(4), p(5), p(6), p(7)];
-    let mut renderer = crate::text::renderer();
-    let (mut records, points) = build_with_retry(
-        |renderer: &mut blinc_text::TextRenderer| {
-            let mut glyphs = crate::display_list::Glyphs {
-                renderer,
-                display_scale: if display_scale > 0.0 {
-                    display_scale
-                } else {
-                    1.0
-                },
-                atlas_full: false,
-                shapes,
-                points: Vec::new(),
-            };
-            let mut records = Vec::new();
-            crate::display_list::append(
-                tree,
-                id(root),
-                (0.0, 0.0),
-                1.0,
-                text_color,
-                crate::display_list::IDENTITY,
-                &mut Vec::new(),
-                &mut glyphs,
-                &mut records,
-            );
-            Attempt {
-                records,
-                points: std::mem::take(&mut glyphs.points),
-                atlas_full: glyphs.atlas_full,
-            }
-        },
-        &mut *renderer,
-        |renderer| renderer.clear(),
-    );
-    use crate::display_list::{RECORD_FLOATS, SHAPE_POLYGON};
-    let drawn = records.len() / RECORD_FLOATS;
-    // Polygon offsets count rows from the points' start, which is right after the records.
-    let base = (drawn * RECORD_FLOATS / 4) as f32;
-    for r in 0..drawn {
-        if records[r * RECORD_FLOATS + 94] == SHAPE_POLYGON {
-            records[r * RECORD_FLOATS + 96] += base;
-        }
-    }
-    records.extend_from_slice(&points);
-    while records.len() % RECORD_FLOATS != 0 {
-        records.push(0.0);
-    }
+    let (records, drawn) =
+        crate::ops::display_list(tree, root, [p(0), p(1), p(2), p(3), p(4), p(5), p(6), p(7)]);
     if !params.is_null() {
         unsafe { (params as *mut f32).add(8).write_unaligned(drawn as f32) };
     }
-    let count = records.len() / RECORD_FLOATS;
+    let count = records.len() / crate::display_list::RECORD_FLOATS;
     let written = count.min(capacity.max(0) as usize) * crate::display_list::RECORD_FLOATS;
     if !out.is_null() && written > 0 {
         unsafe { std::ptr::copy_nonoverlapping(records.as_ptr(), out as *mut f32, written) };
@@ -605,12 +467,7 @@ define_prim!(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_tree_set_image(h: *mut c_void, node: u64, slot: i32) {
     if let Some(tree) = unsafe { tree(h) } {
-        if slot < 0 {
-            tree.images.remove(&id(node));
-            tree.image_mappings.remove(&id(node));
-        } else {
-            tree.images.insert(id(node), slot);
-        }
+        crate::ops::set_image(tree, node, slot);
     }
 }
 define_prim!(
@@ -645,11 +502,7 @@ define_prim!(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_tree_set_canvas(h: *mut c_void, node: u64, slot: i32) {
     if let Some(tree) = unsafe { tree(h) } {
-        if slot < 0 {
-            tree.canvases.remove(&id(node));
-        } else {
-            tree.canvases.insert(id(node), slot);
-        }
+        crate::ops::set_canvas(tree, node, slot);
     }
 }
 define_prim!(
@@ -669,17 +522,10 @@ pub unsafe extern "C" fn hl_blinc_tree_get_bounds(
     let Some(tree) = (unsafe { tree(h) }) else {
         return false;
     };
-    let Some(b) = tree.layout.get_absolute_bounds(id(node)) else {
+    let Some(values) = crate::ops::bounds(tree, node) else {
         return false;
     };
-    if out.is_null() {
-        return false;
-    }
-    let out = out as *mut f32;
-    for (i, v) in [b.x, b.y, b.width, b.height].into_iter().enumerate() {
-        unsafe { out.add(i).write_unaligned(v) };
-    }
-    true
+    unsafe { write_floats(&values, out) }
 }
 define_prim!(
     hlp_blinc_tree_get_bounds,
@@ -767,18 +613,16 @@ pub unsafe extern "C" fn hl_blinc_tree_set_notch(h: *mut c_void, node: u64, data
     let Some(tree) = (unsafe { tree(h) }) else {
         return;
     };
-    if data.is_null() {
-        tree.notches.remove(&id(node));
-        return;
-    }
-    let f = data as *const f32;
-    let mut rows = [[0.0f32; 4]; 3];
-    for (i, row) in rows.iter_mut().enumerate() {
-        for (j, v) in row.iter_mut().enumerate() {
-            *v = unsafe { f.add(i * 4 + j).read_unaligned() };
+    let rows = if data.is_null() {
+        None
+    } else {
+        let mut d = [0.0f32; 12];
+        for (i, v) in d.iter_mut().enumerate() {
+            *v = unsafe { (data as *const f32).add(i).read_unaligned() };
         }
-    }
-    tree.notches.insert(id(node), rows);
+        Some(d)
+    };
+    crate::ops::set_notch(tree, node, rows);
 }
 define_prim!(
     hlp_blinc_tree_set_notch,
@@ -800,13 +644,8 @@ pub unsafe extern "C" fn hl_blinc_tree_set_visual(
     hh: f32,
     clear: bool,
 ) {
-    let Some(tree) = (unsafe { tree(h) }) else {
-        return;
-    };
-    if clear {
-        tree.visuals.remove(&id(node));
-    } else {
-        tree.visuals.insert(id(node), [dx, dy, w, hh]);
+    if let Some(tree) = unsafe { tree(h) } {
+        crate::ops::set_visual(tree, node, dx, dy, w, hh, clear);
     }
 }
 define_prim!(
@@ -819,11 +658,7 @@ define_prim!(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_tree_set_pass_through(h: *mut c_void, node: u64, through: bool) {
     if let Some(tree) = unsafe { tree(h) } {
-        if through {
-            tree.pass_through.insert(id(node));
-        } else {
-            tree.pass_through.remove(&id(node));
-        }
+        crate::ops::set_pass_through(tree, node, through);
     }
 }
 define_prim!(
@@ -841,24 +676,8 @@ pub unsafe extern "C" fn hl_blinc_tree_set_scrollbar_style(
     width: f32,
     track: i32,
 ) {
-    let Some(tree) = (unsafe { tree(h) }) else {
-        return;
-    };
-    let node = id(node);
-    if tree.layout.get_style(node).is_none() || !width.is_finite() || width < 0.0 {
-        return;
-    }
-    if width == 4.0 && track == 0 {
-        tree.scrollbar_styles.remove(&node);
-    } else {
-        let c = |shift: i32| ((track >> shift) & 0xff) as f32 / 255.0;
-        tree.scrollbar_styles.insert(
-            node,
-            crate::tree::ScrollbarStyle {
-                width,
-                track: [c(16), c(8), c(0), c(24)],
-            },
-        );
+    if let Some(tree) = unsafe { tree(h) } {
+        crate::ops::set_scrollbar_style(tree, node, width, track);
     }
 }
 define_prim!(
@@ -878,15 +697,7 @@ pub unsafe extern "C" fn hl_blinc_tree_set_scroll(
     thumb: i32,
 ) {
     if let Some(tree) = unsafe { tree(h) } {
-        let c = |shift: i32| ((thumb >> shift) & 0xff) as f32 / 255.0;
-        tree.scrolls.insert(
-            id(node),
-            Scroll {
-                x,
-                y,
-                thumb: [c(16), c(8), c(0), c(24)],
-            },
-        );
+        crate::ops::set_scroll(tree, node, x, y, thumb);
     }
 }
 define_prim!(
@@ -907,30 +718,10 @@ pub unsafe extern "C" fn hl_blinc_tree_scroll_extent(
     let Some(tree) = (unsafe { tree(h) }) else {
         return false;
     };
-    let Some(layout) = tree.layout.get_layout(id(node)) else {
+    let Some(values) = crate::ops::scroll_extent(tree, node) else {
         return false;
     };
-    if out.is_null() {
-        return false;
-    }
-    let b = layout.border;
-    let view = (
-        layout.size.width - b.left - b.right,
-        layout.size.height - b.top - b.bottom,
-    );
-    let out = out as *mut f32;
-    for (i, v) in [
-        view.0,
-        view.1,
-        layout.scrollable_overflow_rect.right,
-        layout.scrollable_overflow_rect.bottom,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        unsafe { out.add(i).write_unaligned(v) };
-    }
-    true
+    unsafe { write_floats(&values, out) }
 }
 define_prim!(
     hlp_blinc_tree_scroll_extent,
