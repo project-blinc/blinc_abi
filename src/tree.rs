@@ -37,7 +37,7 @@ pub struct Tree {
     /// Visual properties per node; `LayoutTree` holds only styles.
     pub(crate) props: HashMap<LayoutNodeId, RenderProps>,
     /// Set by removals, so the next flush drops props of nodes now gone.
-    #[cfg(feature = "hashlink")]
+    #[cfg(any(feature = "hashlink", feature = "caribou"))]
     pub(crate) pruned: bool,
     /// Every live node and the handle that created it.
     pub(crate) owners: HashMap<LayoutNodeId, u64>,
@@ -569,7 +569,7 @@ impl Tree {
         Self {
             layout: LayoutTree::new(),
             props: HashMap::new(),
-            #[cfg(feature = "hashlink")]
+            #[cfg(any(feature = "hashlink", feature = "caribou"))]
             pruned: false,
             owners: HashMap::new(),
             images: HashMap::new(),

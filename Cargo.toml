@@ -13,6 +13,8 @@ default = ["hashlink"]
 hashlink = ["dep:hl_abi", "scene"]
 # The blinc-css command; build it with --no-default-features so it does not link HashLink.
 css-cli = []
+# The layout tree as a Caribou plugin (no libhl): `cargo build --release --no-default-features --features caribou`.
+caribou = ["scene", "dep:caribou_abi"]
 scene = ["dep:blinc_svg", "dep:blinc_text", "dep:blinc_image", "dep:swash", "dep:woff2-patched", "blinc_layout/text_measurer"]
 
 [[bin]]
@@ -26,6 +28,7 @@ blinc_text = {git = "https://github.com/project-blinc/blinc", branch = "main", o
 blinc_image = {git = "https://github.com/project-blinc/blinc", branch = "main", default-features = false, features = ["png", "jpeg", "webp"], optional = true}
 blinc_layout = {git = "https://github.com/project-blinc/blinc", branch = "main"}
 hl_abi = {git="https://github.com/rayzor-blade/hl_abi", branch="main", optional=true}
+caribou_abi = {path = "../caribou/crates/caribou_abi", optional = true}
 taffy = { version = "0.14", features = ["content_size"] }
 rustc-hash = "2"
 # Glyph outlines for text drawn on a canvas, scaled as blinc_text rasterizes its faces.
