@@ -44,7 +44,7 @@ pub mod node;
 mod notch;
 #[cfg(feature = "hashlink")]
 pub mod reactive;
-#[cfg(feature = "scene")]
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub(crate) mod shared;
 #[cfg(feature = "scene")]
 pub mod svg;
