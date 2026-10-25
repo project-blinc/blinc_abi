@@ -302,6 +302,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 [[package]]
 name = "caribou_abi"
 version = "0.1.0"
+source = "git+https://github.com/rayzor-blade/caribou?rev=ac28aba8e6969bfd97928e7328753d38a4d69c18#ac28aba8e6969bfd97928e7328753d38a4d69c18"
 dependencies = [
  "caribou_abi_derive",
 ]
@@ -309,6 +310,7 @@ dependencies = [
 [[package]]
 name = "caribou_abi_derive"
 version = "0.1.0"
+source = "git+https://github.com/rayzor-blade/caribou?rev=ac28aba8e6969bfd97928e7328753d38a4d69c18#ac28aba8e6969bfd97928e7328753d38a4d69c18"
 dependencies = [
  "caribou_mangle",
  "proc-macro2",
@@ -319,6 +321,7 @@ dependencies = [
 [[package]]
 name = "caribou_mangle"
 version = "0.1.0"
+source = "git+https://github.com/rayzor-blade/caribou?rev=ac28aba8e6969bfd97928e7328753d38a4d69c18#ac28aba8e6969bfd97928e7328753d38a4d69c18"
 
 [[package]]
 name = "cfg-if"

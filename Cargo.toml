@@ -28,7 +28,7 @@ blinc_text = {git = "https://github.com/project-blinc/blinc", branch = "main", o
 blinc_image = {git = "https://github.com/project-blinc/blinc", branch = "main", default-features = false, features = ["png", "jpeg", "webp"], optional = true}
 blinc_layout = {git = "https://github.com/project-blinc/blinc", branch = "main"}
 hl_abi = {git="https://github.com/rayzor-blade/hl_abi", branch="main", optional=true}
-caribou_abi = {path = "../caribou/crates/caribou_abi", optional = true}
+caribou_abi = {git = "https://github.com/rayzor-blade/caribou", rev = "ac28aba8e6969bfd97928e7328753d38a4d69c18", optional = true}
 taffy = { version = "0.14", features = ["content_size"] }
 rustc-hash = "2"
 # Glyph outlines for text drawn on a canvas, scaled as blinc_text rasterizes its faces.
