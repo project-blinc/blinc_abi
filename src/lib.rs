@@ -35,7 +35,7 @@ mod hl;
 #[cfg(feature = "scene")]
 pub mod inline;
 pub mod layout_props;
-#[cfg(feature = "hashlink")]
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub mod layout_router;
 pub mod layout_tree;
 #[cfg(feature = "hashlink")]

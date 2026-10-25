@@ -13,11 +13,14 @@
 //! record the change here and `blinc_tree_flush` applies it through
 //! `LayoutTree::update_text`.
 
+#[cfg(feature = "hashlink")]
 use crate::hl::{handle_ref, opt_string_from};
 use crate::layout_props;
+#[cfg(feature = "hashlink")]
 use crate::reactive::{AnyComputed, AnySignal, Slot};
 use crate::types::{GlassEffects, Value};
 use blinc_core::CornerShape;
+#[cfg(feature = "hashlink")]
 use blinc_layout::binding::{
     register_typed, register_typed_computed, register_typed_layout, register_typed_layout_computed,
 };
@@ -27,13 +30,18 @@ use blinc_layout::element_style::FontStyle;
 use blinc_layout::property::PropertyId;
 use blinc_layout::stateful::{queue_layout_update_partial, queue_prop_update_partial};
 use blinc_layout::tree::{LayoutNodeId, TextMeasureContext};
+#[cfg(feature = "hashlink")]
 use hl_abi::{define_prim, vbyte};
+#[cfg(feature = "hashlink")]
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 use taffy::prelude::*;
 
+#[cfg(feature = "hashlink")]
 const KIND_CONST: i32 = 0;
+#[cfg(feature = "hashlink")]
 const KIND_SIGNAL: i32 = 1;
+#[cfg(feature = "hashlink")]
 const KIND_COMPUTED: i32 = 2;
 
 /// `PropertyId` in declaration order, which `ashui.layout.PropertyId` mirrors.
@@ -291,7 +299,7 @@ fn render<T>(f: impl Fn(&mut RenderProps, T) + Send + Sync + 'static) -> Option<
     Some(Write::Render(Arc::new(f)))
 }
 
-impl<T: Slot> Write<T> {
+impl<T: Clone + Send + Sync + 'static> Write<T> {
     fn queue(&self, node: LayoutNodeId, prop: PropertyId, v: T) {
         match self {
             Write::Layout(w) => {
@@ -308,6 +316,7 @@ impl<T: Slot> Write<T> {
 
 /// # Safety
 /// `sig` and `comp` must each be null or a handle of their kind.
+#[cfg(feature = "hashlink")]
 unsafe fn bind<T: Slot>(
     node: LayoutNodeId,
     prop: PropertyId,
@@ -554,6 +563,33 @@ fn f32_write(node: LayoutNodeId, prop: PropertyId) -> Option<Write<f32>> {
     }
 }
 
+/// Where a `Single` property's write goes: its layout field, a side of a border or padding, or a render prop.
+fn f32_target(node: LayoutNodeId, raw: i32) -> Option<(PropertyId, Write<f32>)> {
+    if let Some(id) = layout_props::f32_property(raw) {
+        let write = Write::Layout(Arc::new(move |s: &mut Style, v| {
+            layout_props::set_f32(s, raw, v);
+            record_sticky(node, raw, s, None);
+        }));
+        return Some((id, write));
+    }
+    if let Some(found) = side_write(node, raw) {
+        return Some(found);
+    }
+    let prop = property(raw)?;
+    let write = f32_write(node, prop)?;
+    Some((prop, write))
+}
+
+/// Applies the constant `value` to a `Single` property of `node`; queued for the next flush.
+#[cfg(feature = "caribou")]
+pub(crate) fn apply_f32_const(node: u64, raw: i32, value: f32) {
+    let node = LayoutNodeId::from_raw(node);
+    if let Some((prop, write)) = f32_target(node, raw) {
+        write.queue(node, prop, value);
+    }
+}
+
+#[cfg(feature = "hashlink")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_apply_f32(
     node: u64,
@@ -564,24 +600,11 @@ pub unsafe extern "C" fn hl_blinc_apply_f32(
     comp: *mut c_void,
 ) {
     let node = LayoutNodeId::from_raw(node);
-    if let Some(id) = layout_props::f32_property(prop) {
-        let write = Write::Layout(Arc::new(move |s: &mut Style, v| {
-            layout_props::set_f32(s, prop, v);
-            record_sticky(node, prop, s, None);
-        }));
+    if let Some((id, write)) = f32_target(node, prop) {
         unsafe { bind(node, id, kind, constant, sig, comp, write) };
-        return;
     }
-    if let Some((prop, write)) = side_write(node, prop) {
-        unsafe { bind(node, prop, kind, constant, sig, comp, write) };
-        return;
-    }
-    let Some(prop) = property(prop) else { return };
-    let Some(write) = f32_write(node, prop) else {
-        return;
-    };
-    unsafe { bind(node, prop, kind, constant, sig, comp, write) };
 }
+#[cfg(feature = "hashlink")]
 define_prim!(
     hlp_blinc_apply_f32,
     hl_blinc_apply_f32,
@@ -638,17 +661,9 @@ fn i32_write(node: LayoutNodeId, prop: PropertyId) -> Option<Write<i32>> {
     }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_apply_i32(
-    node: u64,
-    prop: i32,
-    kind: i32,
-    constant: i32,
-    sig: *mut c_void,
-    comp: *mut c_void,
-) {
-    let node = LayoutNodeId::from_raw(node);
-    let extra = match prop {
+/// Where an integer or enum property's write goes.
+fn i32_target(node: LayoutNodeId, raw: i32) -> Option<(PropertyId, Write<i32>)> {
+    let extra = match raw {
         // git-bug: 62aa0b0; queue integer order through the existing layout bindings.
         ORDER => Some((
             PropertyId::FlexDirection,
@@ -676,28 +691,50 @@ pub unsafe extern "C" fn hl_blinc_apply_i32(
         _ => None,
     };
     if let Some((id, Some(write))) = extra {
-        unsafe { bind(node, id, kind, constant, sig, comp, write) };
-        return;
+        return Some((id, write));
     }
-    if let Some(id) = layout_props::i32_property(prop) {
+    if let Some(id) = layout_props::i32_property(raw) {
         let write = Write::Layout(Arc::new(move |s: &mut Style, v| {
-            layout_props::set_i32(s, prop, v);
+            layout_props::set_i32(s, raw, v);
             record_sticky(
                 node,
-                prop,
+                raw,
                 s,
-                (prop == 29).then_some(v == crate::context::STICKY),
+                (raw == 29).then_some(v == crate::context::STICKY),
             );
         }));
-        unsafe { bind(node, id, kind, constant, sig, comp, write) };
-        return;
+        return Some((id, write));
     }
-    let Some(prop) = property(prop) else { return };
-    let Some(write) = i32_write(node, prop) else {
-        return;
-    };
-    unsafe { bind(node, prop, kind, constant, sig, comp, write) };
+    let prop = property(raw)?;
+    let write = i32_write(node, prop)?;
+    Some((prop, write))
 }
+
+/// Applies the constant `value` to an integer or enum property of `node`; queued for the next flush.
+#[cfg(feature = "caribou")]
+pub(crate) fn apply_i32_const(node: u64, raw: i32, value: i32) {
+    let node = LayoutNodeId::from_raw(node);
+    if let Some((prop, write)) = i32_target(node, raw) {
+        write.queue(node, prop, value);
+    }
+}
+
+#[cfg(feature = "hashlink")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_apply_i32(
+    node: u64,
+    prop: i32,
+    kind: i32,
+    constant: i32,
+    sig: *mut c_void,
+    comp: *mut c_void,
+) {
+    let node = LayoutNodeId::from_raw(node);
+    if let Some((id, write)) = i32_target(node, prop) {
+        unsafe { bind(node, id, kind, constant, sig, comp, write) };
+    }
+}
+#[cfg(feature = "hashlink")]
 define_prim!(
     hlp_blinc_apply_i32,
     hl_blinc_apply_i32,
@@ -784,6 +821,26 @@ fn value_write(node: LayoutNodeId, prop: PropertyId) -> Option<Write<Value>> {
     }
 }
 
+/// Where a style-value property's write goes.
+fn value_target(node: LayoutNodeId, raw: i32) -> Option<(PropertyId, Write<Value>)> {
+    if let Some(own) = own_value_write(node, raw) {
+        return Some(own);
+    }
+    let prop = property(raw)?;
+    let write = value_write(node, prop)?;
+    Some((prop, write))
+}
+
+/// Applies the constant `value` to a style-value property of `node`; queued for the next flush.
+#[cfg(feature = "caribou")]
+pub(crate) fn apply_value_const(node: u64, raw: i32, value: Value) {
+    let node = LayoutNodeId::from_raw(node);
+    if let Some((prop, write)) = value_target(node, raw) {
+        write.queue(node, prop, value);
+    }
+}
+
+#[cfg(feature = "hashlink")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_apply_value(
     node: u64,
@@ -793,30 +850,16 @@ pub unsafe extern "C" fn hl_blinc_apply_value(
     sig: *mut c_void,
     comp: *mut c_void,
 ) {
-    let (prop, write) = if let Some(own) = own_value_write(LayoutNodeId::from_raw(node), prop) {
-        own
-    } else {
-        let Some(prop) = property(prop) else { return };
-        let Some(write) = value_write(LayoutNodeId::from_raw(node), prop) else {
-            return;
-        };
-        (prop, write)
+    let node = LayoutNodeId::from_raw(node);
+    let Some((prop, write)) = value_target(node, prop) else {
+        return;
     };
     let constant = unsafe { handle_ref::<Value>(constant) }
         .cloned()
         .unwrap_or_default();
-    unsafe {
-        bind(
-            LayoutNodeId::from_raw(node),
-            prop,
-            kind,
-            constant,
-            sig,
-            comp,
-            write,
-        )
-    };
+    unsafe { bind(node, prop, kind, constant, sig, comp, write) };
 }
+#[cfg(feature = "hashlink")]
 define_prim!(
     hlp_blinc_apply_value,
     hl_blinc_apply_value,
@@ -860,29 +903,43 @@ fn own_string_write(raw: i32) -> Option<(PropertyId, Write<Option<String>>)> {
     Some((id, write))
 }
 
+/// Where a string property's write goes.
+fn string_target(node: LayoutNodeId, raw: i32) -> Option<(PropertyId, Write<Option<String>>)> {
+    if let Some(own) = own_string_write(raw) {
+        return Some(own);
+    }
+    let prop = property(raw)?;
+    let write = string_write(node, prop)?;
+    Some((prop, write))
+}
+
+/// Applies the constant `value` (none to clear) to a string property of `node`; queued for the next flush.
+#[cfg(feature = "caribou")]
+pub(crate) fn apply_string_const(node: u64, raw: i32, value: Option<String>) {
+    let node = LayoutNodeId::from_raw(node);
+    if let Some((prop, write)) = string_target(node, raw) {
+        write.queue(node, prop, value);
+    }
+}
+
+#[cfg(feature = "hashlink")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_apply_string(
     node: u64,
     prop: i32,
-
     kind: i32,
     constant: *const vbyte,
     sig: *mut c_void,
     comp: *mut c_void,
 ) {
     let node = LayoutNodeId::from_raw(node);
-    let (prop, write) = if let Some(own) = own_string_write(prop) {
-        own
-    } else {
-        let Some(prop) = property(prop) else { return };
-        let Some(write) = string_write(node, prop) else {
-            return;
-        };
-        (prop, write)
+    let Some((prop, write)) = string_target(node, prop) else {
+        return;
     };
     let constant = unsafe { opt_string_from(constant) };
     unsafe { bind(node, prop, kind, constant, sig, comp, write) };
 }
+#[cfg(feature = "hashlink")]
 define_prim!(
     hlp_blinc_apply_string,
     hl_blinc_apply_string,
@@ -902,8 +959,13 @@ const CORNER_SHAPE: i32 = 1003;
 /// A per-side or percentage id resets the field it writes, so `Width` and
 /// `WidthPercent` reset the same one. A binding to a signal or computed is
 /// not dropped; unset only what was set to a constant.
+#[cfg(feature = "hashlink")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_unset(node: u64, raw: i32) {
+    unset(node, raw);
+}
+
+pub(crate) fn unset(node: u64, raw: i32) {
     let node = LayoutNodeId::from_raw(node);
     if raw == ORDER {
         let prop = PropertyId::FlexDirection;
@@ -1112,4 +1174,5 @@ pub unsafe extern "C" fn hl_blinc_unset(node: u64, raw: i32) {
         _ => {}
     }
 }
+#[cfg(feature = "hashlink")]
 define_prim!(hlp_blinc_unset, hl_blinc_unset, "li_v");
