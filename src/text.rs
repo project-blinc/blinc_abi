@@ -286,18 +286,15 @@ pub fn decoration_metrics(context: &TextMeasureContext, font_size: f32) -> Decor
 
 /// The changes an atlas has had, newest last, each with the region it wrote
 /// and the atlas's size then; enough of them for a caller a few frames behind.
-#[cfg(feature = "hashlink")]
 struct AtlasHistory {
     revision: i32,
     changes: std::collections::VecDeque<(i32, (u32, u32, u32, u32), (u32, u32))>,
 }
 
 /// How many changes an atlas remembers; a caller further behind takes it whole.
-#[cfg(feature = "hashlink")]
 const ATLAS_HISTORY: usize = 32;
 
 /// The coverage atlas's history, then the colour one's.
-#[cfg(feature = "hashlink")]
 static HISTORIES: Mutex<[AtlasHistory; 2]> = Mutex::new([
     AtlasHistory {
         revision: 0,
@@ -317,15 +314,7 @@ static HISTORIES: Mutex<[AtlasHistory; 2]> = Mutex::new([
 /// growth. Returns the region's size in bytes, copying its rows, packed, into
 /// `out` when they fit in `capacity`. Returns 0 when the caller has seen this
 /// revision.
-#[cfg(feature = "hashlink")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_text_atlas_take(
-    color: i32,
-    seen: i32,
-    out: *mut vbyte,
-    capacity: i32,
-    info: *mut vbyte,
-) -> i32 {
+pub unsafe fn atlas_take(color: i32, seen: i32, out: *mut u8, capacity: i32, info: *mut u8) -> i32 {
     let mut r = renderer();
     let color = color != 0;
     let mut histories = HISTORIES.lock().unwrap_or_else(|e| e.into_inner());
@@ -419,6 +408,17 @@ pub unsafe extern "C" fn hl_blinc_text_atlas_take(
         }
     }
     size as i32
+}
+#[cfg(feature = "hashlink")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_text_atlas_take(
+    color: i32,
+    seen: i32,
+    out: *mut vbyte,
+    capacity: i32,
+    info: *mut vbyte,
+) -> i32 {
+    unsafe { atlas_take(color, seen, out, capacity, info) }
 }
 #[cfg(feature = "hashlink")]
 define_prim!(
@@ -586,26 +586,20 @@ pub fn measure(
 /// height, the number of lines, and the font's ascender and descender (below
 /// the baseline, so negative) at that size as four f32s to `info`. Returns how many
 /// stops there are; 0 when the node is not text or its font is not loaded.
-#[cfg(feature = "hashlink")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_text_carets(
-    h: *mut std::ffi::c_void,
+pub unsafe fn carets(
+    tree: &crate::tree::Tree,
     node: u64,
-    text: *const vbyte,
+    text: &str,
     font_size: f32,
     wrap_width: f32,
-    out: *mut vbyte,
+    out: *mut u8,
     capacity: i32,
-    info: *mut vbyte,
+    info: *mut u8,
 ) -> i32 {
-    let Some(tree) = (unsafe { crate::node::tree(h) }) else {
-        return 0;
-    };
     let id = blinc_layout::tree::LayoutNodeId::from_raw(node);
     let Some(context) = tree.layout.text_context(id) else {
         return 0;
     };
-    let text = unsafe { crate::hl::string_from(text) };
     let letter_spacing = tree
         .props
         .get(&id)
@@ -615,7 +609,7 @@ pub unsafe extern "C" fn hl_blinc_text_carets(
     if font_size > 0.0 {
         context.font_size = font_size;
     }
-    let Some(measured) = measure(&context, &text, letter_spacing, Some(wrap_width)) else {
+    let Some(measured) = measure(&context, text, letter_spacing, Some(wrap_width)) else {
         return 0;
     };
     if !info.is_null() {
@@ -642,6 +636,28 @@ pub unsafe extern "C" fn hl_blinc_text_carets(
         }
     }
     measured.carets.len() as i32
+}
+#[cfg(feature = "hashlink")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_text_carets(
+    h: *mut std::ffi::c_void,
+    node: u64,
+    text: *const vbyte,
+    font_size: f32,
+    wrap_width: f32,
+    out: *mut vbyte,
+    capacity: i32,
+    info: *mut vbyte,
+) -> i32 {
+    let Some(tree) = (unsafe { crate::node::tree(h) }) else {
+        return 0;
+    };
+    let text = unsafe { crate::hl::string_from(text) };
+    unsafe {
+        carets(
+            tree, node, &text, font_size, wrap_width, out, capacity, info,
+        )
+    }
 }
 #[cfg(feature = "hashlink")]
 define_prim!(
@@ -744,14 +760,12 @@ mod tests {
 /// Path commands for a glyph outline, in pixels, the baseline at y 0 and y
 /// growing down: 0 move (x, y), 1 line (x, y), 2 quadratic (cx, cy, x, y),
 /// 3 cubic (c1x, c1y, c2x, c2y, x, y), 4 close.
-#[cfg(feature = "hashlink")]
 struct Outline {
     out: Vec<f32>,
     x: f32,
     y: f32,
 }
 
-#[cfg(feature = "hashlink")]
 impl Outline {
     /// A glyph's outline, in pixels with y up, placed with its origin at
     /// `(x, y)` in the canvas's coordinates, y down.
@@ -788,25 +802,17 @@ impl Outline {
 /// ascent and descent (positive, below the baseline) and its line height,
 /// in pixels, as four f32s to `info`. Returns the number of f32s, copying
 /// them to `out` when they fit in `capacity`; 0 when no face is found.
-#[cfg(feature = "hashlink")]
-#[unsafe(no_mangle)]
-#[allow(clippy::too_many_arguments)]
-pub unsafe extern "C" fn hl_blinc_text_outline(
-    text: *const vbyte,
-    font_name: *const vbyte,
-    style: *const vbyte,
-    out: *mut vbyte,
+pub unsafe fn outline(
+    text: &str,
+    name: Option<String>,
+    style: [f32; 6],
+    out: *mut u8,
     capacity: i32,
-    info: *mut vbyte,
+    info: *mut u8,
 ) -> i32 {
-    if style.is_null() {
-        return 0;
-    }
-    let s = |i: usize| unsafe { (style as *const f32).add(i).read_unaligned() };
+    let s = |i: usize| style[i];
     let (generic, weight, italic, size, letter_spacing, line_height) =
         (s(0) as i32, s(1) as i32, s(2) != 0.0, s(3), s(4), s(5));
-    let text = unsafe { crate::hl::string_from(text) };
-    let name = unsafe { crate::hl::opt_string_from(font_name) };
     let generic = match generic {
         1 => GenericFont::Monospace,
         2 => GenericFont::Serif,
@@ -840,7 +846,7 @@ pub unsafe extern "C" fn hl_blinc_text_outline(
                 },
             };
         // The faces glyphs the primary lacks are drawn from: symbols, emoji, CJK.
-        let fallbacks = blinc_text::FallbackFaces::resolve(&mut registry, &font, &text);
+        let fallbacks = blinc_text::FallbackFaces::resolve(&mut registry, &font, text);
         (font, fallbacks)
     };
     // Scaled by swash, as Blinc rasterizes text, each face at the weight Blinc shapes it at.
@@ -915,6 +921,26 @@ pub unsafe extern "C" fn hl_blinc_text_outline(
         unsafe { std::ptr::copy_nonoverlapping(outline.out.as_ptr(), out as *mut f32, n) };
     }
     n as i32
+}
+#[cfg(feature = "hashlink")]
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn hl_blinc_text_outline(
+    text: *const vbyte,
+    font_name: *const vbyte,
+    style: *const vbyte,
+    out: *mut vbyte,
+    capacity: i32,
+    info: *mut vbyte,
+) -> i32 {
+    if style.is_null() {
+        return 0;
+    }
+    let s = |i: usize| unsafe { (style as *const f32).add(i).read_unaligned() };
+    let style = [s(0), s(1), s(2), s(3), s(4), s(5)];
+    let text = unsafe { crate::hl::string_from(text) };
+    let name = unsafe { crate::hl::opt_string_from(font_name) };
+    unsafe { outline(&text, name, style, out, capacity, info) }
 }
 #[cfg(feature = "hashlink")]
 define_prim!(hlp_blinc_text_outline, hl_blinc_text_outline, "PBBBBiB_i");

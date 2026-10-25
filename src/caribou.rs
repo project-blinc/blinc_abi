@@ -450,6 +450,36 @@ impl Tree {
         )
     }
 
+    /// Where a caret can stand in `text`, set in text node `node`'s font at `font_size` (the node's own when 0),
+    /// wrapped at `wrap_width` when above 0: for each character boundary, its UTF-16 index, x and line as
+    /// three f32s in `out`; the line height, line count, ascender and descender as four f32s in `info`.
+    /// Returns how many stops there are; 0 when the node is not text.
+    pub extern "C" fn text_carets(
+        this: &Tree,
+        node: i64,
+        text: Text,
+        font_size: f32,
+        wrap_width: f32,
+        out: BufferMut,
+        info: BufferMut,
+    ) -> i32 {
+        if this.released || info.len() < 16 {
+            return 0;
+        }
+        unsafe {
+            crate::text::carets(
+                shared(),
+                node as u64,
+                text.as_str(),
+                font_size,
+                wrap_width,
+                out.as_mut_ptr(),
+                (out.len() / 12) as i32,
+                info.as_mut_ptr(),
+            )
+        }
+    }
+
     /// Applies a `Single` property (`prop` is ashui's `PropertyId`) to `node`; takes effect at the next `flush`.
     pub extern "C" fn apply_f32(this: &Tree, node: i64, prop: i32, value: f32) {
         if !this.released {
@@ -565,6 +595,53 @@ impl Resources {
         }
         unsafe { std::ptr::copy_nonoverlapping(raster.pixels.as_ptr(), at, size) };
         true
+    }
+
+    /// The coverage atlas (`color` 0, one byte a pixel) or the colour-glyph atlas (`color` 1, RGBA). When its
+    /// revision is not `seen`, writes seven i32s to `info` (width, height, revision, then the changed region's x,
+    /// y, width and height) and copies the region's rows, packed, into `out` when they fit; returns the
+    /// region's size in bytes. Returns 0 when the caller has seen this revision.
+    pub extern "C" fn text_atlas(color: i32, seen: i32, out: BufferMut, info: BufferMut) -> i32 {
+        if info.len() < 28 {
+            return 0;
+        }
+        unsafe {
+            crate::text::atlas_take(
+                color,
+                seen,
+                out.as_mut_ptr(),
+                out.len() as i32,
+                info.as_mut_ptr(),
+            )
+        }
+    }
+
+    /// `text` as path commands of every glyph (see `text::Outline`), laid out in `font_name` (empty is the
+    /// generic family) as `style` sets it, six f32s: generic family (0 system, 1 monospace, 2 serif,
+    /// 3 sans-serif), weight, italic, size in pixels, letter spacing, line height. Writes the widest line's width,
+    /// the face's ascent, descent and line height as four f32s to `info`. Returns the number of f32s, copying them
+    /// to `out` when they fit; 0 when no face is found.
+    pub extern "C" fn text_outline(
+        text: Text,
+        font_name: Text,
+        style: Buffer,
+        out: BufferMut,
+        info: BufferMut,
+    ) -> i32 {
+        let s = floats_of(style);
+        if s.len() < 6 || info.len() < 16 {
+            return 0;
+        }
+        unsafe {
+            crate::text::outline(
+                text.as_str(),
+                opt_text(font_name),
+                [s[0], s[1], s[2], s[3], s[4], s[5]],
+                out.as_mut_ptr(),
+                (out.len() / 4) as i32,
+                info.as_mut_ptr(),
+            )
+        }
     }
 
     /// Registers the faces in TTF, OpenType, collection or WOFF2 bytes as installed fonts; how many it added.
@@ -827,6 +904,7 @@ caribou_abi::plugin! {
         fn in_view(&Tree, i64) -> bool;
         fn text_align(&Tree, i64) -> i32;
         fn text_limits(&Tree, i64, BufferMut);
+        fn text_carets(&Tree, i64, Text, f32, f32, BufferMut, BufferMut) -> i32;
         fn hit_test(&Tree, i64, f32, f32, BufferMut) -> i32;
         fn hit_test_region(&Tree, i64, f32, f32, BufferMut, BufferMut) -> i32;
         fn order(&Tree, i64, BufferMut) -> i32;
@@ -857,6 +935,8 @@ caribou_abi::plugin! {
         fn shrink_bitmap(i32, i32) -> bool;
         fn rasterize_svg(Text, i32, i32, BufferMut) -> bool;
         fn register_font(Buffer) -> i32;
+        fn text_atlas(i32, i32, BufferMut, BufferMut) -> i32;
+        fn text_outline(Text, Text, Buffer, BufferMut, BufferMut) -> i32;
     }
     class StyleValue {
         fn color(i32, f32) -> Box<StyleValue>;
