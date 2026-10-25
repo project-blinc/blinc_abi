@@ -5,15 +5,54 @@
 //! removes them. Node ids cross as `i64` (a node's raw id), and results that HashLink writes into
 //! a caller's buffer are written into a `BufferMut` the same way.
 
+use crate::ops::{self, TextSpec};
 use crate::shared::{
     NEXT_HANDLE, RELEASED_HANDLES, clear_children as clear, forget, id, release_handle, shared,
     subtree,
 };
 use crate::types::Value;
 use blinc_core::{Brush, Color, CornerRadius};
-use caribou_abi::{BufferMut, host::Text};
+use caribou_abi::{Buffer, BufferMut, host::Text};
 use std::sync::atomic::Ordering;
 use taffy::prelude::{AvailableSpace, Size, Style};
+
+/// The 64-bit node ids packed in `buffer`, little-endian, eight bytes each.
+fn ids_of(buffer: Buffer) -> Vec<u64> {
+    let bytes = unsafe { buffer.as_slice() };
+    bytes
+        .chunks_exact(8)
+        .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+        .collect()
+}
+
+/// Writes as many of `ids` as fit into `out`, eight bytes each; how many there are.
+fn put_ids(ids: &[u64], out: BufferMut) -> i32 {
+    let room = out.len() / 8;
+    let at = out.as_mut_ptr();
+    if !at.is_null() {
+        for (i, id) in ids.iter().take(room).enumerate() {
+            unsafe { (at as *mut u64).add(i).write_unaligned(*id) };
+        }
+    }
+    ids.len() as i32
+}
+
+/// Writes `values` into `out` as f32s; false when `out` is too small.
+fn put_floats(values: &[f32], out: BufferMut) -> bool {
+    if out.len() < values.len() * 4 {
+        return false;
+    }
+    let at = out.as_mut_ptr() as *mut f32;
+    for (i, v) in values.iter().enumerate() {
+        unsafe { at.add(i).write_unaligned(*v) };
+    }
+    true
+}
+
+/// A text parameter's string, or `None` for none or the empty text.
+fn opt_text(text: Text) -> Option<String> {
+    (!text.is_null() && !text.as_str().is_empty()).then(|| text.as_str().to_string())
+}
 
 /// One handle onto the process's tree, owning the nodes it created.
 pub struct Tree {
@@ -119,6 +158,112 @@ impl Tree {
         true
     }
 
+    /// A text node of `content` in the named font (none for the system face), `flags` bit 0 wrapping and bit 1 italic.
+    #[allow(clippy::too_many_arguments)]
+    pub extern "C" fn create_text_node(
+        this: &Tree,
+        content: Text,
+        font_name: Text,
+        font_size: f32,
+        line_height: f32,
+        font_weight: i32,
+        generic_font: i32,
+        flags: i32,
+    ) -> i64 {
+        if this.released {
+            return 0;
+        }
+        let spec = TextSpec {
+            content: content.as_str().to_string(),
+            font_name: opt_text(font_name),
+            font_size,
+            line_height,
+            font_weight,
+            generic_font,
+            flags,
+        };
+        ops::create_text_node(shared(), this.id, spec) as i64
+    }
+
+    /// Puts `new` where `old` is among its parent's children; `old` is detached, not deleted.
+    pub extern "C" fn replace_node(this: &Tree, old: i64, new: i64) {
+        if !this.released {
+            ops::replace_node(shared(), old as u64, new as u64);
+        }
+    }
+
+    /// Makes the ids in `children` (eight bytes each) `parent`'s children; none clears them.
+    pub extern "C" fn replace_children(this: &Tree, parent: i64, children: Buffer) {
+        if !this.released {
+            ops::replace_children(shared(), parent as u64, &ids_of(children));
+        }
+    }
+
+    /// As `replace_children`, taking children from other parents and skipping nodes that are gone.
+    pub extern "C" fn set_children(this: &Tree, parent: i64, children: Buffer) {
+        if !this.released {
+            ops::set_children(shared(), parent as u64, &ids_of(children));
+        }
+    }
+
+    pub extern "C" fn set_grid_rows(this: &Tree, group: i64, rows: Buffer) -> bool {
+        !this.released && ops::set_grid_rows(shared(), this.id, group as u64, &ids_of(rows))
+    }
+
+    /// Writes `node`'s children into `out` as ids, as many as fit; how many there are (0 for a node that is gone).
+    pub extern "C" fn children(this: &Tree, node: i64, out: BufferMut) -> i32 {
+        if this.released {
+            return 0;
+        }
+        ops::children(shared(), node as u64).map_or(0, |ids| put_ids(&ids, out))
+    }
+
+    /// Writes `node`'s ancestors into `out`, the parent first; how many there are.
+    pub extern "C" fn ancestors(this: &Tree, node: i64, out: BufferMut) -> i32 {
+        if this.released {
+            return 0;
+        }
+        ops::ancestors(shared(), node as u64).map_or(0, |ids| put_ids(&ids, out))
+    }
+
+    /// Writes `node`'s padding, border and margin, each top, right, bottom and left, as twelve f32s.
+    pub extern "C" fn get_box(this: &Tree, node: i64, out: BufferMut) -> bool {
+        !this.released
+            && ops::box_model(shared(), node as u64).is_some_and(|values| put_floats(&values, out))
+    }
+
+    /// Writes `node`'s padding and whether it paints a box of its own, as five f32s.
+    pub extern "C" fn box_edges(this: &Tree, node: i64, out: BufferMut) -> bool {
+        !this.released
+            && ops::box_edges(shared(), node as u64).is_some_and(|values| put_floats(&values, out))
+    }
+
+    /// Whether any of `node`'s box is on screen.
+    pub extern "C" fn in_view(this: &Tree, node: i64) -> bool {
+        !this.released && shared().in_view(id(node as u64))
+    }
+
+    /// `node`'s own text alignment, 0 left, 1 centre, 2 right; -1 when it has none.
+    pub extern "C" fn text_align(this: &Tree, node: i64) -> i32 {
+        if this.released {
+            return -1;
+        }
+        ops::text_align(shared(), node as u64)
+    }
+
+    /// Writes the line limit (0 for none) and the text-overflow (-1 undeclared, 0 clip, 1 ellipsis) as two i32s.
+    pub extern "C" fn text_limits(this: &Tree, node: i64, out: BufferMut) {
+        if this.released || out.len() < 8 {
+            return;
+        }
+        let (lines, overflow) = ops::text_limits(shared(), node as u64);
+        let at = out.as_mut_ptr() as *mut i32;
+        unsafe {
+            at.write_unaligned(lines);
+            at.add(1).write_unaligned(overflow);
+        }
+    }
+
     /// Applies a `Single` property (`prop` is ashui's `PropertyId`) to `node`; takes effect at the next `flush`.
     pub extern "C" fn apply_f32(this: &Tree, node: i64, prop: i32, value: f32) {
         if !this.released {
@@ -210,6 +355,18 @@ caribou_abi::plugin! {
         fn clear_children(&Tree, i64);
         fn compute_layout(&Tree, i64, f32, f32);
         fn get_bounds(&Tree, i64, BufferMut) -> bool;
+        fn create_text_node(&Tree, Text, Text, f32, f32, i32, i32, i32) -> i64;
+        fn replace_node(&Tree, i64, i64);
+        fn replace_children(&Tree, i64, Buffer);
+        fn set_children(&Tree, i64, Buffer);
+        fn set_grid_rows(&Tree, i64, Buffer) -> bool;
+        fn children(&Tree, i64, BufferMut) -> i32;
+        fn ancestors(&Tree, i64, BufferMut) -> i32;
+        fn get_box(&Tree, i64, BufferMut) -> bool;
+        fn box_edges(&Tree, i64, BufferMut) -> bool;
+        fn in_view(&Tree, i64) -> bool;
+        fn text_align(&Tree, i64) -> i32;
+        fn text_limits(&Tree, i64, BufferMut);
         fn apply_f32(&Tree, i64, i32, f32);
         fn apply_i32(&Tree, i64, i32, i32);
         fn apply_string(&Tree, i64, i32, Text);

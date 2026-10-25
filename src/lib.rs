@@ -42,6 +42,8 @@ pub mod layout_tree;
 pub mod node;
 #[cfg(feature = "scene")]
 mod notch;
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
+pub(crate) mod ops;
 #[cfg(feature = "hashlink")]
 pub mod reactive;
 #[cfg(any(feature = "hashlink", feature = "caribou"))]
