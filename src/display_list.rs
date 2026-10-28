@@ -575,24 +575,17 @@ fn clipping(clips: &[Clip], m: Affine, origin: (f32, f32), local: bool, cull: bo
 /// rects, with a corner rounded only where the intersection still reaches
 /// into the rounded corner of the clip it came from. Blinc's
 /// `GpuPaintContext::get_clip_data` for rect and rounded-rect clips.
-fn clip_data(clips: impl Iterator<Item = Clip>) -> ([f32; 4], [f32; 4], f32) {
+fn clip_data(clips: impl Iterator<Item = Clip> + Clone) -> ([f32; 4], [f32; 4], f32) {
     let mut any = false;
     let (mut min_x, mut min_y) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
     let (mut max_x, mut max_y) = (f32::INFINITY, f32::INFINITY);
-    // Per corner: the largest radius and the bounds of the clip it came from.
-    let mut sources = [(0.0f32, [0.0f32; 4]); 4];
-    for clip in clips {
+    for clip in clips.clone() {
         any = true;
         let [x, y, w, h] = clip.rect;
         min_x = min_x.max(x);
         min_y = min_y.max(y);
         max_x = max_x.min(x + w);
         max_y = max_y.min(y + h);
-        for (slot, &radius) in sources.iter_mut().zip(clip.radii.iter()) {
-            if radius > slot.0 {
-                *slot = (radius, [x, y, x + w, y + h]);
-            }
-        }
     }
     if !any {
         return (NO_CLIP, [0.0; 4], CLIP_NONE);
@@ -605,14 +598,20 @@ fn clip_data(clips: impl Iterator<Item = Clip>) -> ([f32; 4], [f32; 4], f32) {
         2 => (s[2] - max_x, s[3] - max_y),
         _ => (min_x - s[0], s[3] - max_y),
     };
-    for (corner, &(r, source)) in sources.iter().enumerate() {
-        if r > 0.0 {
-            let (dx, dy) = insets(corner, source);
-            if dx < r && dy < r {
-                radii[corner] = (r - dx.max(0.0)).clamp(0.0, r);
+    // Only corners that reach the intersection can contribute to its rounding.
+    for clip in clips {
+        let [x, y, w, h] = clip.rect;
+        for corner in 0..4 {
+            let r = clip.radii[corner];
+            if r > 0.0 {
+                let (dx, dy) = insets(corner, [x, y, x + w, y + h]);
+                if dx < r && dy < r {
+                    radii[corner] = radii[corner].max((r - dx.max(0.0)).clamp(0.0, r));
+                }
             }
         }
     }
+
     (
         [
             min_x,
@@ -3072,6 +3071,29 @@ mod culling_tests {
         // A shadow takes no local clip: it keeps the screen's.
         let clip = clipping(&[view, circle], IDENTITY, (0.0, 100.0), false, true);
         assert!(clip.cut.is_none());
+    }
+
+    #[test]
+    fn nested_round_clips_keep_active_inner_corners() {
+        for outer_radius in [12.0, 24.0, 48.0] {
+            let mut outer = rect_clip([0.0, 0.0, 400.0, 300.0]);
+            outer.radii = [outer_radius; 4];
+            let mut inner = rect_clip([50.0, 50.0, 200.0, 150.0]);
+            inner.radii = [12.0; 4];
+            let (bounds, radii, _) = clip_data([outer, inner].into_iter());
+            assert_eq!(bounds, inner.rect);
+            assert_eq!(radii, [12.0; 4]);
+        }
+    }
+
+    #[test]
+    fn active_outer_rounding_survives_a_sharp_inner_clip() {
+        let mut outer = rect_clip([0.0, 0.0, 100.0, 100.0]);
+        outer.radii = [24.0; 4];
+        let inner = rect_clip([0.0, 0.0, 100.0, 100.0]);
+        assert_eq!(clip_data([outer, inner].into_iter()).1, [24.0; 4]);
+        let cut = rect_clip([30.0, 30.0, 40.0, 40.0]);
+        assert_eq!(clip_data([outer, cut].into_iter()).1, [0.0; 4]);
     }
 
     #[test]
