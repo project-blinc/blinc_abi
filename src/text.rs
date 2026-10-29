@@ -738,6 +738,26 @@ mod tests {
         let spaced = measure(&context, text, 2.0, None).unwrap();
         assert!(spaced.width > one.width);
     }
+    #[test]
+    fn prepare_glyphs_rasterizes_into_atlas_and_reports_metrics() {
+        let mut out = [0.0f32; 256];
+        let mut info = [0.0f32; 4];
+        let style = [0.0, 400.0, 0.0, 16.0, 0.0, 1.2];
+        let n = unsafe {
+            prepare_glyphs(
+                "Hello\nWorld",
+                None,
+                style,
+                out.as_mut_ptr() as *mut u8,
+                out.len() as i32,
+                info.as_mut_ptr() as *mut u8,
+            )
+        };
+        assert!(n >= 90 && n % 9 == 0);
+        assert!(info[0] > 0.0 && info[1] > 0.0 && info[2] > 0.0 && info[3] > 0.0);
+        // Second line's glyphs sit below the first line.
+        assert!(out[5 * 9 + 1] > out[1]);
+    }
 }
 
 // ============================================================================
@@ -921,3 +941,168 @@ pub unsafe extern "C" fn hl_blinc_text_outline(
 }
 #[cfg(feature = "hashlink")]
 define_prim!(hlp_blinc_text_outline, hl_blinc_text_outline, "PBBBBiB_i");
+
+/// `text` laid out and rasterized into the glyph atlases in a face of `font_name`
+/// (else the generic family), as `style` sets it, six f32s: generic family (0
+/// system, 1 monospace, 2 serif, 3 sans-serif), weight, italic (0 or 1), size
+/// in pixels, letter spacing and line height. Writes nine f32s per glyph to `out`:
+/// `[x, y, width, height, u0, v0, u1, v1, is_color]`, where `(x, y, width, height)`
+/// are in pixels from the top-left of the text box and `(u0, v0, u1, v1)` are the
+/// glyph's rectangle in its atlas in pixels (`is_color` is 1.0 for the colour-glyph
+/// atlas, 0.0 for the coverage atlas). Writes the widest line's width, the face's
+/// ascent and descent (positive, below the baseline) and its line height, in pixels,
+/// as four f32s to `info`. Returns the number of f32s (`glyph_count * 9`), copying
+/// them to `out` when they fit in `capacity`; 0 when no face is found.
+pub unsafe fn prepare_glyphs(
+    text: &str,
+    name: Option<String>,
+    style: [f32; 6],
+    out: *mut u8,
+    capacity: i32,
+    info: *mut u8,
+) -> i32 {
+    let s = |i: usize| style[i];
+    let (generic, weight, italic, size, letter_spacing, line_height) =
+        (s(0) as i32, s(1) as i32, s(2) != 0.0, s(3), s(4), s(5));
+    if size <= 0.0 {
+        return 0;
+    }
+    let generic = match generic {
+        1 => GenericFont::Monospace,
+        2 => GenericFont::Serif,
+        3 => GenericFont::SansSerif,
+        _ => GenericFont::System,
+    };
+    let name = name.or_else(|| {
+        if generic == GenericFont::System {
+            system_ui()
+        } else {
+            None
+        }
+    });
+    let weight = weight.clamp(1, 1000) as u16;
+    let (ascent, descent, natural) = {
+        let registry = global_font_registry();
+        let mut registry = registry.lock().unwrap_or_else(|e| e.into_inner());
+        let font = match registry.get_for_render_with_style(name.as_deref(), generic, weight, italic) {
+            Some(font) => font,
+            None => match registry.load_with_fallback_styled(
+                name.as_deref(),
+                generic,
+                weight,
+                italic,
+            ) {
+                Ok(font) => font,
+                Err(_) => return 0,
+            },
+        };
+        let m = font.metrics();
+        (
+            m.ascender_px(size),
+            -m.descender_px(size),
+            m.line_height_px(size),
+        )
+    };
+    let options = LayoutOptions {
+        max_width: None,
+        alignment: TextAlignment::Left,
+        anchor: TextAnchor::Top,
+        line_break: LineBreakMode::None,
+        line_height: 1.0,
+        letter_spacing,
+    };
+    let step = if line_height > 0.0 {
+        size * line_height
+    } else {
+        natural
+    };
+    let mut r = renderer();
+    let mut glyphs_out: Vec<f32> = Vec::new();
+    let mut widest = 0.0f32;
+    for (row, paragraph) in text.split('\n').enumerate() {
+        if paragraph.is_empty() {
+            continue;
+        }
+        let prepared = match r.prepare_text_subpixel(
+            paragraph,
+            size,
+            [1.0; 4],
+            &options,
+            name.as_deref(),
+            generic,
+            weight,
+            italic,
+            None,
+        ) {
+            Ok(p) => p,
+            Err(TextError::AtlasFull) => {
+                r.clear();
+                match r.prepare_text_subpixel(
+                    paragraph,
+                    size,
+                    [1.0; 4],
+                    &options,
+                    name.as_deref(),
+                    generic,
+                    weight,
+                    italic,
+                    None,
+                ) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                }
+            }
+            Err(_) => continue,
+        };
+        widest = widest.max(prepared.width);
+        let down = row as f32 * step;
+        for g in &prepared.glyphs {
+            let [gx, gy, gw, gh] = g.bounds;
+            let [u0, v0, u1, v1] = g.uv_bounds;
+            glyphs_out.extend([
+                gx,
+                gy + down,
+                gw,
+                gh,
+                u0,
+                v0,
+                u1,
+                v1,
+                if g.is_color { 1.0 } else { 0.0 },
+            ]);
+        }
+    }
+    if !info.is_null() {
+        let info = info as *mut f32;
+        for (i, v) in [widest, ascent, descent, natural].into_iter().enumerate() {
+            unsafe { info.add(i).write_unaligned(v) };
+        }
+    }
+    let n = glyphs_out.len();
+    if !out.is_null() && n <= capacity.max(0) as usize {
+        unsafe { std::ptr::copy_nonoverlapping(glyphs_out.as_ptr(), out as *mut f32, n) };
+    }
+    n as i32
+}
+#[cfg(feature = "hashlink")]
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn hl_blinc_text_prepare(
+    text: *const vbyte,
+    font_name: *const vbyte,
+    style: *const vbyte,
+    out: *mut vbyte,
+    capacity: i32,
+    info: *mut vbyte,
+) -> i32 {
+    if style.is_null() {
+        return 0;
+    }
+    let s = |i: usize| unsafe { (style as *const f32).add(i).read_unaligned() };
+    let style = [s(0), s(1), s(2), s(3), s(4), s(5)];
+    let text = unsafe { crate::hl::string_from(text) };
+    let name = unsafe { crate::hl::opt_string_from(font_name) };
+    unsafe { prepare_glyphs(&text, name, style, out, capacity, info) }
+}
+#[cfg(feature = "hashlink")]
+define_prim!(hlp_blinc_text_prepare, hl_blinc_text_prepare, "PBBBBiB_i");
