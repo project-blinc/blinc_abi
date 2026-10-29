@@ -1039,6 +1039,7 @@ pub unsafe fn prepare_glyphs(
     } else {
         natural
     };
+    let subpixel = Some(SubpixelX::new(SUBPIXEL_PHASES, 0.0));
     let mut r = renderer();
     let mut glyphs_out: Vec<f32> = Vec::new();
     let mut widest = 0.0f32;
@@ -1055,7 +1056,7 @@ pub unsafe fn prepare_glyphs(
             generic,
             weight,
             italic,
-            None,
+            subpixel,
         ) {
             Ok(p) => p,
             Err(TextError::AtlasFull) => {
@@ -1069,7 +1070,7 @@ pub unsafe fn prepare_glyphs(
                     generic,
                     weight,
                     italic,
-                    None,
+                    subpixel,
                 ) {
                     Ok(p) => p,
                     Err(_) => continue,
