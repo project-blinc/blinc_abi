@@ -815,7 +815,7 @@ mod tests {
             let (mut composed, mut whole) = (Vec::new(), Vec::new());
             let composed_width = {
                 let mut composer = Composer { r: &mut r, run: &run, style: &mut style, units: &mut units };
-                compose_paragraph(&mut composer, text, 0.0, &mut composed)
+                compose_paragraph(&mut composer, text, 0.0, &mut composed, None)
             };
             let whole_width = whole_paragraph(&mut r, &run, text, 0.0, &mut whole);
             assert_eq!(composed.len(), whole.len(), "glyph count of {text:?}");
@@ -826,6 +826,33 @@ mod tests {
             }
         }
         assert!(units > 0);
+    }
+    #[test]
+    fn advances_cover_every_character_and_add_up_to_the_width() {
+        let style = [0.0, 400.0, 0.0, 16.0, 0.0, 1.2];
+        for text in ["Hello world", "  two  spaces ", "AVATAR To", "fi office", "caf\u{e9} \u{4f60}\u{597d}", "one\ntwo"] {
+            let mut advances = Vec::new();
+            let mut info = [0.0f32; 4];
+            unsafe {
+                prepare_glyphs_with(text, None, style, std::ptr::null_mut(), 0, info.as_mut_ptr() as *mut u8, Some(&mut advances));
+            }
+            assert_eq!(advances.len(), text.chars().count(), "one advance per character of {text:?}");
+            let widest = text
+                .split('\n')
+                .scan(0, |start, line| {
+                    let count = line.chars().count();
+                    let sum: f32 = advances[*start..*start + count].iter().sum();
+                    *start += count + 1;
+                    Some(sum)
+                })
+                .fold(0.0f32, f32::max);
+            assert!((widest - info[0]).abs() < 0.01, "advances of {text:?} add up to {widest}, the width is {}", info[0]);
+            for (c, a) in text.chars().zip(&advances) {
+                if c == ' ' {
+                    assert!(*a > 0.0, "a space has an advance in {text:?}");
+                }
+            }
+        }
     }
 }
 
@@ -1278,7 +1305,13 @@ impl Composer<'_> {
 /// not. A unit is a character, or characters shaped together: those a font ligates, and runs of the scripts that
 /// need their neighbours. Each is placed at its own pen position's whole pixel and nearest third of a pixel, as
 /// shaping the line whole places a glyph, and kerning comes from the pair table. Returns the line's width.
-fn compose_paragraph(composer: &mut Composer, paragraph: &str, down: f32, out: &mut Vec<f32>) -> f32 {
+fn compose_paragraph(
+    composer: &mut Composer,
+    paragraph: &str,
+    down: f32,
+    out: &mut Vec<f32>,
+    mut advances: Option<&mut Vec<f32>>,
+) -> f32 {
     let chars: Vec<char> = paragraph.chars().collect();
     let bidirectional = chars.iter().any(|&c| right_to_left(c));
     let phases = SUBPIXEL_PHASES.get() as f32;
@@ -1303,6 +1336,9 @@ fn compose_paragraph(composer: &mut Composer, paragraph: &str, down: f32, out: &
             let kern = composer.pair(chars[i - 1], first);
             if kern.is_finite() {
                 pen += kern;
+                if let Some(last) = advances.as_deref_mut().and_then(|a| a.last_mut()) {
+                    *last += kern;
+                }
             }
         }
         let single = if j == i + 1 { ascii_index(first) } else { None };
@@ -1322,6 +1358,12 @@ fn compose_paragraph(composer: &mut Composer, paragraph: &str, down: f32, out: &
                 }
             }
             pen += unit.advance;
+            if let Some(a) = advances.as_deref_mut() {
+                let share = unit.advance / (j - i) as f32;
+                a.extend(std::iter::repeat(share).take(j - i));
+            }
+        } else if let Some(a) = advances.as_deref_mut() {
+            a.extend(std::iter::repeat(0.0).take(j - i));
         }
         i = j;
     }
@@ -1339,6 +1381,43 @@ fn whole_paragraph(r: &mut TextRenderer, run: &RunStyle, paragraph: &str, down: 
     }
     prepared.width
 }
+
+/// The advance of each character of `text` in the face and style `prepare_glyphs` takes, as f32s in `out` (at most
+/// `capacity`), and the line's width as one f32 in `info`. Returns how many characters there are. A `char` here is a
+/// Unicode scalar value; a caller indexing UTF-16 gives the second half of a surrogate pair no advance.
+#[cfg(feature = "hashlink")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn hl_blinc_text_advances(
+    text: *const vbyte,
+    font_name: *const vbyte,
+    style: *const vbyte,
+    out: *mut vbyte,
+    capacity: i32,
+    info: *mut vbyte,
+) -> i32 {
+    if style.is_null() {
+        return 0;
+    }
+    let s = |i: usize| unsafe { (style as *const f32).add(i).read_unaligned() };
+    let style = [s(0), s(1), s(2), s(3), s(4), s(5)];
+    let text = unsafe { crate::hl::string_from(text) };
+    let name = unsafe { crate::hl::opt_string_from(font_name) };
+    let mut advances = Vec::new();
+    let mut metrics = [0.0f32; 4];
+    unsafe {
+        prepare_glyphs_with(&text, name, style, std::ptr::null_mut(), 0, metrics.as_mut_ptr() as *mut u8, Some(&mut advances));
+    }
+    if !info.is_null() {
+        unsafe { (info as *mut f32).write_unaligned(metrics[0]) };
+    }
+    let n = advances.len();
+    if !out.is_null() && n <= capacity.max(0) as usize {
+        unsafe { std::ptr::copy_nonoverlapping(advances.as_ptr(), out as *mut f32, n) };
+    }
+    n as i32
+}
+#[cfg(feature = "hashlink")]
+define_prim!(hlp_blinc_text_advances, hl_blinc_text_advances, "PBBBBiB_i");
 
 /// Turns composing lines from cached units on or off; `1` is the default. Off shapes every line whole, so tests can
 /// compare the two. Returns the previous setting.
@@ -1368,6 +1447,21 @@ pub unsafe fn prepare_glyphs(
     out: *mut u8,
     capacity: i32,
     info: *mut u8,
+) -> i32 {
+    unsafe { prepare_glyphs_with(text, name, style, out, capacity, info, None) }
+}
+
+/// `prepare_glyphs`, and when `advances` is given, one advance per character of `text` in it: the distance from the
+/// character's origin to the next one's, kerning included, the shares of a unit shaped together (a ligature) equal,
+/// and a line break 0. Lines are only composed from cached units for this: with the cache off it is left empty.
+pub unsafe fn prepare_glyphs_with(
+    text: &str,
+    name: Option<String>,
+    style: [f32; 6],
+    out: *mut u8,
+    capacity: i32,
+    info: *mut u8,
+    mut advances: Option<&mut Vec<f32>>,
 ) -> i32 {
     let s = |i: usize| style[i];
     let (generic, weight, italic, size, letter_spacing, line_height) =
@@ -1457,11 +1551,21 @@ pub unsafe fn prepare_glyphs(
         };
         for (row, paragraph) in text.split('\n').enumerate() {
             if paragraph.is_empty() {
+                if row > 0 {
+                    if let Some(a) = advances.as_deref_mut() {
+                        a.push(0.0);
+                    }
+                }
                 continue;
             }
             let down = row as f32 * step;
+            if row > 0 {
+                if let Some(a) = advances.as_deref_mut() {
+                    a.push(0.0);
+                }
+            }
             let width = if cached {
-                compose_paragraph(&mut composer, paragraph, down, &mut glyphs_out)
+                compose_paragraph(&mut composer, paragraph, down, &mut glyphs_out, advances.as_deref_mut())
             } else {
                 whole_paragraph(composer.r, &run, paragraph, down, &mut glyphs_out)
             };
