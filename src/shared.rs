@@ -72,6 +72,8 @@ pub(crate) fn forget(tree: &mut Tree, nodes: &[LayoutNodeId]) {
     for node in nodes {
         unregister_node(*node);
         tree.owners.remove(node);
+        tree.pass_through.remove(node);
+        tree.pointer_auto.remove(node);
         tree.notches.remove(node);
         tree.even_odd.remove(node);
         tree.backdrop_filters.remove(node);
@@ -169,11 +171,7 @@ pub(crate) fn apply_pending(tree: &mut Tree) -> bool {
             },
             TreeWrite::PointerEvents(enabled) => {
                 if tree.layout.get_style(node).is_some() {
-                    if enabled {
-                        tree.pass_through.remove(&node);
-                    } else {
-                        tree.pass_through.insert(node);
-                    }
+                    tree.set_pointer_events(node, enabled);
                 }
             }
             TreeWrite::Position(_) => {}

@@ -387,11 +387,7 @@ pub(crate) fn set_image(tree: &mut Tree, node: u64, slot: i32) {
 
 /// Makes `node` paint itself in its content box as the canvas known as `slot`; a negative `slot` stops it.
 pub(crate) fn set_canvas(tree: &mut Tree, node: u64, slot: i32) {
-    if slot < 0 {
-        tree.canvases.remove(&id(node));
-    } else {
-        tree.canvases.insert(id(node), slot);
-    }
+    tree.set_canvas(id(node), (slot >= 0).then_some(slot));
 }
 
 /// Draws `node` as a notch from twelve f32s (see `Tree.setNotch`); `None` draws it as a box again.
@@ -432,11 +428,7 @@ pub(crate) fn set_visual(
 
 /// Makes the hit test pass through `node` and everything inside it, or not.
 pub(crate) fn set_pass_through(tree: &mut Tree, node: u64, through: bool) {
-    if through {
-        tree.pass_through.insert(id(node));
-    } else {
-        tree.pass_through.remove(&id(node));
-    }
+    tree.set_pointer_events(id(node), Some(!through));
 }
 
 /// Styles an overlay scrollbar: width zero hides it; `track` is straight-alpha 0xAARRGGBB, zero transparent.

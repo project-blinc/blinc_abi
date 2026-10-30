@@ -198,7 +198,7 @@ pub(crate) enum TreeWrite {
     ZIndex(Option<i32>),
     TextOverflow(Option<bool>),
     LineClamp(Option<u32>),
-    PointerEvents(bool),
+    PointerEvents(Option<bool>),
     BackgroundMapping(Option<crate::types::ImageMapping>),
 }
 
@@ -697,7 +697,7 @@ fn i32_target(node: LayoutNodeId, raw: i32) -> Option<(PropertyId, Write<i32>)> 
         VISIBILITY => Some((PropertyId::Opacity, render(|p, v| p.visible = v == 0))),
         POINTER_EVENTS => Some((
             PropertyId::Transform,
-            render(move |_, v| record_tree(node, TreeWrite::PointerEvents(v == 0))),
+            render(move |_, v| record_tree(node, TreeWrite::PointerEvents(Some(v == 0)))),
         )),
         Z_INDEX => Some((
             PropertyId::Transform,
@@ -1202,7 +1202,7 @@ pub(crate) fn unset(node: u64, raw: i32) {
         VISIBILITY => ren(P::Opacity, Box::new(|p| p.visible = true)),
         POINTER_EVENTS => ren(
             P::Transform,
-            Box::new(move |_| record_tree(node, TreeWrite::PointerEvents(true))),
+            Box::new(move |_| record_tree(node, TreeWrite::PointerEvents(None))),
         ),
         TEXT_OVERFLOW => ren(
             P::TextAlign,

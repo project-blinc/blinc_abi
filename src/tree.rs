@@ -60,8 +60,9 @@ pub struct Tree {
     pub(crate) scrolls: HashMap<LayoutNodeId, Scroll>,
     /// Only scrollbars with a non-default width or track need a style entry.
     pub(crate) scrollbar_styles: HashMap<LayoutNodeId, ScrollbarStyle>,
-    /// Nodes the hit test passes through, with everything inside them, as CSS's `pointer-events: none`.
+    /// Explicit pointer-events: none; descendants inherit it unless they opt into Auto.
     pub(crate) pass_through: std::collections::HashSet<LayoutNodeId>,
+    pub(crate) pointer_auto: HashSet<LayoutNodeId>,
     /// Nodes drawn as a notch: signed corner radii, then the top and bottom edges' modifiers.
     pub(crate) notches: HashMap<LayoutNodeId, [[f32; 4]; 3]>,
     /// Nodes whose clip-path polygon or path fills by the even-odd rule rather than nonzero.
@@ -565,6 +566,37 @@ impl Tree {
         self.clamped = want.into_keys().collect();
     }
 
+    pub(crate) fn set_canvas(&mut self, node: LayoutNodeId, slot: Option<i32>) {
+        if let Some(slot) = slot {
+            if self.canvases.insert(node, slot).is_none() {
+                self.layout.set_intrinsic_size(
+                    node,
+                    Some(taffy::Size {
+                        width: 300.0,
+                        height: 150.0,
+                    }),
+                );
+            }
+        } else if self.canvases.remove(&node).is_some() {
+            self.layout.set_intrinsic_size(node, None);
+        }
+    }
+
+    /// Explicit pointer state, or None to restore inheritance (0fdf88b / Ashui 0fe11ba).
+    pub(crate) fn set_pointer_events(&mut self, node: LayoutNodeId, enabled: Option<bool>) {
+        self.pass_through.remove(&node);
+        self.pointer_auto.remove(&node);
+        match enabled {
+            Some(true) => {
+                self.pointer_auto.insert(node);
+            }
+            Some(false) => {
+                self.pass_through.insert(node);
+            }
+            None => {}
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             layout: LayoutTree::new(),
@@ -581,6 +613,7 @@ impl Tree {
             scrolls: HashMap::new(),
             scrollbar_styles: HashMap::new(),
             pass_through: HashSet::new(),
+            pointer_auto: HashSet::new(),
             notches: HashMap::new(),
             #[cfg(feature = "scene")]
             even_odd: HashSet::new(),
@@ -632,6 +665,7 @@ impl Tree {
         self.scrolls.remove(&id);
         self.scrollbar_styles.remove(&id);
         self.pass_through.remove(&id);
+        self.pointer_auto.remove(&id);
         self.notches.remove(&id);
         self.backdrop_filters.remove(&id);
         self.border_styles.remove(&id);

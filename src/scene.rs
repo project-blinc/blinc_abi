@@ -179,11 +179,7 @@ impl LayoutContext {
     pub fn set_pointer_events(&mut self, node: Node, enabled: bool) -> Result<()> {
         let id = self.check(node)?;
         let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
-        if enabled {
-            tree.pass_through.remove(&id);
-        } else {
-            tree.pass_through.insert(id);
-        }
+        tree.set_pointer_events(id, Some(enabled));
         self.revision += 1;
         Ok(())
     }
@@ -194,15 +190,12 @@ impl LayoutContext {
             return Err("Resource slot exceeds exact float range");
         }
         let tree = self.tree.as_mut().ok_or("Layout context is disposed")?;
-        let slots = if canvas {
-            &mut tree.canvases
+        if canvas {
+            tree.set_canvas(id, slot);
+        } else if let Some(slot) = slot {
+            tree.images.insert(id, slot);
         } else {
-            &mut tree.images
-        };
-        if let Some(slot) = slot {
-            slots.insert(id, slot);
-        } else {
-            slots.remove(&id);
+            tree.images.remove(&id);
         }
         self.revision += 1;
         Ok(())

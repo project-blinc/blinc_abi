@@ -155,6 +155,7 @@ fn hit(
         out,
         region,
         HitPass::All,
+        true,
     )
 }
 
@@ -170,10 +171,15 @@ fn hit_inner(
     out: &mut Vec<Hit>,
     region: &mut HitRegion,
     pass: HitPass,
+    inherited_pointer: bool,
 ) -> bool {
-    if tree.pass_through.contains(&node) {
-        return false;
-    }
+    // 0fdf88b / Ashui 0fe11ba: a None node is not a target, but an explicit Auto
+    // descendant is. Keep the ancestor in the path when that descendant hits.
+    let pointer = if tree.pass_through.contains(&node) {
+        false
+    } else {
+        inherited_pointer || tree.pointer_auto.contains(&node)
+    };
     let Some(layout) = tree.layout.get_layout(node) else {
         return false;
     };
@@ -290,6 +296,7 @@ fn hit_inner(
                 out,
                 region,
                 pass,
+                pointer,
             ) {
                 found = true;
                 break;
@@ -310,6 +317,7 @@ fn hit_inner(
                         out,
                         region,
                         HitPass::Box,
+                        pointer,
                     )
                 {
                     found = true;
@@ -321,7 +329,7 @@ fn hit_inner(
     if clipped {
         clips.pop();
     }
-    if !found && pass != HitPass::Children {
+    if !found && pointer && pass != HitPass::Children {
         let inside_clips = clips.iter().all(|c| {
             let (cx, cy) = apply(c.to_layout, px, py);
             let [rx, ry, rw, rh] = c.rect;
@@ -608,6 +616,40 @@ mod tests {
                 height: AvailableSpace::Definite(200.0),
             },
         );
+    }
+
+    #[test]
+    fn explicit_auto_descendants_restore_inherited_pointer_hits() {
+        let mut tree = Tree::new();
+        let root = box_at(&mut tree, 0.0, 0.0, 200.0, 200.0);
+        let back = box_at(&mut tree, 0.0, 0.0, 200.0, 200.0);
+        let overlay = box_at(&mut tree, 0.0, 0.0, 180.0, 180.0);
+        let child = box_at(&mut tree, 10.0, 10.0, 70.0, 70.0);
+        let leaf = box_at(&mut tree, 5.0, 5.0, 20.0, 20.0);
+        tree.add_child(root, back);
+        tree.add_child(root, overlay);
+        tree.add_child(overlay, child);
+        tree.add_child(child, leaf);
+        tree.set_pointer_events(overlay, Some(false));
+        layout(&mut tree, root);
+        assert_eq!(test(&tree, root, 20.0, 20.0)[0].node, back);
+        tree.set_pointer_events(child, Some(true));
+        let path: Vec<_> = test(&tree, root, 20.0, 20.0)
+            .iter()
+            .map(|h| h.node)
+            .collect();
+        assert_eq!(path, [leaf, child, overlay, root]);
+        assert_eq!(test(&tree, root, 100.0, 100.0)[0].node, back);
+        assert!(verify(&tree, root) > 500);
+        tree.set_pointer_events(leaf, Some(false));
+        assert_eq!(test(&tree, root, 20.0, 20.0)[0].node, child);
+        tree.set_pointer_events(child, None);
+        assert_eq!(test(&tree, root, 20.0, 20.0)[0].node, back);
+        tree.set_pointer_events(overlay, None);
+        assert_eq!(test(&tree, root, 20.0, 20.0)[0].node, child);
+        tree.set_pointer_events(child, Some(true));
+        tree.forget(child);
+        assert!(!tree.pointer_auto.contains(&child));
     }
     // Compare every point in each cached cell against the ordinary paint-order
     // walk, including points just inside its f32 boundaries.
