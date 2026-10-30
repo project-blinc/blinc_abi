@@ -14,6 +14,7 @@ use blinc_text::{
 };
 #[cfg(feature = "hashlink")]
 use hl_abi::{define_prim, vbyte};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 static RENDERER: LazyLock<Mutex<TextRenderer>> =
@@ -142,6 +143,15 @@ fn generic(g: LayoutGeneric) -> GenericFont {
         LayoutGeneric::SansSerif => GenericFont::SansSerif,
         _ => GenericFont::System,
     }
+}
+
+/// How many times the glyph atlases have been cleared to make room. Every atlas rectangle handed out before a clear
+/// is stale after it, so a caller that keeps rectangles compares this with the value it saw.
+static ATLAS_GENERATION: AtomicI32 = AtomicI32::new(0);
+
+/// Records that the glyph atlases were cleared; every clear in this library goes through it.
+pub(crate) fn note_atlas_cleared() {
+    ATLAS_GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 
 /// The offsets within a pixel a glyph may be rasterized at: thirds.
@@ -1061,6 +1071,7 @@ pub unsafe fn prepare_glyphs(
             Ok(p) => p,
             Err(TextError::AtlasFull) => {
                 r.clear();
+                note_atlas_cleared();
                 match r.prepare_text_subpixel(
                     paragraph,
                     size,
@@ -1130,3 +1141,12 @@ pub unsafe extern "C" fn hl_blinc_text_prepare(
 }
 #[cfg(feature = "hashlink")]
 define_prim!(hlp_blinc_text_prepare, hl_blinc_text_prepare, "PBBBBiB_i");
+
+/// The number of times the glyph atlases have been cleared; see `ATLAS_GENERATION`.
+#[cfg(feature = "hashlink")]
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_blinc_text_generation() -> i32 {
+    ATLAS_GENERATION.load(Ordering::Relaxed)
+}
+#[cfg(feature = "hashlink")]
+define_prim!(hlp_blinc_text_generation, hl_blinc_text_generation, "P_i");

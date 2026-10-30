@@ -357,7 +357,10 @@ pub(crate) fn display_list(tree: &mut Tree, root: u64, params: [f32; 8]) -> (Vec
             }
         },
         &mut *renderer,
-        |renderer| renderer.clear(),
+        |renderer| {
+            renderer.clear();
+            crate::text::note_atlas_cleared();
+        },
     );
     use crate::display_list::{RECORD_FLOATS, SHAPE_POLYGON};
     let drawn = records.len() / RECORD_FLOATS;
