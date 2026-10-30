@@ -14,7 +14,8 @@ use blinc_text::{
 };
 #[cfg(feature = "hashlink")]
 use hl_abi::{define_prim, vbyte};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 static RENDERER: LazyLock<Mutex<TextRenderer>> =
@@ -768,6 +769,51 @@ mod tests {
         // Second line's glyphs sit below the first line.
         assert!(out[5 * 9 + 1] > out[1]);
     }
+    #[test]
+    fn composed_lines_match_whole_lines() {
+        let options = LayoutOptions {
+            max_width: None,
+            alignment: TextAlignment::Left,
+            anchor: TextAnchor::Top,
+            line_break: LineBreakMode::None,
+            line_height: 1.0,
+            letter_spacing: 0.0,
+        };
+        let run = RunStyle {
+            key: StyleKey {
+                name: None,
+                generic: GenericFont::System,
+                weight: 400,
+                italic: false,
+                size: 16.0f32.to_bits(),
+                spacing: 0.0f32.to_bits(),
+            },
+            name: None,
+            generic: GenericFont::System,
+            weight: 400,
+            italic: false,
+            size: 16.0,
+            options: &options,
+        };
+        let mut r = renderer();
+        let mut style = StyleCache::new();
+        let mut units = 0usize;
+        for text in ["Hello world", "AVATAR To Wa Ty", "caf\u{e9} \u{4f60}\u{597d}", "fi fl office", "  spaced  out "] {
+            let (mut composed, mut whole) = (Vec::new(), Vec::new());
+            let composed_width = {
+                let mut composer = Composer { r: &mut r, run: &run, style: &mut style, units: &mut units };
+                compose_paragraph(&mut composer, text, 0.0, &mut composed)
+            };
+            let whole_width = whole_paragraph(&mut r, &run, text, 0.0, &mut whole);
+            assert_eq!(composed.len(), whole.len(), "glyph count of {text:?}");
+            assert!((composed_width - whole_width).abs() < 0.5, "width of {text:?}: {composed_width} against {whole_width}");
+            for (c, w) in composed.chunks(9).zip(whole.chunks(9)) {
+                assert!((c[0] - w[0]).abs() <= 1.0, "glyph x in {text:?}: {} against {}", c[0], w[0]);
+                assert_eq!((c[2], c[3]), (w[2], w[3]), "glyph size in {text:?}");
+            }
+        }
+        assert!(units > 0);
+    }
 }
 
 // ============================================================================
@@ -952,6 +998,335 @@ pub unsafe extern "C" fn hl_blinc_text_outline(
 #[cfg(feature = "hashlink")]
 define_prim!(hlp_blinc_text_outline, hl_blinc_text_outline, "PBBBBiB_i");
 
+/// What shapes a run: the face, its style, the size and the letter spacing.
+#[derive(Hash, PartialEq, Eq, Clone)]
+struct StyleKey {
+    name: Option<String>,
+    generic: GenericFont,
+    weight: u16,
+    italic: bool,
+    size: u32,
+    spacing: u32,
+}
+
+/// A piece of a line shaped once: its advance and, per subpixel phase it has been placed at, its glyphs as nine f32s
+/// each, relative to the run origin. A unit is one character, or the characters that must be shaped together.
+#[derive(Default)]
+struct Unit {
+    advance: f32,
+    phases: [Option<Vec<f32>>; 3],
+}
+
+/// The first printable ASCII character, and how many there are: those units and pairs live in arrays.
+const ASCII_FIRST: u32 = 32;
+const ASCII_COUNT: usize = 95;
+
+/// What one style has learned: its units, and for pairs of characters what shaping them side by side adds.
+/// A pair's value is NaN until it is known, infinity when the two must be shaped together, else the kerning.
+struct StyleCache {
+    ascii: Vec<Unit>,
+    others: HashMap<String, Unit>,
+    ascii_pairs: Vec<f32>,
+    other_pairs: HashMap<(char, char), f32>,
+}
+
+impl StyleCache {
+    fn new() -> Self {
+        let mut cache = Self {
+            ascii: Vec::new(),
+            others: HashMap::new(),
+            ascii_pairs: Vec::new(),
+            other_pairs: HashMap::new(),
+        };
+        cache.reset();
+        cache
+    }
+
+    fn reset(&mut self) {
+        self.ascii.clear();
+        self.ascii.resize_with(ASCII_COUNT, Unit::default);
+        self.others.clear();
+        self.ascii_pairs.clear();
+        self.ascii_pairs.resize(ASCII_COUNT * ASCII_COUNT, f32::NAN);
+        self.other_pairs.clear();
+    }
+}
+
+/// Styles already learned. Atlas rectangles are inside them, so it is emptied whenever the atlases are cleared.
+#[derive(Default)]
+struct WordCache {
+    styles: HashMap<StyleKey, StyleCache>,
+    units: usize,
+    generation: i32,
+}
+
+/// The most units kept before the cache starts again.
+const MAX_CACHED_UNITS: usize = 100_000;
+
+impl WordCache {
+    fn check_generation(&mut self) {
+        let now = ATLAS_GENERATION.load(Ordering::Relaxed);
+        if now != self.generation || self.units >= MAX_CACHED_UNITS {
+            self.styles.clear();
+            self.units = 0;
+            self.generation = now;
+        }
+    }
+}
+
+static WORD_CACHE: LazyLock<Mutex<WordCache>> = LazyLock::new(|| Mutex::new(WordCache::default()));
+
+/// Whether lines are composed from cached units. Off only for tests that compare with shaping whole lines.
+static WORD_CACHE_ENABLED: AtomicBool = AtomicBool::new(true);
+
+struct RunStyle<'a> {
+    key: StyleKey,
+    name: Option<&'a str>,
+    generic: GenericFont,
+    weight: u16,
+    italic: bool,
+    size: f32,
+    options: &'a LayoutOptions,
+}
+
+/// Characters whose glyphs depend on their neighbours beyond kerning: scripts that join, reorder or stack
+/// (Hebrew through Myanmar, Khmer and the rest to U+1DFF), Hangul jamo, emoji. A run of them is shaped as one unit.
+fn needs_context(c: char) -> bool {
+    matches!(c as u32,
+        0x0590..=0x109F | 0x1100..=0x11FF | 0x1700..=0x1DFF | 0x2190..=0x21FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF
+        | 0x1F000..=0x1FAFF)
+}
+
+/// Characters of right-to-left scripts and the marks that set direction. A line holding any is reordered as a whole when
+/// shaped, so it is one unit.
+fn right_to_left(c: char) -> bool {
+    matches!(c as u32,
+        0x0590..=0x08FF | 0x200F | 0x202B | 0x202E | 0x2067 | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF
+        | 0x1E800..=0x1EFFF)
+}
+
+/// Characters that attach to the one before them: combining marks, joiners, variation selectors, emoji modifiers.
+fn extends(c: char) -> bool {
+    matches!(c as u32,
+        0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x200C..=0x200D | 0x20D0..=0x20FF | 0xFE00..=0xFE0F
+        | 0xFE20..=0xFE2F | 0x1F3FB..=0x1F3FF | 0xE0100..=0xE01EF)
+}
+
+/// Characters a font kerns: Latin, Greek and Cyrillic and general punctuation. The rest are placed on their advances.
+fn kerns(c: char) -> bool {
+    matches!(c as u32, 0x0020..=0x058F | 0x2000..=0x206F)
+}
+
+fn ascii_index(c: char) -> Option<usize> {
+    let c = c as u32;
+    (c >= ASCII_FIRST && c < ASCII_FIRST + ASCII_COUNT as u32).then(|| (c - ASCII_FIRST) as usize)
+}
+
+fn glyph_records(prepared: &PreparedText) -> Vec<f32> {
+    let mut out = Vec::with_capacity(prepared.glyphs.len() * 9);
+    for g in &prepared.glyphs {
+        let [gx, gy, gw, gh] = g.bounds;
+        let [u0, v0, u1, v1] = g.uv_bounds;
+        out.extend([gx, gy, gw, gh, u0, v0, u1, v1, if g.is_color { 1.0 } else { 0.0 }]);
+    }
+    out
+}
+
+/// Shapes `text` into the atlases with the origin at `origin` pixels, clearing the atlases once if they are full.
+/// Returns whether it cleared them: everything the cache holds is stale then.
+fn shape(
+    r: &mut TextRenderer,
+    run: &RunStyle,
+    text: &str,
+    origin: f32,
+    cleared: &mut bool,
+) -> Option<PreparedText> {
+    let subpixel = Some(SubpixelX::new(SUBPIXEL_PHASES, origin));
+    let attempt = |r: &mut TextRenderer| {
+        r.prepare_text_subpixel(
+            text,
+            run.size,
+            [1.0; 4],
+            run.options,
+            run.name,
+            run.generic,
+            run.weight,
+            run.italic,
+            subpixel,
+        )
+    };
+    match attempt(r) {
+        Ok(p) => Some(p),
+        Err(TextError::AtlasFull) => {
+            r.clear();
+            note_atlas_cleared();
+            *cleared = true;
+            attempt(r).ok()
+        }
+        Err(_) => None,
+    }
+}
+
+/// One line being composed: the renderer, the style's cache and where the unit count is kept.
+struct Composer<'a> {
+    r: &'a mut TextRenderer,
+    run: &'a RunStyle<'a>,
+    style: &'a mut StyleCache,
+    units: &'a mut usize,
+}
+
+impl Composer<'_> {
+    fn shape(&mut self, text: &str, origin: f32) -> Option<PreparedText> {
+        let mut cleared = false;
+        let prepared = shape(self.r, self.run, text, origin, &mut cleared);
+        if cleared {
+            self.style.reset();
+            *self.units = 0;
+        }
+        prepared
+    }
+
+    /// What shaping `a` then `b` adds to their separate widths (the kerning), or infinity when they come out as other
+    /// than one glyph each and so must be shaped together (a ligature).
+    fn pair(&mut self, a: char, b: char) -> f32 {
+        if !kerns(a) || !kerns(b) {
+            return 0.0;
+        }
+        let ascii = ascii_index(a).zip(ascii_index(b));
+        let known = match ascii {
+            Some((i, j)) => self.style.ascii_pairs[i * ASCII_COUNT + j],
+            None => self.style.other_pairs.get(&(a, b)).copied().unwrap_or(f32::NAN),
+        };
+        if !known.is_nan() {
+            return known;
+        }
+        let both: String = [a, b].iter().collect();
+        let shaped = self.shape(&both, 0.0);
+        let wa = self.shape(&a.to_string(), 0.0).map_or(0.0, |p| p.width);
+        let wb = self.shape(&b.to_string(), 0.0).map_or(0.0, |p| p.width);
+        let kern = match shaped {
+            Some(p) => {
+                let expected = [a, b].iter().filter(|c| !c.is_whitespace()).count();
+                if p.glyphs.len() == expected {
+                    p.width - wa - wb
+                } else {
+                    f32::INFINITY
+                }
+            }
+            None => 0.0,
+        };
+        match ascii {
+            Some((i, j)) => self.style.ascii_pairs[i * ASCII_COUNT + j] = kern,
+            None => {
+                self.style.other_pairs.insert((a, b), kern);
+            }
+        }
+        kern
+    }
+
+    /// The unit for `text` with its glyphs at `phase`, shaping it if it has not been.
+    fn unit(&mut self, text: &str, single: Option<usize>, phase: usize) -> Option<&Unit> {
+        let known = match single {
+            Some(i) => self.style.ascii[i].phases[phase].is_some(),
+            None => self.style.others.get(text).is_some_and(|u| u.phases[phase].is_some()),
+        };
+        if !known {
+            let phases = SUBPIXEL_PHASES.get() as f32;
+            let prepared = self.shape(text, phase as f32 / phases)?;
+            let records = glyph_records(&prepared);
+            let unit = match single {
+                Some(i) => &mut self.style.ascii[i],
+                None => self.style.others.entry(text.to_string()).or_default(),
+            };
+            if unit.phases.iter().all(Option::is_none) {
+                *self.units += 1;
+            }
+            unit.advance = prepared.width;
+            unit.phases[phase] = Some(records);
+        }
+        match single {
+            Some(i) => self.style.ascii[i].phases[phase].is_some().then(|| &self.style.ascii[i]),
+            None => self.style.others.get(text),
+        }
+    }
+}
+
+/// Appends the glyphs of one line to `out`, composed from the units the cache holds and shaping the ones it does
+/// not. A unit is a character, or characters shaped together: those a font ligates, and runs of the scripts that
+/// need their neighbours. Each is placed at its own pen position's whole pixel and nearest third of a pixel, as
+/// shaping the line whole places a glyph, and kerning comes from the pair table. Returns the line's width.
+fn compose_paragraph(composer: &mut Composer, paragraph: &str, down: f32, out: &mut Vec<f32>) -> f32 {
+    let chars: Vec<char> = paragraph.chars().collect();
+    let bidirectional = chars.iter().any(|&c| right_to_left(c));
+    let phases = SUBPIXEL_PHASES.get() as f32;
+    let mut pen = 0.0f32;
+    let mut i = 0;
+    let mut text = String::new();
+    while i < chars.len() {
+        let first = chars[i];
+        let mut j = if bidirectional { chars.len() } else { i + 1 };
+        while j < chars.len() {
+            let next = chars[j];
+            let joins = extends(next)
+                || (needs_context(first) && needs_context(next))
+                || (!needs_context(first) && !needs_context(next) && composer.pair(chars[j - 1], next).is_infinite());
+            if !joins {
+                break;
+            }
+            j += 1;
+        }
+        // The kerning with what came before, which is a plain pair: a joining one would have been taken into the last unit.
+        if i > 0 && !needs_context(first) && !needs_context(chars[i - 1]) {
+            let kern = composer.pair(chars[i - 1], first);
+            if kern.is_finite() {
+                pen += kern;
+            }
+        }
+        let single = if j == i + 1 { ascii_index(first) } else { None };
+        text.clear();
+        text.extend(&chars[i..j]);
+
+        let mut whole = pen.floor();
+        let mut phase = ((pen - whole) * phases).round() as usize;
+        if phase >= phases as usize {
+            whole += 1.0;
+            phase = 0;
+        }
+        if let Some(unit) = composer.unit(&text, single, phase) {
+            if let Some(records) = &unit.phases[phase] {
+                for g in records.chunks_exact(9) {
+                    out.extend([g[0] + whole, g[1] + down, g[2], g[3], g[4], g[5], g[6], g[7], g[8]]);
+                }
+            }
+            pen += unit.advance;
+        }
+        i = j;
+    }
+    pen
+}
+
+/// Appends the glyphs of one line shaped as a whole, the reference `compose_paragraph` is checked against.
+fn whole_paragraph(r: &mut TextRenderer, run: &RunStyle, paragraph: &str, down: f32, out: &mut Vec<f32>) -> f32 {
+    let mut cleared = false;
+    let Some(prepared) = shape(r, run, paragraph, 0.0, &mut cleared) else {
+        return 0.0;
+    };
+    for g in glyph_records(&prepared).chunks_exact(9) {
+        out.extend([g[0], g[1] + down, g[2], g[3], g[4], g[5], g[6], g[7], g[8]]);
+    }
+    prepared.width
+}
+
+/// Turns composing lines from cached units on or off; `1` is the default. Off shapes every line whole, so tests can
+/// compare the two. Returns the previous setting.
+#[cfg(feature = "hashlink")]
+#[unsafe(no_mangle)]
+pub extern "C" fn hl_blinc_text_word_cache(enabled: i32) -> i32 {
+    WORD_CACHE_ENABLED.swap(enabled != 0, Ordering::Relaxed) as i32
+}
+#[cfg(feature = "hashlink")]
+define_prim!(hlp_blinc_text_word_cache, hl_blinc_text_word_cache, "Pi_i");
+
 /// `text` laid out and rasterized into the glyph atlases in a face of `font_name`
 /// (else the generic family), as `style` sets it, six f32s: generic family (0
 /// system, 1 monospace, 2 serif, 3 sans-serif), weight, italic (0 or 1), size
@@ -1026,64 +1401,51 @@ pub unsafe fn prepare_glyphs(
     } else {
         natural
     };
-    let subpixel = Some(SubpixelX::new(SUBPIXEL_PHASES, 0.0));
     let mut r = renderer();
     let mut glyphs_out: Vec<f32> = Vec::new();
     let mut widest = 0.0f32;
-    for (row, paragraph) in text.split('\n').enumerate() {
-        if paragraph.is_empty() {
-            continue;
-        }
-        let prepared = match r.prepare_text_subpixel(
-            paragraph,
-            size,
-            [1.0; 4],
-            &options,
-            name.as_deref(),
+    let mut cache = WORD_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.check_generation();
+    let run = RunStyle {
+        key: StyleKey {
+            name: name.clone(),
             generic,
             weight,
             italic,
-            subpixel,
-        ) {
-            Ok(p) => p,
-            Err(TextError::AtlasFull) => {
-                r.clear();
-                note_atlas_cleared();
-                match r.prepare_text_subpixel(
-                    paragraph,
-                    size,
-                    [1.0; 4],
-                    &options,
-                    name.as_deref(),
-                    generic,
-                    weight,
-                    italic,
-                    subpixel,
-                ) {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                }
-            }
-            Err(_) => continue,
+            size: size.to_bits(),
+            spacing: letter_spacing.to_bits(),
+        },
+        name: name.as_deref(),
+        generic,
+        weight,
+        italic,
+        size,
+        options: &options,
+    };
+    let cached = WORD_CACHE_ENABLED.load(Ordering::Relaxed);
+    {
+        let WordCache { styles, units, .. } = &mut *cache;
+        let style = styles.entry(run.key.clone()).or_insert_with(StyleCache::new);
+        let mut composer = Composer {
+            r: &mut r,
+            run: &run,
+            style,
+            units,
         };
-        widest = widest.max(prepared.width);
-        let down = row as f32 * step;
-        for g in &prepared.glyphs {
-            let [gx, gy, gw, gh] = g.bounds;
-            let [u0, v0, u1, v1] = g.uv_bounds;
-            glyphs_out.extend([
-                gx,
-                gy + down,
-                gw,
-                gh,
-                u0,
-                v0,
-                u1,
-                v1,
-                if g.is_color { 1.0 } else { 0.0 },
-            ]);
+        for (row, paragraph) in text.split('\n').enumerate() {
+            if paragraph.is_empty() {
+                continue;
+            }
+            let down = row as f32 * step;
+            let width = if cached {
+                compose_paragraph(&mut composer, paragraph, down, &mut glyphs_out)
+            } else {
+                whole_paragraph(composer.r, &run, paragraph, down, &mut glyphs_out)
+            };
+            widest = widest.max(width);
         }
     }
+    drop(cache);
     if !info.is_null() {
         let info = info as *mut f32;
         for (i, v) in [widest, ascent, descent, natural].into_iter().enumerate() {
