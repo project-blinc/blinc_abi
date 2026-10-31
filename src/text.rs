@@ -150,6 +150,11 @@ fn generic(g: LayoutGeneric) -> GenericFont {
 /// is stale after it, so a caller that keeps rectangles compares this with the value it saw.
 static ATLAS_GENERATION: AtomicI32 = AtomicI32::new(0);
 
+/// Bits of the `flags` argument of `hl_blinc_text_prepare` and `hl_blinc_text_advances`; none set is the default.
+/// `HINT`: round each character's advance to a whole pixel, kerning excepted, as a hinted layout does.
+#[cfg(feature = "hashlink")]
+const HINT: i32 = 1;
+
 /// Records that the glyph atlases were cleared; every clear in this library goes through it.
 pub(crate) fn note_atlas_cleared() {
     ATLAS_GENERATION.fetch_add(1, Ordering::Relaxed);
@@ -800,6 +805,7 @@ mod tests {
                 italic: false,
                 size: 16.0f32.to_bits(),
                 spacing: 0.0f32.to_bits(),
+                hint: false,
             },
             name: None,
             generic: GenericFont::System,
@@ -807,6 +813,7 @@ mod tests {
             italic: false,
             size: 16.0,
             options: &options,
+            hint: false,
         };
         let mut r = renderer();
         let mut style = StyleCache::new();
@@ -828,13 +835,35 @@ mod tests {
         assert!(units > 0);
     }
     #[test]
+    fn hinted_advances_are_whole_pixels_and_do_not_mix_with_exact_ones() {
+        let style = [0.0, 400.0, 0.0, 14.0, 0.0, 1.2];
+        let lay = |text: &str, hint: bool| {
+            let mut advances = Vec::new();
+            let mut info = [0.0f32; 4];
+            unsafe {
+                prepare_glyphs_with(text, None, style, hint, std::ptr::null_mut(), 0, info.as_mut_ptr() as *mut u8, Some(&mut advances));
+            }
+            (advances, info[0])
+        };
+        let (exact, exact_width) = lay("mmmm", false);
+        let (hinted, hinted_width) = lay("mmmm", true);
+        assert!(hinted.iter().all(|a| (a - a.round()).abs() < 0.001), "hinted advances {hinted:?} are whole pixels");
+        assert!((hinted_width - 4.0 * exact[0].round()).abs() < 0.01, "hinted width {hinted_width} from exact {exact:?}");
+        // The two modes keep apart in the cache: asking for exact again gives the exact result.
+        let (_, again) = lay("mmmm", false);
+        assert!((again - exact_width).abs() < 0.001, "exact width changed from {exact_width} to {again}");
+        // A space is a unit like any other.
+        let (spaced, _) = lay("m m", true);
+        assert!(spaced.iter().all(|a| (a - a.round()).abs() < 0.001) && spaced[1] > 0.0);
+    }
+    #[test]
     fn advances_cover_every_character_and_add_up_to_the_width() {
         let style = [0.0, 400.0, 0.0, 16.0, 0.0, 1.2];
         for text in ["Hello world", "  two  spaces ", "AVATAR To", "fi office", "caf\u{e9} \u{4f60}\u{597d}", "one\ntwo"] {
             let mut advances = Vec::new();
             let mut info = [0.0f32; 4];
             unsafe {
-                prepare_glyphs_with(text, None, style, std::ptr::null_mut(), 0, info.as_mut_ptr() as *mut u8, Some(&mut advances));
+                prepare_glyphs_with(text, None, style, false, std::ptr::null_mut(), 0, info.as_mut_ptr() as *mut u8, Some(&mut advances));
             }
             assert_eq!(advances.len(), text.chars().count(), "one advance per character of {text:?}");
             let widest = text
@@ -1057,6 +1086,7 @@ struct StyleKey {
     italic: bool,
     size: u32,
     spacing: u32,
+    hint: bool,
 }
 
 /// A piece of a line shaped once: its advance and, per subpixel phase it has been placed at, its glyphs as nine f32s
@@ -1137,6 +1167,8 @@ struct RunStyle<'a> {
     italic: bool,
     size: f32,
     options: &'a LayoutOptions,
+    /// Round each unit's advance to a whole pixel, as a hinted layout does; kerning stays fractional.
+    hint: bool,
 }
 
 /// Characters whose glyphs depend on their neighbours beyond kerning: scripts that join, reorder or stack
@@ -1351,15 +1383,17 @@ fn compose_paragraph(
             whole += 1.0;
             phase = 0;
         }
+        let hint = composer.run.hint;
         if let Some(unit) = composer.unit(&text, single, phase) {
             if let Some(records) = &unit.phases[phase] {
                 for g in records.chunks_exact(9) {
                     out.extend([g[0] + whole, g[1] + down, g[2], g[3], g[4], g[5], g[6], g[7], g[8]]);
                 }
             }
-            pen += unit.advance;
+            let advance = if hint { unit.advance.round() } else { unit.advance };
+            pen += advance;
             if let Some(a) = advances.as_deref_mut() {
-                let share = unit.advance / (j - i) as f32;
+                let share = advance / (j - i) as f32;
                 a.extend(std::iter::repeat(share).take(j - i));
             }
         } else if let Some(a) = advances.as_deref_mut() {
@@ -1394,6 +1428,7 @@ pub unsafe extern "C" fn hl_blinc_text_advances(
     out: *mut vbyte,
     capacity: i32,
     info: *mut vbyte,
+    flags: i32,
 ) -> i32 {
     if style.is_null() {
         return 0;
@@ -1405,7 +1440,7 @@ pub unsafe extern "C" fn hl_blinc_text_advances(
     let mut advances = Vec::new();
     let mut metrics = [0.0f32; 4];
     unsafe {
-        prepare_glyphs_with(&text, name, style, std::ptr::null_mut(), 0, metrics.as_mut_ptr() as *mut u8, Some(&mut advances));
+        prepare_glyphs_with(&text, name, style, flags & HINT != 0, std::ptr::null_mut(), 0, metrics.as_mut_ptr() as *mut u8, Some(&mut advances));
     }
     if !info.is_null() {
         unsafe { (info as *mut f32).write_unaligned(metrics[0]) };
@@ -1417,7 +1452,7 @@ pub unsafe extern "C" fn hl_blinc_text_advances(
     n as i32
 }
 #[cfg(feature = "hashlink")]
-define_prim!(hlp_blinc_text_advances, hl_blinc_text_advances, "PBBBBiB_i");
+define_prim!(hlp_blinc_text_advances, hl_blinc_text_advances, "PBBBBiBi_i");
 
 /// Turns composing lines from cached units on or off; `1` is the default. Off shapes every line whole, so tests can
 /// compare the two. Returns the previous setting.
@@ -1448,16 +1483,18 @@ pub unsafe fn prepare_glyphs(
     capacity: i32,
     info: *mut u8,
 ) -> i32 {
-    unsafe { prepare_glyphs_with(text, name, style, out, capacity, info, None) }
+    unsafe { prepare_glyphs_with(text, name, style, false, out, capacity, info, None) }
 }
 
-/// `prepare_glyphs`, and when `advances` is given, one advance per character of `text` in it: the distance from the
+/// `prepare_glyphs` with `hint`, which rounds each character's advance to a whole pixel, kerning excepted, as a hinted
+/// layout does (lines shaped whole, with the cache off, are not hinted); and when `advances` is given, one advance per character of `text` in it: the distance from the
 /// character's origin to the next one's, kerning included, the shares of a unit shaped together (a ligature) equal,
 /// and a line break 0. Lines are only composed from cached units for this: with the cache off it is left empty.
 pub unsafe fn prepare_glyphs_with(
     text: &str,
     name: Option<String>,
     style: [f32; 6],
+    hint: bool,
     out: *mut u8,
     capacity: i32,
     info: *mut u8,
@@ -1531,6 +1568,7 @@ pub unsafe fn prepare_glyphs_with(
             italic,
             size: size.to_bits(),
             spacing: letter_spacing.to_bits(),
+            hint,
         },
         name: name.as_deref(),
         generic,
@@ -1538,6 +1576,7 @@ pub unsafe fn prepare_glyphs_with(
         italic,
         size,
         options: &options,
+        hint,
     };
     let cached = WORD_CACHE_ENABLED.load(Ordering::Relaxed);
     {
@@ -1595,6 +1634,7 @@ pub unsafe extern "C" fn hl_blinc_text_prepare(
     out: *mut vbyte,
     capacity: i32,
     info: *mut vbyte,
+    flags: i32,
 ) -> i32 {
     if style.is_null() {
         return 0;
@@ -1603,10 +1643,10 @@ pub unsafe extern "C" fn hl_blinc_text_prepare(
     let style = [s(0), s(1), s(2), s(3), s(4), s(5)];
     let text = unsafe { crate::hl::string_from(text) };
     let name = unsafe { crate::hl::opt_string_from(font_name) };
-    unsafe { prepare_glyphs(&text, name, style, out, capacity, info) }
+    unsafe { prepare_glyphs_with(&text, name, style, flags & HINT != 0, out, capacity, info, None) }
 }
 #[cfg(feature = "hashlink")]
-define_prim!(hlp_blinc_text_prepare, hl_blinc_text_prepare, "PBBBBiB_i");
+define_prim!(hlp_blinc_text_prepare, hl_blinc_text_prepare, "PBBBBiBi_i");
 
 /// The number of times the glyph atlases have been cleared; see `ATLAS_GENERATION`.
 #[cfg(feature = "hashlink")]
