@@ -601,17 +601,15 @@ fn clip_data(clips: impl Iterator<Item = Clip> + Clone) -> ([f32; 4], [f32; 4], 
     // Only corners that reach the intersection can contribute to its rounding.
     for clip in clips {
         let [x, y, w, h] = clip.rect;
-        for corner in 0..4 {
-            let r = clip.radii[corner];
+        for (corner, (slot, &r)) in radii.iter_mut().zip(clip.radii.iter()).enumerate() {
             if r > 0.0 {
                 let (dx, dy) = insets(corner, [x, y, x + w, y + h]);
                 if dx < r && dy < r {
-                    radii[corner] = radii[corner].max((r - dx.max(0.0)).clamp(0.0, r));
+                    *slot = slot.max((r - dx.max(0.0)).clamp(0.0, r));
                 }
             }
         }
     }
-
     (
         [
             min_x,
