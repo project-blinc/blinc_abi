@@ -115,6 +115,8 @@ fn forget(tree: &mut Tree, nodes: &[LayoutNodeId]) {
     for node in nodes {
         unregister_node(*node);
         tree.owners.remove(node);
+        tree.pass_through.remove(node);
+        tree.pointer_auto.remove(node);
         tree.notches.remove(node);
         tree.even_odd.remove(node);
         tree.backdrop_filters.remove(node);
@@ -584,11 +586,7 @@ pub unsafe extern "C" fn hl_blinc_tree_flush(h: *mut c_void) -> bool {
             },
             TreeWrite::PointerEvents(enabled) => {
                 if tree.layout.get_style(node).is_some() {
-                    if enabled {
-                        tree.pass_through.remove(&node);
-                    } else {
-                        tree.pass_through.insert(node);
-                    }
+                    tree.set_pointer_events(node, enabled);
                 }
             }
             TreeWrite::Position(_) => {}
@@ -988,11 +986,7 @@ define_prim!(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_tree_set_canvas(h: *mut c_void, node: u64, slot: i32) {
     if let Some(tree) = unsafe { tree(h) } {
-        if slot < 0 {
-            tree.canvases.remove(&id(node));
-        } else {
-            tree.canvases.insert(id(node), slot);
-        }
+        tree.set_canvas(id(node), (slot >= 0).then_some(slot));
     }
 }
 define_prim!(
@@ -1209,11 +1203,7 @@ define_prim!(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn hl_blinc_tree_set_pass_through(h: *mut c_void, node: u64, through: bool) {
     if let Some(tree) = unsafe { tree(h) } {
-        if through {
-            tree.pass_through.insert(id(node));
-        } else {
-            tree.pass_through.remove(&id(node));
-        }
+        tree.set_pointer_events(id(node), Some(!through));
     }
 }
 define_prim!(

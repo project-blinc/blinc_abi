@@ -128,6 +128,7 @@ pub struct LayoutTree {
     /// An opt-in layout projection; the base tree remains the authored tree.
     grid_rows: HashMap<LayoutNodeId, GridRows>,
     containment: HashMap<LayoutNodeId, crate::css::conditional::ContainerType>,
+    intrinsic: HashMap<LayoutNodeId, (Size<Dimension>, Size<f32>)>,
     pub(crate) error: Option<&'static str>,
 }
 impl Default for LayoutTree {
@@ -162,6 +163,7 @@ impl LayoutTree {
             baselines: HashMap::new(),
             grid_rows: HashMap::new(),
             containment: HashMap::new(),
+            intrinsic: HashMap::new(),
             error: None,
         }
     }
@@ -188,7 +190,46 @@ impl LayoutTree {
     pub(crate) fn visual_children(&self, parent: LayoutNodeId) -> Vec<LayoutNodeId> {
         self.base.children(parent)
     }
-    pub fn set_style(&mut self, node: LayoutNodeId, style: Style) {
+    /// Authored dimensions stay Auto; only the layout engine sees the fallback.
+    pub fn get_style(&self, node: LayoutNodeId) -> Option<Style> {
+        let mut style = self.base.get_style(node)?;
+        if let Some((authored, _)) = self.intrinsic.get(&node) {
+            style.size = *authored;
+        }
+        Some(style)
+    }
+
+    /// Replaced content's fallback size, without overriding absolute insets (ddd9344 / Ashui 34d767c).
+    pub(crate) fn set_intrinsic_size(&mut self, node: LayoutNodeId, size: Option<Size<f32>>) {
+        let Some(style) = self.get_style(node) else {
+            return;
+        };
+        match size {
+            Some(size) => {
+                self.intrinsic.insert(node, (style.size, size));
+            }
+            None => {
+                self.intrinsic.remove(&node);
+            }
+        }
+        self.set_style(node, style);
+    }
+
+    pub fn set_style(&mut self, node: LayoutNodeId, mut style: Style) {
+        if let Some((authored, size)) = self.intrinsic.get_mut(&node) {
+            *authored = style.size;
+            let absolute = style.position == Position::Absolute;
+            if style.size.width.is_auto()
+                && !(absolute && !style.inset.left.is_auto() && !style.inset.right.is_auto())
+            {
+                style.size.width = Dimension::length(size.width);
+            }
+            if style.size.height.is_auto()
+                && !(absolute && !style.inset.top.is_auto() && !style.inset.bottom.is_auto())
+            {
+                style.size.height = Dimension::length(size.height);
+            }
+        }
         let display_changed = !self.orders.is_empty()
             && self
                 .base
@@ -319,6 +360,7 @@ impl LayoutTree {
         self.cache.clear();
         self.unrounded.remove(&id);
         self.nodes.remove(&id);
+        self.intrinsic.remove(&id);
         self.computed.remove(&id);
         self.baselines.remove(&id);
         self.grid_rows.remove(&id);
@@ -937,6 +979,97 @@ impl RoundTree for View<'_> {
 #[cfg(test)]
 mod order_tests {
     use super::*;
+
+    #[test]
+    fn intrinsic_canvas_size_yields_to_insets_and_authored_dimensions() {
+        let mut tree = LayoutTree::new();
+        let root = tree.create_node(Style {
+            size: Size {
+                width: Dimension::length(500.0),
+                height: Dimension::length(400.0),
+            },
+            ..Style::DEFAULT
+        });
+        let child = tree.create_node(Style {
+            flex_shrink: 0.0,
+            ..Style::DEFAULT
+        });
+        tree.add_child(root, child);
+        tree.set_intrinsic_size(
+            child,
+            Some(Size {
+                width: 300.0,
+                height: 150.0,
+            }),
+        );
+        let space = Size {
+            width: AvailableSpace::Definite(500.0),
+            height: AvailableSpace::Definite(400.0),
+        };
+        tree.compute_layout(root, space);
+        assert_eq!(
+            tree.get_layout(child).unwrap().size,
+            Size {
+                width: 300.0,
+                height: 150.0
+            }
+        );
+        let mut authored = tree.get_style(child).unwrap();
+        assert!(authored.size.width.is_auto() && authored.size.height.is_auto());
+        authored.position = Position::Absolute;
+        authored.inset = Rect::length(10.0);
+        tree.set_style(child, authored.clone());
+        tree.compute_layout(root, space);
+        assert_eq!(
+            tree.get_layout(child).unwrap().size,
+            Size {
+                width: 480.0,
+                height: 380.0
+            }
+        );
+        authored.inset.right = LengthPercentageAuto::auto();
+        tree.set_style(child, authored.clone());
+        tree.compute_layout(root, space);
+        assert_eq!(
+            tree.get_layout(child).unwrap().size,
+            Size {
+                width: 300.0,
+                height: 380.0
+            }
+        );
+        authored.inset.right = LengthPercentageAuto::length(10.0);
+        authored.size.width = Dimension::percent(0.5);
+        tree.set_style(child, authored.clone());
+        tree.compute_layout(root, space);
+        assert_eq!(tree.get_layout(child).unwrap().size.width, 250.0);
+        authored.size = Size {
+            width: Dimension::auto(),
+            height: Dimension::auto(),
+        };
+        authored.position = Position::Relative;
+        tree.set_style(child, authored);
+        tree.compute_layout(root, space);
+        assert_eq!(
+            tree.get_layout(child).unwrap().size,
+            Size {
+                width: 300.0,
+                height: 150.0
+            }
+        );
+        tree.set_intrinsic_size(child, None);
+        assert!(tree.get_style(child).unwrap().size.width.is_auto());
+        assert!(tree.intrinsic.is_empty());
+        tree.set_intrinsic_size(
+            child,
+            Some(Size {
+                width: 300.0,
+                height: 150.0,
+            }),
+        );
+        tree.remove_node(child);
+        assert!(tree.intrinsic.is_empty());
+    }
+
     fn parent(tree: &mut LayoutTree, display: Display) -> LayoutNodeId {
         tree.create_node(Style {
             display,
