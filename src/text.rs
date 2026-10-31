@@ -1363,7 +1363,7 @@ fn compose_paragraph(
         let hint = composer.run.hint;
         if let Some(unit) = composer.unit(&text, single, phase) {
             if let Some(records) = &unit.phases[phase] {
-                for g in records.chunks_exact(9) {
+                for g in records.as_chunks::<9>().0 {
                     out.extend([g[0] + whole, g[1] + down, g[2], g[3], g[4], g[5], g[6], g[7], g[8]]);
                 }
             }
@@ -1371,10 +1371,10 @@ fn compose_paragraph(
             pen += advance;
             if let Some(a) = advances.as_deref_mut() {
                 let share = advance / (j - i) as f32;
-                a.extend(std::iter::repeat(share).take(j - i));
+                a.extend(std::iter::repeat_n(share, j - i));
             }
         } else if let Some(a) = advances.as_deref_mut() {
-            a.extend(std::iter::repeat(0.0).take(j - i));
+            a.extend(std::iter::repeat_n(0.0, j - i));
         }
         i = j;
     }
@@ -1387,7 +1387,7 @@ fn whole_paragraph(r: &mut TextRenderer, run: &RunStyle, paragraph: &str, down: 
     let Some(prepared) = shape(r, run, paragraph, 0.0, &mut cleared) else {
         return 0.0;
     };
-    for g in glyph_records(&prepared).chunks_exact(9) {
+    for g in glyph_records(&prepared).as_chunks::<9>().0 {
         out.extend([g[0], g[1] + down, g[2], g[3], g[4], g[5], g[6], g[7], g[8]]);
     }
     prepared.width
@@ -1467,6 +1467,7 @@ pub unsafe fn prepare_glyphs(
 /// layout does (lines shaped whole, with the cache off, are not hinted); and when `advances` is given, one advance per character of `text` in it: the distance from the
 /// character's origin to the next one's, kerning included, the shares of a unit shaped together (a ligature) equal,
 /// and a line break 0. Lines are only composed from cached units for this: with the cache off it is left empty.
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn prepare_glyphs_with(
     text: &str,
     name: Option<String>,
@@ -1567,19 +1568,17 @@ pub unsafe fn prepare_glyphs_with(
         };
         for (row, paragraph) in text.split('\n').enumerate() {
             if paragraph.is_empty() {
-                if row > 0 {
-                    if let Some(a) = advances.as_deref_mut() {
+                if row > 0
+                    && let Some(a) = advances.as_deref_mut() {
                         a.push(0.0);
                     }
-                }
                 continue;
             }
             let down = row as f32 * step;
-            if row > 0 {
-                if let Some(a) = advances.as_deref_mut() {
+            if row > 0
+                && let Some(a) = advances.as_deref_mut() {
                     a.push(0.0);
                 }
-            }
             let width = if cached {
                 compose_paragraph(&mut composer, paragraph, down, &mut glyphs_out, advances.as_deref_mut())
             } else {
