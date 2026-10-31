@@ -121,7 +121,7 @@ pub unsafe extern "C" fn hl_blinc_bitmap_decode(bytes: *const vbyte, len: i32) -
         return -1;
     }
     let _blocking = crate::hl::Blocking::enter();
-    decode(unsafe { std::slice::from_raw_parts(bytes as *const u8, len as usize) })
+    decode(unsafe { std::slice::from_raw_parts(bytes, len as usize) })
 }
 #[cfg(feature = "hashlink")]
 define_prim!(hlp_blinc_bitmap_decode, hl_blinc_bitmap_decode, "Bi_i");
@@ -158,7 +158,7 @@ pub unsafe extern "C" fn hl_blinc_bitmap_resample(
     }
     let _blocking = crate::hl::Blocking::enter();
     let out =
-        unsafe { std::slice::from_raw_parts_mut(out as *mut u8, (width * height * 4) as usize) };
+        unsafe { std::slice::from_raw_parts_mut(out, (width * height * 4) as usize) };
     resample_into(slot, width, height, fit, out)
 }
 #[cfg(feature = "hashlink")]

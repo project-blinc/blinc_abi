@@ -49,6 +49,7 @@ impl Default for GlassEffects {
 }
 
 /// `0xRRGGBB` plus a separate alpha, as the Haxe API spells colors.
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub(crate) fn hex_color(hex: i32, alpha: f32) -> Color {
     Color::from_hex(hex as u32).with_alpha(alpha)
 }
@@ -58,6 +59,7 @@ pub(crate) fn hex_color(hex: i32, alpha: f32) -> Color {
 /// the lengths in that order; bit `i` of `percent` makes length `i` a percentage, and bit `i` of `none`
 /// leaves it unset (a radius then reaches the closest side). A negative `round` is no rounding; a negative
 /// `kind` is no clip at all.
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub(crate) fn clip_path_value(
     kind: i32,
     values: &[f32],
@@ -117,6 +119,7 @@ pub(crate) fn clip_path_value(
 
 /// A polygon clip path of `count` points, x and y in `values`; entry `k` of `percent`, when it has one,
 /// makes value `k` a percentage. A `path`'s points are pixels, with its rings apart by a point at 1e30.
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub(crate) fn clip_polygon_value(values: &[f32], percent: &[u8], count: i32, path: bool) -> Value {
     use blinc_core::{ClipLength, ClipPath};
     let n = count.max(0) as usize;
@@ -144,6 +147,7 @@ pub(crate) fn clip_polygon_value(values: &[f32], percent: &[u8], count: i32, pat
 
 /// `lines` is UNDERLINE | OVERLINE | LINE_THROUGH as bits; `style` is 0 solid, 1 double, 2 dotted, 3 dashed.
 /// A negative alpha is no colour of its own, a negative thickness or a NaN offset none.
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub(crate) fn text_decoration_value(
     lines: i32,
     style: i32,
@@ -169,6 +173,7 @@ pub(crate) fn text_decoration_value(
 }
 
 /// Sets the glass effects of `value`, a glass brush: the aberration, 0 to 1.
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub(crate) fn glass_aberration(value: &mut Value, strength: f32) {
     if let Value::Glass(_, effects) = value {
         effects.aberration = if strength.is_finite() {
@@ -180,6 +185,7 @@ pub(crate) fn glass_aberration(value: &mut Value, strength: f32) {
 }
 
 /// Sets the bevel of `value`, a glass brush; zero removes it, and `inset` reverses its curvature.
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub(crate) fn glass_bevel(value: &mut Value, strength: f32, inset: bool) {
     if let Value::Glass(_, effects) = value {
         effects.bevel = if strength.is_finite() {
@@ -192,6 +198,7 @@ pub(crate) fn glass_bevel(value: &mut Value, strength: f32, inset: bool) {
 }
 
 /// Adds numeric mapping to an image value before it is bound to a node.
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub(crate) fn image_mapping(value: &mut Value, x: f32, y: f32, ox: f32, oy: f32, repeat: i32) {
     let position = [x, y, ox, oy];
     if !(0..=3).contains(&repeat) || !position.iter().all(|v| v.is_finite()) {
@@ -214,6 +221,7 @@ pub(crate) fn image_mapping(value: &mut Value, x: f32, y: f32, ox: f32, oy: f32,
 }
 
 /// Adds a stop at `offset`, 0 to 1, to `value`, a gradient brush.
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub(crate) fn gradient_stop(value: &mut Value, offset: f32, hex: i32, alpha: f32) {
     use blinc_core::layer::{Gradient, GradientStop};
     if let Value::Brush(Brush::Gradient(g)) = value {
@@ -230,6 +238,7 @@ pub(crate) fn gradient_stop(value: &mut Value, offset: f32, hex: i32, alpha: f32
 }
 
 /// One layer of a shadow.
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub(crate) fn shadow_layer(
     offset_x: f32,
     offset_y: f32,
@@ -249,6 +258,7 @@ pub(crate) fn shadow_layer(
 
 /// Adds a layer to `value`, a shadow value; layers are drawn last first.
 #[allow(clippy::too_many_arguments)]
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub(crate) fn shadow_push(
     value: &mut Value,
     offset_x: f32,
@@ -270,6 +280,7 @@ pub(crate) fn shadow_push(
 }
 
 /// A shadow of one layer, cast inside the box when `inset`.
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub(crate) fn shadow_value(
     offset_x: f32,
     offset_y: f32,
@@ -289,6 +300,7 @@ pub(crate) fn shadow_value(
 
 /// A gradient with no stops yet: linear from `(x1, y1)` to `(x2, y2)`, or radial about `(x1, y1)` of radius
 /// `x2`. With `bbox` the coordinates are fractions of the box it fills, else pixels from its corner.
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub(crate) fn gradient_value(
     radial: bool,
     x1: f32,
@@ -325,6 +337,7 @@ pub(crate) fn gradient_value(
 }
 
 /// A glass brush.
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub(crate) fn glass_value(
     blur: f32,
     tint_hex: i32,
@@ -341,6 +354,7 @@ pub(crate) fn glass_value(
 }
 
 /// A backdrop blur brush, tinted when `tint_alpha` is above zero.
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub(crate) fn blur_value(radius: f32, tint_hex: i32, tint_alpha: f32) -> Value {
     let mut style = blinc_core::layer::BlurStyle::with_radius(radius);
     if tint_alpha > 0.0 {
@@ -350,6 +364,7 @@ pub(crate) fn blur_value(radius: f32, tint_hex: i32, tint_alpha: f32) -> Value {
 }
 
 /// An image brush for `src`; `fit` 0 cover, 1 contain, 2 fill, 3 tile.
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub(crate) fn image_value(src: String, fit: i32) -> Value {
     use blinc_core::layer::{ImageBrush, ImageFit};
     let mut img = ImageBrush::new(src);
@@ -364,6 +379,7 @@ pub(crate) fn image_value(src: String, fit: i32) -> Value {
 
 /// A two-colour linear gradient brush.
 #[allow(clippy::too_many_arguments)]
+#[cfg(any(feature = "hashlink", feature = "caribou"))]
 pub(crate) fn linear_gradient_value(
     sx: f32,
     sy: f32,
@@ -445,7 +461,7 @@ mod host {
             Vec::new()
         } else {
             (0..2 * n)
-                .map(|k| unsafe { *(percent as *const u8).add(k) })
+                .map(|k| unsafe { *percent.add(k) })
                 .collect()
         };
         value(clip_polygon_value(&floats, &flags, count, path))

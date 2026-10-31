@@ -138,16 +138,16 @@ pub(crate) fn set_children(tree: &mut Tree, parent: u64, children: &[u64]) {
         .collect();
     // A child still listed under another parent is taken from it first.
     for &child in &ids {
-        if let Some(&old) = tree.layout.ancestors(child).first() {
-            if old != parent {
-                let kept = tree
-                    .layout
-                    .children(old)
-                    .into_iter()
-                    .filter(|&c| c != child)
-                    .collect();
-                tree.layout.replace_children(old, kept);
-            }
+        if let Some(&old) = tree.layout.ancestors(child).first()
+            && old != parent
+        {
+            let kept = tree
+                .layout
+                .children(old)
+                .into_iter()
+                .filter(|&c| c != child)
+                .collect();
+            tree.layout.replace_children(old, kept);
         }
     }
     tree.layout.replace_children(parent, ids);
@@ -249,67 +249,6 @@ pub(crate) fn build_with_retry<R>(
     clear(renderer);
     let second = walk(renderer);
     (second.records, second.points)
-}
-
-#[cfg(test)]
-mod retry_tests {
-    use super::*;
-
-    fn attempt(tag: f32, atlas_full: bool) -> Attempt {
-        Attempt {
-            records: vec![tag],
-            points: vec![tag + 100.0],
-            atlas_full,
-        }
-    }
-
-    #[test]
-    fn a_frame_that_fits_is_walked_once_and_the_atlases_kept() {
-        let (mut walks, mut clears) = (0, 0);
-        let (records, points) = build_with_retry(
-            |_: &mut ()| {
-                walks += 1;
-                attempt(1.0, false)
-            },
-            &mut (),
-            |_| clears += 1,
-        );
-        assert_eq!((walks, clears), (1, 0));
-        assert_eq!((records, points), (vec![1.0], vec![101.0]));
-    }
-
-    #[test]
-    fn an_overflowing_frame_is_walked_again_after_the_atlases_start_afresh() {
-        let (mut walks, mut clears) = (0, 0);
-        let (records, points) = build_with_retry(
-            |_: &mut ()| {
-                walks += 1;
-                attempt(walks as f32, walks == 1)
-            },
-            &mut (),
-            |_| clears += 1,
-        );
-        assert_eq!((walks, clears), (2, 1));
-        assert_eq!((records, points), (vec![2.0], vec![102.0]));
-    }
-
-    #[test]
-    fn a_frame_that_overflows_twice_keeps_the_atlases_its_records_name() {
-        // The atlases are cleared between the walks, never after the last: clearing then
-        // would empty what the records refer to, and every glyph would draw blank.
-        let (mut walks, mut clears) = (0, 0);
-        let (records, points) = build_with_retry(
-            |_: &mut ()| {
-                walks += 1;
-                attempt(walks as f32, true)
-            },
-            &mut (),
-            |_| clears += 1,
-        );
-        assert_eq!((walks, clears), (2, 1));
-        // The second walk's records and its polygon points, not the first's, and not none.
-        assert_eq!((records, points), (vec![2.0], vec![102.0]));
-    }
 }
 
 /// The primitives to draw under `root`, as a display list (see `display_list`): `params` is eight f32s: the
@@ -484,4 +423,65 @@ pub(crate) fn scroll_extent(tree: &Tree, node: u64) -> Option<[f32; 4]> {
 pub(crate) fn bounds(tree: &Tree, node: u64) -> Option<[f32; 4]> {
     let b = tree.layout.get_absolute_bounds(id(node))?;
     Some([b.x, b.y, b.width, b.height])
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    fn attempt(tag: f32, atlas_full: bool) -> Attempt {
+        Attempt {
+            records: vec![tag],
+            points: vec![tag + 100.0],
+            atlas_full,
+        }
+    }
+
+    #[test]
+    fn a_frame_that_fits_is_walked_once_and_the_atlases_kept() {
+        let (mut walks, mut clears) = (0, 0);
+        let (records, points) = build_with_retry(
+            |_: &mut ()| {
+                walks += 1;
+                attempt(1.0, false)
+            },
+            &mut (),
+            |_| clears += 1,
+        );
+        assert_eq!((walks, clears), (1, 0));
+        assert_eq!((records, points), (vec![1.0], vec![101.0]));
+    }
+
+    #[test]
+    fn an_overflowing_frame_is_walked_again_after_the_atlases_start_afresh() {
+        let (mut walks, mut clears) = (0, 0);
+        let (records, points) = build_with_retry(
+            |_: &mut ()| {
+                walks += 1;
+                attempt(walks as f32, walks == 1)
+            },
+            &mut (),
+            |_| clears += 1,
+        );
+        assert_eq!((walks, clears), (2, 1));
+        assert_eq!((records, points), (vec![2.0], vec![102.0]));
+    }
+
+    #[test]
+    fn a_frame_that_overflows_twice_keeps_the_atlases_its_records_name() {
+        // The atlases are cleared between the walks, never after the last: clearing then
+        // would empty what the records refer to, and every glyph would draw blank.
+        let (mut walks, mut clears) = (0, 0);
+        let (records, points) = build_with_retry(
+            |_: &mut ()| {
+                walks += 1;
+                attempt(walks as f32, true)
+            },
+            &mut (),
+            |_| clears += 1,
+        );
+        assert_eq!((walks, clears), (2, 1));
+        // The second walk's records and its polygon points, not the first's, and not none.
+        assert_eq!((records, points), (vec![2.0], vec![102.0]));
+    }
 }

@@ -300,7 +300,6 @@ pub fn decoration_metrics(context: &TextMeasureContext, font_size: f32) -> Decor
 // ATLASES
 // ============================================================================
 
-#[cfg(feature = "hashlink")]
 type AtlasChange = (i32, (u32, u32, u32, u32), (u32, u32));
 
 /// The changes an atlas has had, newest last, each with the region it wrote
@@ -605,6 +604,7 @@ pub fn measure(
 /// height, the number of lines, and the font's ascender and descender (below
 /// the baseline, so negative) at that size as four f32s to `info`. Returns how many
 /// stops there are; 0 when the node is not text or its font is not loaded.
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn carets(
     tree: &crate::tree::Tree,
     node: u64,

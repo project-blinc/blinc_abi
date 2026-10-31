@@ -30,8 +30,10 @@ use taffy::prelude::{AvailableSpace, Size, Style};
 fn ids_of(buffer: Buffer) -> Vec<u64> {
     let bytes = unsafe { buffer.as_slice() };
     bytes
-        .chunks_exact(8)
-        .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|&c| u64::from_le_bytes(c))
         .collect()
 }
 
@@ -1152,8 +1154,10 @@ impl StyleValue {
 /// The f32s packed in `buffer`, four bytes each.
 fn floats_of(buffer: Buffer) -> Vec<f32> {
     unsafe { buffer.as_slice() }
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| f32::from_le_bytes(c))
         .collect()
 }
 
