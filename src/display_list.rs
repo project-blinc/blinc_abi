@@ -2354,6 +2354,7 @@ impl Run<'_> {
         // rect directly from layout coordinates to retain the exact f32 arithmetic.
         let mut clip = clipping(clips, self.m, (0.0, 0.0), true, cull);
         let local_clip = clip.local;
+        let cut_clip = clip.cut;
         for g in self.glyphs {
             let [gx, gy, gw, gh] = g.bounds;
             let gy = gy + self.lead;
@@ -2380,8 +2381,10 @@ impl Run<'_> {
                 p.bounds[0] = (p.bounds[0] * display).round() / display;
                 p.bounds[1] = (p.bounds[1] * display).round() / display;
             }
-            clip.local =
-                local_clip.map(|(r, radii)| ([r[0] - at.0, r[1] - at.1, r[2], r[3]], radii));
+            // A glyph's local clips are measured from its own corner.
+            let rebase = |(r, radii): LocalClip| ([r[0] - at.0, r[1] - at.1, r[2], r[3]], radii);
+            clip.local = local_clip.map(rebase);
+            clip.cut = cut_clip.map(|(screen, local)| (screen, rebase(local)));
             p.push(&clip, out);
         }
         for d in self.decorations {
