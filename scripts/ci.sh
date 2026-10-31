@@ -12,8 +12,9 @@ step check --locked
 step clippy --locked --all-targets --features css-cli -- -D warnings
 step clippy --locked --all-targets --no-default-features --features scene -- -D warnings
 step clippy --locked --all-targets --no-default-features --features caribou -- -D warnings
-# The default features include HashLink, whose tests the other lanes do not build.
-step test --locked --lib
+# Without `scene` only the CSS and layout core builds; `scene` is the text, display-list and tree code
+# the default build tests, here without HashLink, which a runner has no libhl for (css_hl's tests need it).
 step test --locked --no-default-features --lib
+step test --locked --no-default-features --features scene --lib
 step test --locked --no-default-features --features caribou --lib
 step check --locked --no-default-features --features scene
