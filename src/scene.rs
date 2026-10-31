@@ -552,6 +552,7 @@ impl SceneEncoder {
                 break;
             }
             self.renderer.clear();
+            crate::text::note_atlas_cleared();
             for history in &mut self.atlases {
                 history.changes.clear();
             }

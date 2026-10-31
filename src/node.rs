@@ -909,7 +909,10 @@ pub unsafe extern "C" fn hl_blinc_tree_display_list(
             }
         },
         &mut *renderer,
-        |renderer| renderer.clear(),
+        |renderer| {
+            renderer.clear();
+            crate::text::note_atlas_cleared();
+        },
     );
     use crate::display_list::{RECORD_FLOATS, SHAPE_POLYGON};
     let drawn = records.len() / RECORD_FLOATS;
