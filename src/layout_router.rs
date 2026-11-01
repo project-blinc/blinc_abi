@@ -1243,4 +1243,4 @@ pub(crate) fn unset(node: u64, raw: i32) {
     }
 }
 #[cfg(feature = "hashlink")]
-define_prim!(hlp_blinc_unset, hl_blinc_unset, "li_v");
+define_prim!(hlp_blinc_unset, hl_blinc_unset, "Pli_v");

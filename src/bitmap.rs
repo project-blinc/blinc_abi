@@ -124,7 +124,7 @@ pub unsafe extern "C" fn hl_blinc_bitmap_decode(bytes: *const vbyte, len: i32) -
     decode(unsafe { std::slice::from_raw_parts(bytes, len as usize) })
 }
 #[cfg(feature = "hashlink")]
-define_prim!(hlp_blinc_bitmap_decode, hl_blinc_bitmap_decode, "Bi_i");
+define_prim!(hlp_blinc_bitmap_decode, hl_blinc_bitmap_decode, "PBi_i");
 
 #[cfg(feature = "hashlink")]
 #[unsafe(no_mangle)]
@@ -132,7 +132,7 @@ pub extern "C" fn hl_blinc_bitmap_size(slot: i32, height: bool) -> i32 {
     size(slot, height)
 }
 #[cfg(feature = "hashlink")]
-define_prim!(hlp_blinc_bitmap_size, hl_blinc_bitmap_size, "ib_i");
+define_prim!(hlp_blinc_bitmap_size, hl_blinc_bitmap_size, "Pib_i");
 
 #[cfg(feature = "hashlink")]
 #[unsafe(no_mangle)]
@@ -142,7 +142,7 @@ pub extern "C" fn hl_blinc_bitmap_release(slot: i32) {
     release(slot);
 }
 #[cfg(feature = "hashlink")]
-define_prim!(hlp_blinc_bitmap_release, hl_blinc_bitmap_release, "i_v");
+define_prim!(hlp_blinc_bitmap_release, hl_blinc_bitmap_release, "Pi_v");
 
 #[cfg(feature = "hashlink")]
 #[unsafe(no_mangle)]
@@ -165,7 +165,7 @@ pub unsafe extern "C" fn hl_blinc_bitmap_resample(
 define_prim!(
     hlp_blinc_bitmap_resample,
     hl_blinc_bitmap_resample,
-    "iiiiB_b"
+    "PiiiiB_b"
 );
 
 #[cfg(feature = "hashlink")]
@@ -175,7 +175,7 @@ pub extern "C" fn hl_blinc_bitmap_shrink(slot: i32, max_side: i32) -> bool {
     shrink(slot, max_side)
 }
 #[cfg(feature = "hashlink")]
-define_prim!(hlp_blinc_bitmap_shrink, hl_blinc_bitmap_shrink, "ii_b");
+define_prim!(hlp_blinc_bitmap_shrink, hl_blinc_bitmap_shrink, "Pii_b");
 
 /// `b` fitted into `out`, `w` × `h`: the part of `b` each output pixel
 /// covers averaged when shrinking, and interpolated between its four

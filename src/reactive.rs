@@ -925,7 +925,7 @@ mod host_exports {
     pub extern "C" fn hl_blinc_host_effect_new() -> i32 {
         host_effect_new()
     }
-    define_prim!(hlp_blinc_host_effect_new, hl_blinc_host_effect_new, "_i");
+    define_prim!(hlp_blinc_host_effect_new, hl_blinc_host_effect_new, "P_i");
 
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn hl_blinc_host_effects_due(out: *mut vbyte, capacity: i32) -> i32 {
@@ -938,7 +938,7 @@ mod host_exports {
     define_prim!(
         hlp_blinc_host_effects_due,
         hl_blinc_host_effects_due,
-        "Bi_i"
+        "PBi_i"
     );
 
     #[unsafe(no_mangle)]
@@ -948,14 +948,14 @@ mod host_exports {
     define_prim!(
         hlp_blinc_host_effect_begin,
         hl_blinc_host_effect_begin,
-        "i_b"
+        "Pi_b"
     );
 
     #[unsafe(no_mangle)]
     pub extern "C" fn hl_blinc_host_effect_end(slot: i32) {
         host_effect_end(slot)
     }
-    define_prim!(hlp_blinc_host_effect_end, hl_blinc_host_effect_end, "i_v");
+    define_prim!(hlp_blinc_host_effect_end, hl_blinc_host_effect_end, "Pi_v");
 
     #[unsafe(no_mangle)]
     pub extern "C" fn hl_blinc_host_effect_release(slot: i32) {
@@ -964,7 +964,7 @@ mod host_exports {
     define_prim!(
         hlp_blinc_host_effect_release,
         hl_blinc_host_effect_release,
-        "i_v"
+        "Pi_v"
     );
 
     #[unsafe(no_mangle)]

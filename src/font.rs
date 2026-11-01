@@ -46,7 +46,7 @@ pub unsafe extern "C" fn hl_blinc_font_register(bytes: *const vbyte, len: i32) -
     register(unsafe { std::slice::from_raw_parts(bytes, len as usize) }.to_vec())
 }
 #[cfg(feature = "hashlink")]
-define_prim!(hlp_blinc_font_register, hl_blinc_font_register, "Bi_i");
+define_prim!(hlp_blinc_font_register, hl_blinc_font_register, "PBi_i");
 
 pub struct Font {
     data: FontData,

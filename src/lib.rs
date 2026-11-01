@@ -15,6 +15,8 @@ mod css_hl;
 pub mod graph;
 #[cfg(test)]
 mod row_grid;
+#[cfg(test)]
+mod signature_prefix;
 #[cfg(feature = "scene")]
 pub mod scene;
 pub mod tree;
