@@ -353,7 +353,8 @@ fn length(name: &str, text: &str, units: &Units) -> Result<(i32, f64), String> {
             .map_err(|_| format!("invalid value for {name}: {text}"));
     }
     let t = text.trim().to_ascii_lowercase();
-    if t == "auto" {
+    // `none` is a maximum with no limit, which is what an unset one is.
+    if t == "auto" || (t == "none" && matches!(name, "max-width" | "max-height")) {
         return Ok((px_id, f64::NAN));
     }
     let bad = || format!("invalid value for {name}: {text}");
@@ -624,6 +625,21 @@ mod tests {
         assert_eq!(w("width", "120px"), [(WIDTH, PropValue::Number(120.0))]);
         assert_eq!(w("width", "50%"), [(WIDTH_PERCENT, PropValue::Number(0.5))]);
         assert!(matches!(w("height", "auto")[0], (HEIGHT, PropValue::Number(v)) if v.is_nan()));
+        // `none` is no maximum, and only a maximum takes it.
+        for name in ["max-width", "max-height"] {
+            assert!(
+                matches!(w(name, "none")[0], (_, PropValue::Number(v)) if v.is_nan()),
+                "{name}"
+            );
+        }
+        for name in ["width", "min-width", "height"] {
+            assert!(
+                layout_writes(name, Some("none"), &Units::default())
+                    .unwrap()
+                    .is_err(),
+                "{name}"
+            );
+        }
         assert_eq!(w("width", "2em"), [(WIDTH, PropValue::Number(40.0))]);
         assert_eq!(w("width", "2rem"), [(WIDTH, PropValue::Number(32.0))]);
         assert_eq!(w("height", "10vh"), [(HEIGHT, PropValue::Number(50.0))]);

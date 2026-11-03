@@ -58,7 +58,8 @@
 //! A node that clips draws its border after its children instead, so they
 //! cannot cover it where the curves differ. Glass and blur brushes draw a
 //! backdrop record: what is behind the box, blurred and colour-filtered.
-//! A node's 2D transform applies about its centre, after its ancestors'.
+//! A node's 2D transform applies about its transform origin, its centre unless it sets one, after
+//! its ancestors'.
 //!
 //! A record has up to two clips, each rounded: one in screen space, rows 8
 //! and 9, and one in the record's own coordinates, rows 6 and 7, which only
@@ -142,6 +143,19 @@ pub(crate) fn compose(outer: Affine, inner: Affine) -> Affine {
 
 pub(crate) fn apply(m: Affine, x: f32, y: f32) -> (f32, f32) {
     (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5])
+}
+
+/// The point a node's transform turns it about, for its box `(x, y, w, h)`: its transform origin,
+/// given as percentages of the box, or the box's centre when it has none.
+pub(crate) fn transform_pivot(
+    origin: Option<[f32; 2]>,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+) -> (f32, f32) {
+    let [px, py] = origin.unwrap_or([50.0, 50.0]);
+    (x + w * px / 100.0, y + h * py / 100.0)
 }
 
 /// The axis-aligned box around `rect` after `m`.
@@ -1043,7 +1057,7 @@ fn append_inner(
         }
         // The node's transform turns it about its centre, after its ancestors'.
         if let Some(Transform::Affine2D(t)) = &props.transform {
-            let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+            let (cx, cy) = transform_pivot(props.transform_origin, x, y, w, h);
             let about = compose(
                 [1.0, 0.0, 0.0, 1.0, cx, cy],
                 compose(t.elements, [1.0, 0.0, 0.0, 1.0, -cx, -cy]),

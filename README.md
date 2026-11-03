@@ -45,7 +45,15 @@ CSS sheets collect typed `@font-face` descriptors and source locations, includin
 imports and media conditions. `Cascade::font_faces` exposes active faces, and
 `css::font_face::match_face` implements CSS weight/style selection. Compiled CSS
 uses version 3 when faces are present; font-free sheets keep version 2, and both
-versions decode. WOFF2 decoding currently excludes transformed `hmtx` tables.
+versions decode. Conditional guards use version 4 and `@layer` version 5; a sheet
+without them keeps its older bytes, and every version decodes.
+
+`@layer` orders rules as the web does: a later layer beats an earlier one whatever
+the specificity, a layer's own rules beat its sublayers', rules outside any layer
+beat every layer, and `!important` reverses the order. A layer is one layer in
+every sheet that names it. `transform-origin` (keywords and percentages) sets the
+point a node's `transform` pivots on, its centre by default; `PaintWrite::TransformOrigin`
+carries it to the host as percentages of the box. WOFF2 decoding currently excludes transformed `hmtx` tables.
 Original WOFF, unicode ranges, stretch and font-display timing are follow-up work.
 
 The ABI generates display lists; GPU execution is supplied by a consuming

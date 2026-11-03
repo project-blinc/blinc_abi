@@ -285,6 +285,8 @@ struct Sheet {
     conditions: Vec<Guard>,
     /// Each of the sheet's atoms, as the cascade's.
     map: Vec<Atom>,
+    /// Each of the sheet's layers, as an index into the cascade's.
+    layers: Vec<u32>,
     index: Index,
     /// Names a selector tests on an element other than the one it styles:
     /// those of every compound but a selector's subject, and all of a
@@ -315,6 +317,11 @@ pub struct Cascade {
     text: Atom,
     root_font_size: f64,
     inherited: Vec<Atom>,
+    /// Every layer any sheet names, by full path, in the order first named; a layer is the same
+    /// layer in every sheet that names it.
+    layer_names: Vec<String>,
+    /// Each of `layer_names`' place in the cascade: later wins, among normal declarations.
+    layer_ranks: Vec<u32>,
 }
 
 impl Default for Cascade {
@@ -341,6 +348,8 @@ impl Cascade {
             text,
             root_font_size: 16.0,
             inherited,
+            layer_names: Vec::new(),
+            layer_ranks: Vec::new(),
         }
     }
 
@@ -412,6 +421,30 @@ impl Cascade {
         self.sheets
             .insert(at.min(self.sheets.len()), (id, prepared));
         id
+    }
+
+    /// The cascade's index for each of `sheet`'s layers, naming the ones it has not met and
+    /// ranking them all again.
+    fn name_layers(&mut self, sheet: &Stylesheet) -> Vec<u32> {
+        let before = self.layer_names.len();
+        let ids = sheet
+            .layers
+            .iter()
+            .map(|&a| {
+                let name = sheet.str(a);
+                match self.layer_names.iter().position(|n| n == name) {
+                    Some(i) => i as u32,
+                    None => {
+                        self.layer_names.push(name.to_string());
+                        self.layer_names.len() as u32 - 1
+                    }
+                }
+            })
+            .collect();
+        if self.layer_names.len() != before {
+            self.layer_ranks = layer_ranks(&self.layer_names);
+        }
+        ids
     }
 
     /// `sheet` with its atoms the cascade's, indexed for matching.
@@ -497,6 +530,7 @@ impl Cascade {
                 }
             }
         }
+        let layers = self.name_layers(&sheet);
         let conditions = sheet
             .conditions
             .iter()
@@ -517,6 +551,7 @@ impl Cascade {
             sheet,
             conditions,
             map,
+            layers,
             index,
             reach,
             has,
@@ -741,9 +776,14 @@ impl Cascade {
                 if !holds {
                     continue;
                 }
+                let layer = match rule.layer {
+                    0 => None,
+                    l => Some(sheet.layers[l as usize - 1]),
+                };
                 for (i, d) in sheet.sheet.rule_declarations(rule).iter().enumerate() {
                     matched.push(Matched {
                         important: d.important,
+                        layer,
                         specificity: selector.specificity,
                         sheet: s,
                         order: rule.order,
@@ -756,8 +796,29 @@ impl Cascade {
                 }
             }
         }
-        matched.sort_by_key(|m| (m.important, m.specificity, m.sheet, m.order, m.index));
+        matched.sort_by_key(|m| {
+            (
+                m.important,
+                self.layer_precedence(m),
+                m.specificity,
+                m.sheet,
+                m.order,
+                m.index,
+            )
+        });
         matched
+    }
+
+    /// How a declaration's layer orders it: below another's when it is lower. Unlayered rules
+    /// are the last layer, so they win among normal declarations and lose among `!important`
+    /// ones, where the layers' order reverses.
+    fn layer_precedence(&self, m: &Matched) -> u32 {
+        match (m.layer, m.important) {
+            (None, false) => u32::MAX,
+            (None, true) => 0,
+            (Some(l), false) => self.layer_ranks[l as usize],
+            (Some(l), true) => u32::MAX - 1 - self.layer_ranks[l as usize],
+        }
     }
 
     /// Every declaration that applies to `node` itself, in cascade order:
@@ -1120,9 +1181,43 @@ pub struct Origin {
     pub wins: bool,
 }
 
+/// Each of `names`' rank among the layers: a later layer outranks an earlier one, and a layer's
+/// own rules outrank those of its sublayers. Names are full paths, parents named before children.
+fn layer_ranks(names: &[String]) -> Vec<u32> {
+    use std::cmp::Ordering;
+    let first_named = |path: &[&str]| {
+        names
+            .iter()
+            .position(|n| *n == path.join("."))
+            .unwrap_or(usize::MAX)
+    };
+    let order = |a: &String, b: &String| {
+        let (pa, pb): (Vec<&str>, Vec<&str>) = (a.split('.').collect(), b.split('.').collect());
+        for k in 0..pa.len().min(pb.len()) {
+            if pa[k] != pb[k] {
+                return first_named(&pa[..=k]).cmp(&first_named(&pb[..=k]));
+            }
+        }
+        // One is the other's parent: the parent's own rules come after its sublayers'.
+        pb.len().cmp(&pa.len())
+    };
+    let mut sorted: Vec<usize> = (0..names.len()).collect();
+    sorted.sort_by(|&a, &b| match order(&names[a], &names[b]) {
+        Ordering::Equal => a.cmp(&b),
+        o => o,
+    });
+    let mut ranks = vec![0; names.len()];
+    for (rank, i) in sorted.into_iter().enumerate() {
+        ranks[i] = rank as u32;
+    }
+    ranks
+}
+
 /// One declaration of a rule that matches an element, with what orders it in the cascade.
 struct Matched {
     important: bool,
+    /// The cascade's index of the layer its rule is in; none for no layer.
+    layer: Option<u32>,
     specificity: u32,
     sheet: usize,
     order: u32,

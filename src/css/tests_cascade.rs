@@ -549,3 +549,109 @@ fn object_position_inherits_on_nontext_hosts_and_resets_after_sheet_removal() {
         None
     );
 }
+
+/// The `color` of a `.x` element under `sheets`, each pushed in order.
+fn colour_under(sheets: &[&str]) -> Option<String> {
+    let mut c = Cascade::new();
+    for css in sheets {
+        c.push(sheet(css));
+    }
+    let mut doc = Doc::default();
+    let e = el(&mut c, &["div"], &["x", "y"]);
+    doc.add(None, e);
+    get(&c, &style_all(&c, &doc)[0], "color")
+}
+
+#[test]
+fn an_unlayered_rule_beats_a_layered_one_whatever_its_specificity() {
+    // The layered rule is more specific and comes later; the plain one still wins.
+    assert_eq!(
+        colour_under(&[".x { color: blue } @layer components { .x.y { color: red } }"]).as_deref(),
+        Some("blue")
+    );
+    // An application's rule over a stylesheet's layered defaults, as UA and cn styles are used.
+    assert_eq!(
+        colour_under(&[
+            "@layer components { .x.y { color: red } }",
+            ".x { color: blue }"
+        ])
+        .as_deref(),
+        Some("blue")
+    );
+    // Inside one layer specificity still decides.
+    assert_eq!(
+        colour_under(&["@layer components { .x { color: blue } .x.y { color: red } }"]).as_deref(),
+        Some("red")
+    );
+}
+
+#[test]
+fn a_later_layer_beats_an_earlier_one() {
+    let css = "@layer base, theme;
+         @layer theme { .x { color: green } }
+         @layer base { .x.y { color: red } }";
+    assert_eq!(colour_under(&[css]).as_deref(), Some("green"));
+    // Without the statement the order is the order they are first written.
+    let css = "@layer base { .x { color: red } } @layer theme { .x { color: green } }
+         @layer base { .x.y { color: blue } }";
+    assert_eq!(colour_under(&[css]).as_deref(), Some("green"));
+}
+
+#[test]
+fn a_layers_own_rules_beat_its_sublayers_and_sublayers_keep_their_order() {
+    let css = "@layer a { @layer b { .x { color: red } } .x { color: blue } }";
+    assert_eq!(colour_under(&[css]).as_deref(), Some("blue"));
+    let css = "@layer a { @layer low { .x { color: red } } @layer high { .x { color: green } } }";
+    assert_eq!(colour_under(&[css]).as_deref(), Some("green"));
+    // A name inside a layer is relative to it, so `b` there is not the top-level `b`.
+    let css = "@layer a { @layer b { .x { color: red } } } @layer b { .x { color: green } }
+         @layer c { .x { color: blue } }";
+    assert_eq!(colour_under(&[css]).as_deref(), Some("blue"));
+    assert_eq!(
+        colour_under(&[
+            "@layer b { .x { color: green } } @layer a { @layer b { .x { color: red } } }"
+        ])
+        .as_deref(),
+        Some("red")
+    );
+}
+
+#[test]
+fn important_reverses_the_layers_and_unlayered_important_loses() {
+    let css = "@layer a { .x { color: red !important } }
+         @layer b { .x { color: blue !important } }
+         .x { color: green !important }";
+    assert_eq!(colour_under(&[css]).as_deref(), Some("red"));
+    // A normal declaration of an unlayered rule loses to an !important layered one.
+    let css = "@layer a { .x { color: red !important } } .x { color: green }";
+    assert_eq!(colour_under(&[css]).as_deref(), Some("red"));
+}
+
+#[test]
+fn a_layer_is_one_layer_in_every_sheet_that_names_it() {
+    // The layer order set by one sheet holds for rules another sheet puts in it.
+    assert_eq!(
+        colour_under(&[
+            "@layer base, theme; @layer theme { .x { color: blue } }",
+            "@layer base { .x.y { color: red } }",
+        ])
+        .as_deref(),
+        Some("blue")
+    );
+    // The same layer in two sheets is decided as one: specificity, then the later sheet.
+    assert_eq!(
+        colour_under(&[
+            "@layer components { .x { color: red } }",
+            "@layer components { .x { color: blue } }",
+        ])
+        .as_deref(),
+        Some("blue")
+    );
+}
+
+#[test]
+fn layers_named_by_a_statement_fix_their_order() {
+    let css =
+        "@layer low, high; @layer high { .x { color: red } } @layer low { .x { color: blue } }";
+    assert_eq!(colour_under(&[css]).as_deref(), Some("red"));
+}

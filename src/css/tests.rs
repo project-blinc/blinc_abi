@@ -146,6 +146,73 @@ fn media_queries() {
 }
 
 #[test]
+fn layers_are_named_in_order_and_rules_remember_theirs() {
+    let s = sheet(
+        "@layer base, theme;
+         .plain { a: 1 }
+         @layer theme { .t { a: 2 } @layer inner { .i { a: 3 } } }
+         @layer { .anonymous { a: 4 } }
+         @layer base { .b { a: 5 } }",
+    );
+    assert!(s.diagnostics.is_empty(), "{}", s.report(None));
+    let names: Vec<&str> = s.layers.iter().map(|&a| s.str(a)).collect();
+    assert_eq!(names[..3], ["base", "theme", "theme.inner"]);
+    // `base` is named once, and the anonymous layer is one of its own.
+    assert_eq!(names.len(), 4);
+    let layer_of = |sel: &str| {
+        let rule = (0..s.rules.len())
+            .find(|&r| selectors(&s, r) == [sel])
+            .unwrap();
+        s.rules[rule].layer
+    };
+    assert_eq!(layer_of(".plain"), 0);
+    assert_eq!(layer_of(".t"), 2);
+    assert_eq!(layer_of(".i"), 3);
+    assert_eq!(layer_of(".b"), 1);
+    assert_ne!(layer_of(".anonymous"), 0);
+}
+
+#[test]
+fn a_bad_layer_is_reported_and_skipped() {
+    for css in [
+        ".r { @layer a { color: red } }",
+        "@layer a b { .x { color: red } }",
+        "@layer a, b { .x { color: red } }",
+        "@layer ;",
+        "@layer 1.{ .x { color: red } }",
+    ] {
+        let s = sheet(css);
+        assert!(
+            s.diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error && d.message.contains("@layer")),
+            "{css}: {}",
+            s.report(None)
+        );
+        assert!(s.rules.iter().all(|r| r.layer == 0), "{css}");
+    }
+}
+
+#[test]
+fn layers_survive_the_compiled_form_and_other_sheets_keep_their_version() {
+    let s = sheet(
+        "@layer base, theme; @layer theme { .t { a: 2 } } .plain { a: 1 } @layer base { .b { a: 3 } }",
+    );
+    let bytes = compiled::encode(&s);
+    assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), compiled::VERSION);
+    let back = compiled::decode(&bytes).unwrap();
+    assert_eq!(back, s);
+    assert_eq!(back.layers, s.layers);
+    assert_eq!(
+        back.rules.iter().map(|r| r.layer).collect::<Vec<_>>(),
+        s.rules.iter().map(|r| r.layer).collect::<Vec<_>>()
+    );
+    // A sheet with no layers is encoded as it always was.
+    let plain = compiled::encode(&sheet(".a { b: c }"));
+    assert_eq!(u16::from_le_bytes([plain[4], plain[5]]), 2);
+}
+
+#[test]
 fn compiled_bytes_give_the_same_sheet() {
     let s = sheet(
         ":root { --a: 1px } .x[y~=\"z\" i]:nth-last-of-type(-n+3) ~ p::placeholder { a: b !important }

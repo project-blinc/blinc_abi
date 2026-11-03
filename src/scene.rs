@@ -752,6 +752,36 @@ mod tests {
     }
 
     #[test]
+    fn a_transform_scales_a_box_about_its_origin() {
+        let mut tree = LayoutContext::new();
+        let root = tree.create_node(style(100.0, 60.0)).unwrap();
+        let top_left = |tree: &mut LayoutContext, origin: Option<[f32; 2]>| {
+            let props = RenderProps {
+                background: Some(Brush::Solid(Color::BLACK)),
+                transform: Some(blinc_core::Transform::Affine2D(blinc_core::Affine2D {
+                    elements: [2.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+                })),
+                transform_origin: origin,
+                ..Default::default()
+            };
+            tree.set_properties(root, props).unwrap();
+            tree.compute(root, 100.0, 60.0).unwrap();
+            let mut encoder = SceneEncoder::new();
+            let info = encoder
+                .prepare(tree, root, PaintOptions::default())
+                .unwrap();
+            assert_eq!(info.count, 1);
+            (encoder.records[0], encoder.records[1])
+        };
+        // The centre by default; each corner's own fixed point otherwise.
+        assert_eq!(top_left(&mut tree, None), (-50.0, -30.0));
+        assert_eq!(top_left(&mut tree, Some([50.0, 50.0])), (-50.0, -30.0));
+        assert_eq!(top_left(&mut tree, Some([0.0, 0.0])), (0.0, 0.0));
+        assert_eq!(top_left(&mut tree, Some([100.0, 100.0])), (-100.0, -60.0));
+        assert_eq!(top_left(&mut tree, Some([100.0, 0.0])), (-100.0, 0.0));
+    }
+
+    #[test]
     fn a_background_image_source_is_noted_when_it_changes() {
         let mut tree = LayoutContext::new();
         let node = tree.create_node(style(10.0, 10.0)).unwrap();

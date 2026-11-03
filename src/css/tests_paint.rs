@@ -1011,6 +1011,64 @@ fn writes(name: &str, value: &str) -> Vec<PaintWrite> {
         .unwrap()
 }
 
+fn origin(value: &str) -> Option<[f32; 2]> {
+    match writes_result("transform-origin", value) {
+        Ok(w) => match w[..] {
+            [PaintWrite::TransformOrigin(o)] => Some(o),
+            _ => None,
+        },
+        Err(_) => None,
+    }
+}
+
+fn writes_result(name: &str, value: &str) -> Result<Vec<PaintWrite>, String> {
+    paint_writes(name, Some(value), &PaintUnits::default()).unwrap()
+}
+
+#[test]
+fn a_transform_origin_is_keywords_or_percentages_of_the_box() {
+    for (value, want) in [
+        ("top center", [50.0, 0.0]),
+        ("center top", [50.0, 0.0]),
+        ("bottom center", [50.0, 100.0]),
+        ("left center", [0.0, 50.0]),
+        ("top left", [0.0, 0.0]),
+        ("left top", [0.0, 0.0]),
+        ("right bottom", [100.0, 100.0]),
+        ("center", [50.0, 50.0]),
+        ("top", [50.0, 0.0]),
+        ("left", [0.0, 50.0]),
+        ("20%", [20.0, 50.0]),
+        ("20% 80%", [20.0, 80.0]),
+        ("right 30%", [100.0, 30.0]),
+        ("25% bottom", [25.0, 100.0]),
+        ("TOP  Left", [0.0, 0.0]),
+    ] {
+        assert_eq!(origin(value), Some(want), "{value}");
+    }
+    // Not read: a length needs the box, two names on one axis, a vertical keyword before a number.
+    for bad in [
+        "10px",
+        "10px 20px",
+        "top bottom",
+        "left right",
+        "top 20%",
+        "a b",
+        "",
+        "top left center",
+    ] {
+        assert_eq!(origin(bad), None, "{bad}");
+    }
+    // Unsetting it goes back to the centre.
+    let unset = paint_writes("transform-origin", None, &PaintUnits::default())
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        unset[..],
+        [PaintWrite::TransformOrigin([50.0, 50.0])]
+    ));
+}
+
 #[test]
 fn a_background_is_a_colour_none_a_gradient_or_glass() {
     assert!(

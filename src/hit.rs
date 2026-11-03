@@ -2,7 +2,7 @@
 //! through each node's transform, inside the clips its ancestors push, last
 //! child on top. Pointer events in ashui are dispatched from this.
 
-use crate::display_list::{Affine, IDENTITY, apply, compose};
+use crate::display_list::{Affine, IDENTITY, apply, compose, transform_pivot};
 use crate::tree::Tree;
 use blinc_core::Transform;
 use blinc_layout::tree::LayoutNodeId;
@@ -203,7 +203,7 @@ fn hit_inner(
             return false;
         }
         if let Some(Transform::Affine2D(t)) = &props.transform {
-            let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+            let (cx, cy) = transform_pivot(props.transform_origin, x, y, w, h);
             let about = compose(
                 [1.0, 0.0, 0.0, 1.0, cx, cy],
                 compose(t.elements, [1.0, 0.0, 0.0, 1.0, -cx, -cy]),
@@ -773,6 +773,53 @@ mod tests {
         assert!(verify(&tree, root) > 500);
         tree.pass_through.insert(b);
         assert!(verify(&tree, root) > 500);
+    }
+
+    #[test]
+    fn a_transform_turns_a_node_about_its_origin() {
+        let mut tree = Tree::new();
+        let root = box_at(&mut tree, 0.0, 0.0, 300.0, 300.0);
+        let child = box_at(&mut tree, 100.0, 100.0, 100.0, 50.0);
+        tree.add_child(root, child);
+        // A quarter turn: a point `(dx, dy)` from the pivot goes to `(-dy, dx)`.
+        let turn = Transform::Affine2D(Affine2D {
+            elements: [0.0, 1.0, -1.0, 0.0, 0.0, 0.0],
+        });
+        let hits =
+            |tree: &Tree, x: f32, y: f32| test(tree, root, x, y).iter().any(|h| h.node == child);
+        layout(&mut tree, root);
+        // About its centre (150, 125) the box becomes 50 wide and 100 tall, around that point.
+        tree.props.insert(
+            child,
+            RenderProps {
+                transform: Some(turn.clone()),
+                ..Default::default()
+            },
+        );
+        assert!(hits(&tree, 150.0, 80.0) && hits(&tree, 150.0, 170.0));
+        assert!(!hits(&tree, 110.0, 125.0) && !hits(&tree, 190.0, 125.0));
+        // About its top left (100, 100) it covers x 50..100 and y 100..200.
+        tree.props.insert(
+            child,
+            RenderProps {
+                transform: Some(turn.clone()),
+                transform_origin: Some([0.0, 0.0]),
+                ..Default::default()
+            },
+        );
+        assert!(hits(&tree, 75.0, 150.0) && hits(&tree, 60.0, 130.0));
+        assert!(!hits(&tree, 150.0, 80.0) && !hits(&tree, 125.0, 150.0));
+        // About its bottom right (200, 150) it covers x 200..250 and y 50..150.
+        tree.props.insert(
+            child,
+            RenderProps {
+                transform: Some(turn),
+                transform_origin: Some([100.0, 100.0]),
+                ..Default::default()
+            },
+        );
+        assert!(hits(&tree, 225.0, 100.0));
+        assert!(!hits(&tree, 175.0, 100.0) && !hits(&tree, 225.0, 200.0));
     }
 
     #[test]

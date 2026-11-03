@@ -75,6 +75,9 @@ pub enum PaintWrite {
         inner: Vec<Shadow>,
     },
     Transform(Affine2D),
+    /// Where `Transform` pivots, as percentages of the node's box from its top left; 50, 50 is
+    /// the centre.
+    TransformOrigin([f32; 2]),
     Filter(Filter),
     Mask(Option<Gradient>),
     /// The shape the node and what it holds are clipped to; none for no clip.
@@ -142,6 +145,7 @@ pub fn is_paint_property(name: &str) -> bool {
             | "outline-offset"
             | "box-shadow"
             | "transform"
+            | "transform-origin"
             | "filter"
             | "mask-image"
             | "clip-path"
@@ -292,6 +296,8 @@ pub fn paint_writes(
         }
         ("transform", None) => Ok(vec![Transform(transform::IDENTITY)]),
         ("transform", Some(v)) => one(transform::parse(v, units).map(Transform)),
+        ("transform-origin", None) => Ok(vec![TransformOrigin([50.0, 50.0])]),
+        ("transform-origin", Some(v)) => one(transform::origin(v).map(TransformOrigin)),
         ("filter", None) => Ok(vec![Filter(self::Filter::default())]),
         ("filter", Some(v)) => one(filter::parse(v, units).map(Filter)),
         ("mask-image" | "-webkit-mask-image", None) => Ok(vec![Mask(None)]),

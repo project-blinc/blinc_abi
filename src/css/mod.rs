@@ -354,6 +354,8 @@ pub struct Rule {
     pub media: Option<Span>,
     /// Nested feature/size guards, all required.
     pub conditions: Span,
+    /// The `@layer` it is in: one more than its index in the sheet's `layers`, or 0 for none.
+    pub layer: u32,
     /// Its place among the sheet's rules, for ties in specificity.
     pub order: u32,
     pub line: u32,
@@ -414,6 +416,9 @@ pub struct Stylesheet {
     pub queries: Vec<MediaQuery>,
     pub features: Vec<MediaFeature>,
     pub conditions: Vec<conditional::Condition>,
+    /// The `@layer`s, named by their full dotted path, in the order they were first named, a
+    /// layer's parents before it.
+    pub layers: Vec<Atom>,
     /// `:root`'s custom properties, by name without the `--`, in source
     /// order; a later one of a name replaces the earlier in place.
     pub variables: Vec<(Atom, Atom)>,
@@ -908,6 +913,8 @@ fn combinator_str(c: Combinator) -> &'static str {
 mod tests;
 #[cfg(test)]
 mod tests_cascade;
+#[cfg(test)]
+mod tests_conformance;
 #[cfg(test)]
 mod tests_paint;
 #[cfg(test)]

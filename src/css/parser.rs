@@ -57,6 +57,8 @@ struct Scope {
     parents: Option<Vec<String>>,
     media: Option<Vec<Vec<MediaQuery>>>,
     conditions: Vec<super::conditional::Condition>,
+    /// The `@layer` the rules are in: one more than its index in the sheet's layers, 0 for none.
+    layer: u32,
 }
 
 impl Scope {
@@ -65,6 +67,7 @@ impl Scope {
             parents: None,
             media: None,
             conditions: Vec::new(),
+            layer: 0,
         }
     }
 }
@@ -99,6 +102,39 @@ struct Parser {
     /// Where to report a mixin body's problems: the `@include` it was read for.
     anchor: Option<Anchor>,
     at: usize,
+}
+
+/// A layer name: identifiers joined by dots.
+fn valid_layer_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .split('.')
+            .all(|part| !part.is_empty() && part.chars().all(is_ident))
+}
+
+/// The layer `name` is in `sheet`, naming it and its parents when it is new. `parent` is the
+/// layer it is written in, one more than its index, 0 for the top.
+fn layer_index(sheet: &mut Stylesheet, parent: u32, name: &str) -> u32 {
+    let mut path = match parent {
+        0 => String::new(),
+        p => sheet.str(sheet.layers[p as usize - 1]).to_string(),
+    };
+    let mut index = parent;
+    for part in name.split('.') {
+        if !path.is_empty() {
+            path.push('.');
+        }
+        path.push_str(part);
+        let atom = sheet.atoms.intern(&path);
+        index = match sheet.layers.iter().position(|&l| l == atom) {
+            Some(i) => i as u32 + 1,
+            None => {
+                sheet.layers.push(atom);
+                sheet.layers.len() as u32
+            }
+        };
+    }
+    index
 }
 
 fn is_ident(c: char) -> bool {
@@ -187,6 +223,7 @@ impl Parser {
             parents: Some(selectors.iter().map(|s| s.to_string()).collect()),
             media: scope.media.clone(),
             conditions: scope.conditions.clone(),
+            layer: scope.layer,
         };
         let order = cx.order;
         cx.order += 1;
@@ -226,6 +263,7 @@ impl Parser {
             declarations,
             media,
             conditions,
+            layer: scope.layer,
             order,
             line: self.line_of(start),
         });
@@ -309,6 +347,7 @@ impl Parser {
                     parents: scope.parents.clone(),
                     media: Some(lists.clone()),
                     conditions: scope.conditions.clone(),
+                    layer: scope.layer,
                 };
                 if scope.parents.is_none() {
                     self.rules(cx, &inner, true);
@@ -385,6 +424,7 @@ impl Parser {
                 }
                 self.import_file(cx, &prelude, scope, start);
             }
+            "layer" => self.layer_rule(cx, scope, start),
             "mixin" => self.define_mixin(cx, start),
             "include" => {
                 let prelude = self.until(cx, &[';', '{', '}']).trim().to_string();
@@ -417,6 +457,83 @@ impl Parser {
                     start,
                 );
                 self.skip_statement(cx);
+            }
+        }
+    }
+
+    /// `@layer a, b;` names layers without rules, fixing their order; `@layer a { .. }` holds
+    /// rules in one, and `@layer { .. }` in one with no name. A name is relative to the layer it
+    /// is in: `@layer b` inside `a` is `a.b`.
+    fn layer_rule(&mut self, cx: &mut Cx, scope: &Scope, start: usize) {
+        let prelude = self.until(cx, &['{', ';', '}']).trim().to_string();
+        let block = !self.done() && self.peek() == '{';
+        if scope.parents.is_some() {
+            self.report(
+                cx,
+                Severity::Error,
+                "@layer goes at the top of a sheet or in another layer, not inside a rule",
+                start,
+            );
+            if block {
+                self.at += 1;
+                self.skip_block();
+            } else if !self.done() && self.peek() == ';' {
+                self.at += 1;
+            }
+            return;
+        }
+        let names: Vec<&str> = prelude
+            .split(',')
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .collect();
+        if let Some(bad) = names.iter().find(|n| !valid_layer_name(n)) {
+            self.report(
+                cx,
+                Severity::Error,
+                &format!("@layer: \"{bad}\" is not a layer name"),
+                start,
+            );
+            if block {
+                self.at += 1;
+                self.skip_block();
+            } else if !self.done() && self.peek() == ';' {
+                self.at += 1;
+            }
+            return;
+        }
+        if block {
+            if names.len() > 1 {
+                self.report(
+                    cx,
+                    Severity::Error,
+                    "@layer with a block takes one name",
+                    start,
+                );
+                self.at += 1;
+                self.skip_block();
+                return;
+            }
+            self.at += 1;
+            let layer = match names.first() {
+                Some(name) => layer_index(&mut cx.sheet, scope.layer, name),
+                None => {
+                    let n = cx.sheet.layers.len();
+                    layer_index(&mut cx.sheet, scope.layer, &format!("\u{0}anonymous{n}"))
+                }
+            };
+            let mut inner = scope.clone();
+            inner.layer = layer;
+            self.rules(cx, &inner, true);
+        } else {
+            if !self.done() && self.peek() == ';' {
+                self.at += 1;
+            }
+            if names.is_empty() {
+                self.report(cx, Severity::Error, "@layer needs a name or a block", start);
+            }
+            for name in names {
+                layer_index(&mut cx.sheet, scope.layer, name);
             }
         }
     }
@@ -483,6 +600,7 @@ impl Parser {
                 parents: None,
                 media: lists,
                 conditions: scope.conditions.clone(),
+                layer: scope.layer,
             },
             false,
         );

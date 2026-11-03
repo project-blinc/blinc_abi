@@ -11,21 +11,23 @@
 use super::*;
 
 pub const MAGIC: &[u8; 4] = b"BCSS";
-/// Guard metadata uses version 4. Ordinary sheets retain their version 2/3 bytes.
-pub const VERSION: u16 = 4;
+/// Guard metadata uses version 4, and layers version 5. Ordinary sheets retain their version 2/3
+/// bytes.
+pub const VERSION: u16 = 5;
 
 /// `sheet` as compiled bytes.
 pub fn encode(sheet: &Stylesheet) -> Vec<u8> {
     let mut w = Writer(Vec::with_capacity(1024));
     w.0.extend_from_slice(MAGIC);
-    let version =
-        if !sheet.conditions.is_empty() || sheet.keyframes.iter().any(|k| k.media.is_some()) {
-            VERSION
-        } else if sheet.font_faces.is_empty() {
-            2u16
-        } else {
-            3u16
-        };
+    let version = if !sheet.layers.is_empty() {
+        VERSION
+    } else if !sheet.conditions.is_empty() || sheet.keyframes.iter().any(|k| k.media.is_some()) {
+        4u16
+    } else if sheet.font_faces.is_empty() {
+        2u16
+    } else {
+        3u16
+    };
     w.0.extend_from_slice(&version.to_le_bytes());
     let (text, spans) = sheet.atoms.parts();
     w.n(text.len() as u64);
@@ -164,6 +166,10 @@ pub fn encode(sheet: &Stylesheet) -> Vec<u8> {
         });
         w.list(&sheet.font_faces, |w, f| w.span(f.conditions));
     }
+    if version >= 5 {
+        w.list(&sheet.layers, |w, a| w.atom(*a));
+        w.list(&sheet.rules, |w, r| w.n(r.layer as u64));
+    }
     w.0
 }
 
@@ -204,6 +210,7 @@ pub fn decode(bytes: &[u8]) -> Result<Stylesheet, String> {
             declarations,
             media,
             conditions: Span::default(),
+            layer: 0,
             order: r.u32()?,
             line: r.u32()?,
         })
@@ -346,6 +353,16 @@ pub fn decode(bytes: &[u8]) -> Result<Stylesheet, String> {
             font.conditions = conditions;
         }
     }
+    if version >= 5 {
+        sheet.layers = r.list(|r| r.atom())?;
+        let layers = r.list(|r| r.u32())?;
+        if layers.len() != sheet.rules.len() {
+            return Err("layer metadata count does not match its arena".into());
+        }
+        for (rule, layer) in sheet.rules.iter_mut().zip(layers) {
+            rule.layer = layer;
+        }
+    }
     if r.at != bytes.len() {
         return Err("bytes after the sheet".into());
     }
@@ -399,10 +416,14 @@ fn check(s: &Stylesheet) -> Result<(), String> {
             return Err("invalid font weight range".into());
         }
     }
+    if s.layers.iter().any(|&a| !atom(a)) {
+        return bad("a layer");
+    }
     for r in &s.rules {
         if !within(r.selectors, s.selectors.len())
             || !within(r.declarations, s.declarations.len())
             || !within(r.conditions, s.conditions.len())
+            || r.layer as usize > s.layers.len()
         {
             return bad("a rule");
         }
