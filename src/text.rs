@@ -821,17 +821,36 @@ mod tests {
         let mut r = renderer();
         let mut style = StyleCache::new();
         let mut units = 0usize;
-        for text in ["Hello world", "AVATAR To Wa Ty", "caf\u{e9} \u{4f60}\u{597d}", "fi fl office", "  spaced  out "] {
+        for text in [
+            "Hello world",
+            "AVATAR To Wa Ty",
+            "caf\u{e9} \u{4f60}\u{597d}",
+            "fi fl office",
+            "  spaced  out ",
+        ] {
             let (mut composed, mut whole) = (Vec::new(), Vec::new());
             let composed_width = {
-                let mut composer = Composer { r: &mut r, run: &run, style: &mut style, units: &mut units };
+                let mut composer = Composer {
+                    r: &mut r,
+                    run: &run,
+                    style: &mut style,
+                    units: &mut units,
+                };
                 compose_paragraph(&mut composer, text, 0.0, &mut composed, None)
             };
             let whole_width = whole_paragraph(&mut r, &run, text, 0.0, &mut whole);
             assert_eq!(composed.len(), whole.len(), "glyph count of {text:?}");
-            assert!((composed_width - whole_width).abs() < 0.5, "width of {text:?}: {composed_width} against {whole_width}");
+            assert!(
+                (composed_width - whole_width).abs() < 0.5,
+                "width of {text:?}: {composed_width} against {whole_width}"
+            );
             for (c, w) in composed.chunks(9).zip(whole.chunks(9)) {
-                assert!((c[0] - w[0]).abs() <= 1.0, "glyph x in {text:?}: {} against {}", c[0], w[0]);
+                assert!(
+                    (c[0] - w[0]).abs() <= 1.0,
+                    "glyph x in {text:?}: {} against {}",
+                    c[0],
+                    w[0]
+                );
                 assert_eq!((c[2], c[3]), (w[2], w[3]), "glyph size in {text:?}");
             }
         }
@@ -844,17 +863,35 @@ mod tests {
             let mut advances = Vec::new();
             let mut info = [0.0f32; 4];
             unsafe {
-                prepare_glyphs_with(text, None, style, hint, std::ptr::null_mut(), 0, info.as_mut_ptr() as *mut u8, Some(&mut advances));
+                prepare_glyphs_with(
+                    text,
+                    None,
+                    style,
+                    hint,
+                    std::ptr::null_mut(),
+                    0,
+                    info.as_mut_ptr() as *mut u8,
+                    Some(&mut advances),
+                );
             }
             (advances, info[0])
         };
         let (exact, exact_width) = lay("mmmm", false);
         let (hinted, hinted_width) = lay("mmmm", true);
-        assert!(hinted.iter().all(|a| (a - a.round()).abs() < 0.001), "hinted advances {hinted:?} are whole pixels");
-        assert!((hinted_width - 4.0 * exact[0].round()).abs() < 0.01, "hinted width {hinted_width} from exact {exact:?}");
+        assert!(
+            hinted.iter().all(|a| (a - a.round()).abs() < 0.001),
+            "hinted advances {hinted:?} are whole pixels"
+        );
+        assert!(
+            (hinted_width - 4.0 * exact[0].round()).abs() < 0.01,
+            "hinted width {hinted_width} from exact {exact:?}"
+        );
         // The two modes keep apart in the cache: asking for exact again gives the exact result.
         let (_, again) = lay("mmmm", false);
-        assert!((again - exact_width).abs() < 0.001, "exact width changed from {exact_width} to {again}");
+        assert!(
+            (again - exact_width).abs() < 0.001,
+            "exact width changed from {exact_width} to {again}"
+        );
         // A space is a unit like any other.
         let (spaced, _) = lay("m m", true);
         assert!(spaced.iter().all(|a| (a - a.round()).abs() < 0.001) && spaced[1] > 0.0);
@@ -862,13 +899,33 @@ mod tests {
     #[test]
     fn advances_cover_every_character_and_add_up_to_the_width() {
         let style = [0.0, 400.0, 0.0, 16.0, 0.0, 1.2];
-        for text in ["Hello world", "  two  spaces ", "AVATAR To", "fi office", "caf\u{e9} \u{4f60}\u{597d}", "one\ntwo"] {
+        for text in [
+            "Hello world",
+            "  two  spaces ",
+            "AVATAR To",
+            "fi office",
+            "caf\u{e9} \u{4f60}\u{597d}",
+            "one\ntwo",
+        ] {
             let mut advances = Vec::new();
             let mut info = [0.0f32; 4];
             unsafe {
-                prepare_glyphs_with(text, None, style, false, std::ptr::null_mut(), 0, info.as_mut_ptr() as *mut u8, Some(&mut advances));
+                prepare_glyphs_with(
+                    text,
+                    None,
+                    style,
+                    false,
+                    std::ptr::null_mut(),
+                    0,
+                    info.as_mut_ptr() as *mut u8,
+                    Some(&mut advances),
+                );
             }
-            assert_eq!(advances.len(), text.chars().count(), "one advance per character of {text:?}");
+            assert_eq!(
+                advances.len(),
+                text.chars().count(),
+                "one advance per character of {text:?}"
+            );
             let widest = text
                 .split('\n')
                 .scan(0, |start, line| {
@@ -878,7 +935,11 @@ mod tests {
                     Some(sum)
                 })
                 .fold(0.0f32, f32::max);
-            assert!((widest - info[0]).abs() < 0.01, "advances of {text:?} add up to {widest}, the width is {}", info[0]);
+            assert!(
+                (widest - info[0]).abs() < 0.01,
+                "advances of {text:?} add up to {widest}, the width is {}",
+                info[0]
+            );
             for (c, a) in text.chars().zip(&advances) {
                 if c == ' ' {
                     assert!(*a > 0.0, "a space has an advance in {text:?}");
@@ -1212,7 +1273,17 @@ fn glyph_records(prepared: &PreparedText) -> Vec<f32> {
     for g in &prepared.glyphs {
         let [gx, gy, gw, gh] = g.bounds;
         let [u0, v0, u1, v1] = g.uv_bounds;
-        out.extend([gx, gy, gw, gh, u0, v0, u1, v1, if g.is_color { 1.0 } else { 0.0 }]);
+        out.extend([
+            gx,
+            gy,
+            gw,
+            gh,
+            u0,
+            v0,
+            u1,
+            v1,
+            if g.is_color { 1.0 } else { 0.0 },
+        ]);
     }
     out
 }
@@ -1280,7 +1351,12 @@ impl Composer<'_> {
         let ascii = ascii_index(a).zip(ascii_index(b));
         let known = match ascii {
             Some((i, j)) => self.style.ascii_pairs[i * ASCII_COUNT + j],
-            None => self.style.other_pairs.get(&(a, b)).copied().unwrap_or(f32::NAN),
+            None => self
+                .style
+                .other_pairs
+                .get(&(a, b))
+                .copied()
+                .unwrap_or(f32::NAN),
         };
         if !known.is_nan() {
             return known;
@@ -1313,7 +1389,11 @@ impl Composer<'_> {
     fn unit(&mut self, text: &str, single: Option<usize>, phase: usize) -> Option<&Unit> {
         let known = match single {
             Some(i) => self.style.ascii[i].phases[phase].is_some(),
-            None => self.style.others.get(text).is_some_and(|u| u.phases[phase].is_some()),
+            None => self
+                .style
+                .others
+                .get(text)
+                .is_some_and(|u| u.phases[phase].is_some()),
         };
         if !known {
             let phases = SUBPIXEL_PHASES.get() as f32;
@@ -1330,7 +1410,9 @@ impl Composer<'_> {
             unit.phases[phase] = Some(records);
         }
         match single {
-            Some(i) => self.style.ascii[i].phases[phase].is_some().then(|| &self.style.ascii[i]),
+            Some(i) => self.style.ascii[i].phases[phase]
+                .is_some()
+                .then(|| &self.style.ascii[i]),
             None => self.style.others.get(text),
         }
     }
@@ -1360,7 +1442,9 @@ fn compose_paragraph(
             let next = chars[j];
             let joins = extends(next)
                 || (needs_context(first) && needs_context(next))
-                || (!needs_context(first) && !needs_context(next) && composer.pair(chars[j - 1], next).is_infinite());
+                || (!needs_context(first)
+                    && !needs_context(next)
+                    && composer.pair(chars[j - 1], next).is_infinite());
             if !joins {
                 break;
             }
@@ -1390,10 +1474,24 @@ fn compose_paragraph(
         if let Some(unit) = composer.unit(&text, single, phase) {
             if let Some(records) = &unit.phases[phase] {
                 for g in records.as_chunks::<9>().0 {
-                    out.extend([g[0] + whole, g[1] + down, g[2], g[3], g[4], g[5], g[6], g[7], g[8]]);
+                    out.extend([
+                        g[0] + whole,
+                        g[1] + down,
+                        g[2],
+                        g[3],
+                        g[4],
+                        g[5],
+                        g[6],
+                        g[7],
+                        g[8],
+                    ]);
                 }
             }
-            let advance = if hint { unit.advance.round() } else { unit.advance };
+            let advance = if hint {
+                unit.advance.round()
+            } else {
+                unit.advance
+            };
             pen += advance;
             if let Some(a) = advances.as_deref_mut() {
                 let share = advance / (j - i) as f32;
@@ -1408,7 +1506,13 @@ fn compose_paragraph(
 }
 
 /// Appends the glyphs of one line shaped as a whole, the reference `compose_paragraph` is checked against.
-fn whole_paragraph(r: &mut TextRenderer, run: &RunStyle, paragraph: &str, down: f32, out: &mut Vec<f32>) -> f32 {
+fn whole_paragraph(
+    r: &mut TextRenderer,
+    run: &RunStyle,
+    paragraph: &str,
+    down: f32,
+    out: &mut Vec<f32>,
+) -> f32 {
     let mut cleared = false;
     let Some(prepared) = shape(r, run, paragraph, 0.0, &mut cleared) else {
         return 0.0;
@@ -1443,7 +1547,16 @@ pub unsafe extern "C" fn hl_blinc_text_advances(
     let mut advances = Vec::new();
     let mut metrics = [0.0f32; 4];
     unsafe {
-        prepare_glyphs_with(&text, name, style, flags & HINT != 0, std::ptr::null_mut(), 0, metrics.as_mut_ptr() as *mut u8, Some(&mut advances));
+        prepare_glyphs_with(
+            &text,
+            name,
+            style,
+            flags & HINT != 0,
+            std::ptr::null_mut(),
+            0,
+            metrics.as_mut_ptr() as *mut u8,
+            Some(&mut advances),
+        );
     }
     if !info.is_null() {
         unsafe { (info as *mut f32).write_unaligned(metrics[0]) };
@@ -1455,7 +1568,11 @@ pub unsafe extern "C" fn hl_blinc_text_advances(
     n as i32
 }
 #[cfg(feature = "hashlink")]
-define_prim!(hlp_blinc_text_advances, hl_blinc_text_advances, "PBBBBiBi_i");
+define_prim!(
+    hlp_blinc_text_advances,
+    hl_blinc_text_advances,
+    "PBBBBiBi_i"
+);
 
 /// Turns composing lines from cached units on or off; `1` is the default. Off shapes every line whole, so tests can
 /// compare the two. Returns the previous setting.
@@ -1527,18 +1644,19 @@ pub unsafe fn prepare_glyphs_with(
     let (ascent, descent, natural) = {
         let registry = global_font_registry();
         let mut registry = registry.lock().unwrap_or_else(|e| e.into_inner());
-        let font = match registry.get_for_render_with_style(name.as_deref(), generic, weight, italic) {
-            Some(font) => font,
-            None => match registry.load_with_fallback_styled(
-                name.as_deref(),
-                generic,
-                weight,
-                italic,
-            ) {
-                Ok(font) => font,
-                Err(_) => return 0,
-            },
-        };
+        let font =
+            match registry.get_for_render_with_style(name.as_deref(), generic, weight, italic) {
+                Some(font) => font,
+                None => match registry.load_with_fallback_styled(
+                    name.as_deref(),
+                    generic,
+                    weight,
+                    italic,
+                ) {
+                    Ok(font) => font,
+                    Err(_) => return 0,
+                },
+            };
         let m = font.metrics();
         (
             m.ascender_px(size),
@@ -1585,7 +1703,9 @@ pub unsafe fn prepare_glyphs_with(
     let cached = WORD_CACHE_ENABLED.load(Ordering::Relaxed);
     {
         let WordCache { styles, units, .. } = &mut *cache;
-        let style = styles.entry(run.key.clone()).or_insert_with(StyleCache::new);
+        let style = styles
+            .entry(run.key.clone())
+            .or_insert_with(StyleCache::new);
         let mut composer = Composer {
             r: &mut r,
             run: &run,
@@ -1595,18 +1715,26 @@ pub unsafe fn prepare_glyphs_with(
         for (row, paragraph) in text.split('\n').enumerate() {
             if paragraph.is_empty() {
                 if row > 0
-                    && let Some(a) = advances.as_deref_mut() {
-                        a.push(0.0);
-                    }
+                    && let Some(a) = advances.as_deref_mut()
+                {
+                    a.push(0.0);
+                }
                 continue;
             }
             let down = row as f32 * step;
             if row > 0
-                && let Some(a) = advances.as_deref_mut() {
-                    a.push(0.0);
-                }
+                && let Some(a) = advances.as_deref_mut()
+            {
+                a.push(0.0);
+            }
             let width = if cached {
-                compose_paragraph(&mut composer, paragraph, down, &mut glyphs_out, advances.as_deref_mut())
+                compose_paragraph(
+                    &mut composer,
+                    paragraph,
+                    down,
+                    &mut glyphs_out,
+                    advances.as_deref_mut(),
+                )
             } else {
                 whole_paragraph(composer.r, &run, paragraph, down, &mut glyphs_out)
             };
@@ -1645,7 +1773,18 @@ pub unsafe extern "C" fn hl_blinc_text_prepare(
     let style = [s(0), s(1), s(2), s(3), s(4), s(5)];
     let text = unsafe { crate::hl::string_from(text) };
     let name = unsafe { crate::hl::opt_string_from(font_name) };
-    unsafe { prepare_glyphs_with(&text, name, style, flags & HINT != 0, out, capacity, info, None) }
+    unsafe {
+        prepare_glyphs_with(
+            &text,
+            name,
+            style,
+            flags & HINT != 0,
+            out,
+            capacity,
+            info,
+            None,
+        )
+    }
 }
 #[cfg(feature = "hashlink")]
 define_prim!(hlp_blinc_text_prepare, hl_blinc_text_prepare, "PBBBBiBi_i");

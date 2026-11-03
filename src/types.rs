@@ -460,9 +460,7 @@ mod host {
         let flags: Vec<u8> = if percent.is_null() {
             Vec::new()
         } else {
-            (0..2 * n)
-                .map(|k| unsafe { *percent.add(k) })
-                .collect()
+            (0..2 * n).map(|k| unsafe { *percent.add(k) }).collect()
         };
         value(clip_polygon_value(&floats, &flags, count, path))
     }

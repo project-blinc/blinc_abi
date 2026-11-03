@@ -50,7 +50,10 @@ fn arguments(text: &str) -> Vec<&str> {
 fn every_primitive_signature_starts_with_p() {
     let call = ["define", "_prim!("].concat();
     let mut files = Vec::new();
-    sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    sources(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
     let (mut checked, mut missing) = (0, Vec::new());
     for file in files.iter().filter(|f| !f.ends_with("signature_prefix.rs")) {
         let text = fs::read_to_string(file).unwrap();
@@ -65,7 +68,10 @@ fn every_primitive_signature_starts_with_p() {
                 continue;
             }
             checked += 1;
-            if !signature.strip_prefix('"').is_some_and(|s| s.starts_with('P')) {
+            if !signature
+                .strip_prefix('"')
+                .is_some_and(|s| s.starts_with('P'))
+            {
                 missing.push(format!("{}:{}: {signature}", file.display(), line_of(at)));
             }
         }
@@ -77,12 +83,23 @@ fn every_primitive_signature_starts_with_p() {
                 line.split_once(" = "),
             ) {
                 checked += 1;
-                if !signature.trim_start().strip_prefix('"').is_some_and(|s| s.starts_with('P')) {
+                if !signature
+                    .trim_start()
+                    .strip_prefix('"')
+                    .is_some_and(|s| s.starts_with('P'))
+                {
                     missing.push(format!("{}:{}: {signature}", file.display(), n + 1));
                 }
             }
         }
     }
-    assert!(checked > 100, "found only {checked} signatures: the check no longer sees the sources");
-    assert!(missing.is_empty(), "signatures without the leading P:\n{}", missing.join("\n"));
+    assert!(
+        checked > 100,
+        "found only {checked} signatures: the check no longer sees the sources"
+    );
+    assert!(
+        missing.is_empty(),
+        "signatures without the leading P:\n{}",
+        missing.join("\n")
+    );
 }

@@ -5,10 +5,10 @@
 //! removes them. Node ids cross as `i64` (a node's raw id), and results that HashLink writes into
 //! a caller's buffer are written into a `BufferMut` the same way.
 
+use crate::caribou_reactive::{Computed, Effects, Signal};
 use crate::css::Stylesheet;
 use crate::css::cascade::States;
 use crate::css::styled::Styles;
-use crate::caribou_reactive::{Computed, Effects, Signal};
 use crate::css_hl;
 use crate::hit;
 use crate::ops::{self, TextSpec};

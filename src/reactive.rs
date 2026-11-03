@@ -10,13 +10,13 @@
 #[cfg(feature = "hashlink")]
 use crate::hl::{Rooted, call_void, handle_ref, into_handle, opt_string_from, string_to_hl};
 use crate::types::Value;
-use blinc_core::reactive::{
-    Computed, DerivedId, Effect, EffectId, SignalId, State, begin_host_effect, computed,
-    dispose_derived, dispose_host_effect, dispose_signal, end_host_effect,
-    global_dirty_flag, global_graph, host_effect, signal, take_due_host_effects,
-};
 #[cfg(feature = "hashlink")]
 use blinc_core::reactive::effect;
+use blinc_core::reactive::{
+    Computed, DerivedId, Effect, EffectId, SignalId, State, begin_host_effect, computed,
+    dispose_derived, dispose_host_effect, dispose_signal, end_host_effect, global_dirty_flag,
+    global_graph, host_effect, signal, take_due_host_effects,
+};
 use blinc_layout::binding::with_registry;
 #[cfg(feature = "hashlink")]
 use hl_abi::{define_prim, vbyte};
@@ -335,12 +335,12 @@ pub(crate) fn computed_value<T: Slot>(c: &Computed<T>) -> T {
 mod exports {
     use super::*;
 
-// ============================================================================
-// NUMERIC SIGNALS
-// ============================================================================
+    // ============================================================================
+    // NUMERIC SIGNALS
+    // ============================================================================
 
-macro_rules! export_numeric {
-    (
+    macro_rules! export_numeric {
+        (
         $t:ty, $variant:ident,
         $new:ident / $new_prim:ident = $new_sig:literal,
         $get:ident / $get_prim:ident = $get_sig:literal,
@@ -349,421 +349,420 @@ macro_rules! export_numeric {
         $comp_get:ident / $comp_get_prim:ident = $comp_get_sig:literal,
         $ret:ident / $ret_prim:ident = $ret_sig:literal
     ) => {
-        #[unsafe(no_mangle)]
-        pub extern "C" fn $new(initial: $t) -> *mut c_void {
-            into_handle(AnySignal::$variant(new_state(initial)))
-        }
-        define_prim!($new_prim, $new, $new_sig);
-
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $get(h: *mut c_void) -> $t {
-            unsafe { state_of::<$t>(h) }.map(read).unwrap_or_default()
-        }
-        define_prim!($get_prim, $get, $get_sig);
-
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $set(h: *mut c_void, v: $t) {
-            if let Some(s) = unsafe { state_of::<$t>(h) } {
-                set_primitive(s, v);
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $new(initial: $t) -> *mut c_void {
+                into_handle(AnySignal::$variant(new_state(initial)))
             }
-        }
-        define_prim!($set_prim, $set, $set_sig);
+            define_prim!($new_prim, $new, $new_sig);
 
-        #[unsafe(no_mangle)]
-        pub extern "C" fn $comp(closure: *mut c_void) -> *mut c_void {
-            into_handle(AnyComputed::$variant(computed_from::<$t>(closure)))
-        }
-        define_prim!($comp_prim, $comp, "PP_v_Xblinc_computed_");
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn $get(h: *mut c_void) -> $t {
+                unsafe { state_of::<$t>(h) }.map(read).unwrap_or_default()
+            }
+            define_prim!($get_prim, $get, $get_sig);
 
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $comp_get(h: *mut c_void) -> $t {
-            unsafe { computed_of::<$t>(h) }
-                .map(computed_value)
-                .unwrap_or_default()
-        }
-        define_prim!($comp_get_prim, $comp_get, $comp_get_sig);
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn $set(h: *mut c_void, v: $t) {
+                if let Some(s) = unsafe { state_of::<$t>(h) } {
+                    set_primitive(s, v);
+                }
+            }
+            define_prim!($set_prim, $set, $set_sig);
 
-        #[unsafe(no_mangle)]
-        pub extern "C" fn $ret(v: $t) {
-            give(v);
-        }
-        define_prim!($ret_prim, $ret, $ret_sig);
-    };
-}
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $comp(closure: *mut c_void) -> *mut c_void {
+                into_handle(AnyComputed::$variant(computed_from::<$t>(closure)))
+            }
+            define_prim!($comp_prim, $comp, "PP_v_Xblinc_computed_");
 
-export_numeric!(
-    i32,
-    I32,
-    hl_blinc_signal_i32 / hlp_blinc_signal_i32 = "Pi_Xblinc_signal_",
-    hl_blinc_signal_get_i32 / hlp_blinc_signal_get_i32 = "PXblinc_signal__i",
-    hl_blinc_signal_set_i32 / hlp_blinc_signal_set_i32 = "PXblinc_signal_i_v",
-    hl_blinc_computed_i32 / hlp_blinc_computed_i32,
-    hl_blinc_computed_get_i32 / hlp_blinc_computed_get_i32 = "PXblinc_computed__i",
-    hl_blinc_return_i32 / hlp_blinc_return_i32 = "Pi_v"
-);
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn $comp_get(h: *mut c_void) -> $t {
+                unsafe { computed_of::<$t>(h) }
+                    .map(computed_value)
+                    .unwrap_or_default()
+            }
+            define_prim!($comp_get_prim, $comp_get, $comp_get_sig);
 
-export_numeric!(
-    f32,
-    F32,
-    hl_blinc_signal_f32 / hlp_blinc_signal_f32 = "Pf_Xblinc_signal_",
-    hl_blinc_signal_get_f32 / hlp_blinc_signal_get_f32 = "PXblinc_signal__f",
-    hl_blinc_signal_set_f32 / hlp_blinc_signal_set_f32 = "PXblinc_signal_f_v",
-    hl_blinc_computed_f32 / hlp_blinc_computed_f32,
-    hl_blinc_computed_get_f32 / hlp_blinc_computed_get_f32 = "PXblinc_computed__f",
-    hl_blinc_return_f32 / hlp_blinc_return_f32 = "Pf_v"
-);
-
-export_numeric!(
-    f64,
-    F64,
-    hl_blinc_signal_f64 / hlp_blinc_signal_f64 = "Pd_Xblinc_signal_",
-    hl_blinc_signal_get_f64 / hlp_blinc_signal_get_f64 = "PXblinc_signal__d",
-    hl_blinc_signal_set_f64 / hlp_blinc_signal_set_f64 = "PXblinc_signal_d_v",
-    hl_blinc_computed_f64 / hlp_blinc_computed_f64,
-    hl_blinc_computed_get_f64 / hlp_blinc_computed_get_f64 = "PXblinc_computed__d",
-    hl_blinc_return_f64 / hlp_blinc_return_f64 = "Pd_v"
-);
-
-// ============================================================================
-// BOOL SIGNALS
-// ============================================================================
-// Arguments cross as Int: no backend declares how a narrow bool argument is
-// extended, so its upper bits are not trusted.
-
-#[unsafe(no_mangle)]
-pub extern "C" fn hl_blinc_signal_bool(initial: i32) -> *mut c_void {
-    into_handle(AnySignal::Bool(new_state(initial != 0)))
-}
-define_prim!(
-    hlp_blinc_signal_bool,
-    hl_blinc_signal_bool,
-    "Pi_Xblinc_signal_"
-);
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_signal_get_bool(h: *mut c_void) -> bool {
-    unsafe { state_of::<bool>(h) }.map(read).unwrap_or_default()
-}
-define_prim!(
-    hlp_blinc_signal_get_bool,
-    hl_blinc_signal_get_bool,
-    "PXblinc_signal__b"
-);
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_signal_set_bool(h: *mut c_void, v: i32) {
-    if let Some(s) = unsafe { state_of::<bool>(h) } {
-        set_primitive(s, v != 0);
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $ret(v: $t) {
+                give(v);
+            }
+            define_prim!($ret_prim, $ret, $ret_sig);
+        };
     }
-}
-define_prim!(
-    hlp_blinc_signal_set_bool,
-    hl_blinc_signal_set_bool,
-    "PXblinc_signal_i_v"
-);
 
-#[unsafe(no_mangle)]
-pub extern "C" fn hl_blinc_computed_bool(closure: *mut c_void) -> *mut c_void {
-    into_handle(AnyComputed::Bool(computed_from::<bool>(closure)))
-}
-define_prim!(
-    hlp_blinc_computed_bool,
-    hl_blinc_computed_bool,
-    "PP_v_Xblinc_computed_"
-);
+    export_numeric!(
+        i32,
+        I32,
+        hl_blinc_signal_i32 / hlp_blinc_signal_i32 = "Pi_Xblinc_signal_",
+        hl_blinc_signal_get_i32 / hlp_blinc_signal_get_i32 = "PXblinc_signal__i",
+        hl_blinc_signal_set_i32 / hlp_blinc_signal_set_i32 = "PXblinc_signal_i_v",
+        hl_blinc_computed_i32 / hlp_blinc_computed_i32,
+        hl_blinc_computed_get_i32 / hlp_blinc_computed_get_i32 = "PXblinc_computed__i",
+        hl_blinc_return_i32 / hlp_blinc_return_i32 = "Pi_v"
+    );
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_computed_get_bool(h: *mut c_void) -> bool {
-    unsafe { computed_of::<bool>(h) }
-        .map(computed_value)
-        .unwrap_or_default()
-}
-define_prim!(
-    hlp_blinc_computed_get_bool,
-    hl_blinc_computed_get_bool,
-    "PXblinc_computed__b"
-);
+    export_numeric!(
+        f32,
+        F32,
+        hl_blinc_signal_f32 / hlp_blinc_signal_f32 = "Pf_Xblinc_signal_",
+        hl_blinc_signal_get_f32 / hlp_blinc_signal_get_f32 = "PXblinc_signal__f",
+        hl_blinc_signal_set_f32 / hlp_blinc_signal_set_f32 = "PXblinc_signal_f_v",
+        hl_blinc_computed_f32 / hlp_blinc_computed_f32,
+        hl_blinc_computed_get_f32 / hlp_blinc_computed_get_f32 = "PXblinc_computed__f",
+        hl_blinc_return_f32 / hlp_blinc_return_f32 = "Pf_v"
+    );
 
-#[unsafe(no_mangle)]
-pub extern "C" fn hl_blinc_return_bool(v: i32) {
-    give(v != 0);
-}
-define_prim!(hlp_blinc_return_bool, hl_blinc_return_bool, "Pi_v");
+    export_numeric!(
+        f64,
+        F64,
+        hl_blinc_signal_f64 / hlp_blinc_signal_f64 = "Pd_Xblinc_signal_",
+        hl_blinc_signal_get_f64 / hlp_blinc_signal_get_f64 = "PXblinc_signal__d",
+        hl_blinc_signal_set_f64 / hlp_blinc_signal_set_f64 = "PXblinc_signal_d_v",
+        hl_blinc_computed_f64 / hlp_blinc_computed_f64,
+        hl_blinc_computed_get_f64 / hlp_blinc_computed_get_f64 = "PXblinc_computed__d",
+        hl_blinc_return_f64 / hlp_blinc_return_f64 = "Pd_v"
+    );
 
-// ============================================================================
-// STRING SIGNALS
-// ============================================================================
-// Held in Rust as `Option<String>`, so property bindings can read them and
-// null survives. They cross as NUL-terminated UTF-8, null as a null pointer.
+    // ============================================================================
+    // BOOL SIGNALS
+    // ============================================================================
+    // Arguments cross as Int: no backend declares how a narrow bool argument is
+    // extended, so its upper bits are not trusted.
 
-fn opt_string_to_hl(s: Option<String>) -> *mut vbyte {
-    s.map_or(std::ptr::null_mut(), |s| string_to_hl(&s))
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_signal_string(initial: *const vbyte) -> *mut c_void {
-    into_handle(AnySignal::Str(new_state(unsafe {
-        opt_string_from(initial)
-    })))
-}
-define_prim!(
-    hlp_blinc_signal_string,
-    hl_blinc_signal_string,
-    "PB_Xblinc_signal_"
-);
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_signal_get_string(h: *mut c_void) -> *mut vbyte {
-    opt_string_to_hl(unsafe { state_of::<Option<String>>(h) }.and_then(read))
-}
-define_prim!(
-    hlp_blinc_signal_get_string,
-    hl_blinc_signal_get_string,
-    "PXblinc_signal__B"
-);
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_signal_set_string(h: *mut c_void, v: *const vbyte) {
-    if let Some(s) = unsafe { state_of::<Option<String>>(h) } {
-        s.set(unsafe { opt_string_from(v) });
+    #[unsafe(no_mangle)]
+    pub extern "C" fn hl_blinc_signal_bool(initial: i32) -> *mut c_void {
+        into_handle(AnySignal::Bool(new_state(initial != 0)))
     }
-}
-define_prim!(
-    hlp_blinc_signal_set_string,
-    hl_blinc_signal_set_string,
-    "PXblinc_signal_B_v"
-);
+    define_prim!(
+        hlp_blinc_signal_bool,
+        hl_blinc_signal_bool,
+        "Pi_Xblinc_signal_"
+    );
 
-// git-bug 2059910: lets a caller cache the decoded Haxe string and skip the
-// UTF-8 round trip when the native value hasn't changed since it last read
-// this version. Untracked — pair with `blinc_signal_touch` to still
-// register the dependency.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_signal_string_version(h: *mut c_void) -> i32 {
-    unsafe { state_of::<Option<String>>(h) }
-        .and_then(|s| s.signal().version())
-        .map(|v| v as i32)
-        .unwrap_or(-1)
-}
-define_prim!(
-    hlp_blinc_signal_string_version,
-    hl_blinc_signal_string_version,
-    "PXblinc_signal__i"
-);
-
-#[unsafe(no_mangle)]
-pub extern "C" fn hl_blinc_computed_string(closure: *mut c_void) -> *mut c_void {
-    into_handle(AnyComputed::Str(computed_from::<Option<String>>(closure)))
-}
-define_prim!(
-    hlp_blinc_computed_string,
-    hl_blinc_computed_string,
-    "PP_v_Xblinc_computed_"
-);
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_computed_get_string(h: *mut c_void) -> *mut vbyte {
-    opt_string_to_hl(unsafe { computed_of::<Option<String>>(h) }.and_then(computed_value))
-}
-define_prim!(
-    hlp_blinc_computed_get_string,
-    hl_blinc_computed_get_string,
-    "PXblinc_computed__B"
-);
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_return_string(v: *const vbyte) {
-    give(unsafe { opt_string_from(v) });
-}
-define_prim!(hlp_blinc_return_string, hl_blinc_return_string, "PB_v");
-
-// ============================================================================
-// VALUE SIGNALS (brush, color, radius, transform, shadow)
-// ============================================================================
-// Haxe keeps the wrapper object it set and returns that from `get`, so there
-// are no value getters; `blinc_signal_touch` records the read.
-
-/// # Safety
-/// `h` must be null or a `blinc_value` handle.
-unsafe fn value_of(h: *mut c_void) -> Value {
-    unsafe { handle_ref::<Value>(h) }
-        .cloned()
-        .unwrap_or_default()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_signal_value(initial: *mut c_void) -> *mut c_void {
-    into_handle(AnySignal::Value(new_state(unsafe { value_of(initial) })))
-}
-define_prim!(
-    hlp_blinc_signal_value,
-    hl_blinc_signal_value,
-    "PXblinc_value__Xblinc_signal_"
-);
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_signal_set_value(h: *mut c_void, v: *mut c_void) {
-    if let Some(s) = unsafe { state_of::<Value>(h) } {
-        s.set(unsafe { value_of(v) });
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_signal_get_bool(h: *mut c_void) -> bool {
+        unsafe { state_of::<bool>(h) }.map(read).unwrap_or_default()
     }
-}
-define_prim!(
-    hlp_blinc_signal_set_value,
-    hl_blinc_signal_set_value,
-    "PXblinc_signal_Xblinc_value__v"
-);
+    define_prim!(
+        hlp_blinc_signal_get_bool,
+        hl_blinc_signal_get_bool,
+        "PXblinc_signal__b"
+    );
 
-#[unsafe(no_mangle)]
-pub extern "C" fn hl_blinc_computed_value(closure: *mut c_void) -> *mut c_void {
-    into_handle(AnyComputed::Value(computed_from::<Value>(closure)))
-}
-define_prim!(
-    hlp_blinc_computed_value,
-    hl_blinc_computed_value,
-    "PP_v_Xblinc_computed_"
-);
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_return_value(v: *mut c_void) {
-    give(unsafe { value_of(v) });
-}
-define_prim!(
-    hlp_blinc_return_value,
-    hl_blinc_return_value,
-    "PXblinc_value__v"
-);
-
-// ============================================================================
-// ANY TYPE
-// ============================================================================
-
-/// Read a signal for its side effect alone: inside a computation, recording
-/// it as a dependency.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_signal_touch(h: *mut c_void) {
-    match unsafe { handle_ref::<AnySignal>(h) } {
-        Some(AnySignal::I32(s)) => {
-            read(s);
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_signal_set_bool(h: *mut c_void, v: i32) {
+        if let Some(s) = unsafe { state_of::<bool>(h) } {
+            set_primitive(s, v != 0);
         }
-        Some(AnySignal::F32(s)) => {
-            read(s);
-        }
-        Some(AnySignal::F64(s)) => {
-            read(s);
-        }
-        Some(AnySignal::Bool(s)) => {
-            read(s);
-        }
-        Some(AnySignal::Str(s)) => {
-            read(s);
-        }
-        Some(AnySignal::Value(s)) => {
-            read(s);
-        }
-        None => {}
     }
-}
-define_prim!(
-    hlp_blinc_signal_touch,
-    hl_blinc_signal_touch,
-    "PXblinc_signal__v"
-);
+    define_prim!(
+        hlp_blinc_signal_set_bool,
+        hl_blinc_signal_set_bool,
+        "PXblinc_signal_i_v"
+    );
 
-/// Release a computed before its handle is collected, as its owner does when
-/// disposed. Queued like a finalizer's release, so it takes effect at the next
-/// flush; releasing the same computed again is a no-op there.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_computed_release(h: *mut c_void) {
-    if let Some(c) = unsafe { handle_ref::<AnyComputed>(h) } {
-        c.release();
+    #[unsafe(no_mangle)]
+    pub extern "C" fn hl_blinc_computed_bool(closure: *mut c_void) -> *mut c_void {
+        into_handle(AnyComputed::Bool(computed_from::<bool>(closure)))
     }
-}
-define_prim!(
-    hlp_blinc_computed_release,
-    hl_blinc_computed_release,
-    "PXblinc_computed__v"
-);
+    define_prim!(
+        hlp_blinc_computed_bool,
+        hl_blinc_computed_bool,
+        "PP_v_Xblinc_computed_"
+    );
 
-/// Bring a computed up to date, running its closure if a dependency changed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_computed_touch(h: *mut c_void) {
-    match unsafe { handle_ref::<AnyComputed>(h) } {
-        Some(AnyComputed::I32(c)) => {
-            c.try_get();
-        }
-        Some(AnyComputed::F32(c)) => {
-            c.try_get();
-        }
-        Some(AnyComputed::F64(c)) => {
-            c.try_get();
-        }
-        Some(AnyComputed::Bool(c)) => {
-            c.try_get();
-        }
-        Some(AnyComputed::Str(c)) => {
-            c.try_get();
-        }
-        Some(AnyComputed::Value(c)) => {
-            c.try_get();
-        }
-        None => {}
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_computed_get_bool(h: *mut c_void) -> bool {
+        unsafe { computed_of::<bool>(h) }
+            .map(computed_value)
+            .unwrap_or_default()
     }
-}
-define_prim!(
-    hlp_blinc_computed_touch,
-    hl_blinc_computed_touch,
-    "PXblinc_computed__v"
-);
+    define_prim!(
+        hlp_blinc_computed_get_bool,
+        hl_blinc_computed_get_bool,
+        "PXblinc_computed__b"
+    );
 
-// ============================================================================
-// EFFECTS
-// ============================================================================
-// What a Haxe `Watch` tracks with: an effect whose body is a Haxe closure.
-// Blinc runs it once at creation and again, inside the graph lock, whenever
-// a signal or computed it read changes. The closure only reads and records;
-// reacting waits for the next flush, outside the lock.
-
-pub struct WatchEffect(Effect);
-
-impl WatchEffect {
-    fn release(&self) {
-        RELEASED_EFFECTS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(self.0);
+    #[unsafe(no_mangle)]
+    pub extern "C" fn hl_blinc_return_bool(v: i32) {
+        give(v != 0);
     }
-}
+    define_prim!(hlp_blinc_return_bool, hl_blinc_return_bool, "Pi_v");
 
-impl Drop for WatchEffect {
-    fn drop(&mut self) {
-        self.release();
+    // ============================================================================
+    // STRING SIGNALS
+    // ============================================================================
+    // Held in Rust as `Option<String>`, so property bindings can read them and
+    // null survives. They cross as NUL-terminated UTF-8, null as a null pointer.
+
+    fn opt_string_to_hl(s: Option<String>) -> *mut vbyte {
+        s.map_or(std::ptr::null_mut(), |s| string_to_hl(&s))
     }
-}
 
-/// Not to be called from inside a computation or effect: creating an effect
-/// takes the graph lock.
-#[unsafe(no_mangle)]
-pub extern "C" fn hl_blinc_effect(closure: *mut c_void) -> *mut c_void {
-    let closure = Rooted::new(closure);
-    let e = effect(move |_graph| unsafe { call_void(closure.get()) });
-    into_handle(WatchEffect(e))
-}
-define_prim!(hlp_blinc_effect, hl_blinc_effect, "PP_v_Xblinc_effect_");
-
-/// Stop an effect before its handle is collected; it is removed at the next
-/// flush, like a released computed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn hl_blinc_effect_release(h: *mut c_void) {
-    if let Some(w) = unsafe { handle_ref::<WatchEffect>(h) } {
-        w.release();
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_signal_string(initial: *const vbyte) -> *mut c_void {
+        into_handle(AnySignal::Str(new_state(unsafe {
+            opt_string_from(initial)
+        })))
     }
-}
-define_prim!(
-    hlp_blinc_effect_release,
-    hl_blinc_effect_release,
-    "PXblinc_effect__v"
-);
+    define_prim!(
+        hlp_blinc_signal_string,
+        hl_blinc_signal_string,
+        "PB_Xblinc_signal_"
+    );
 
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_signal_get_string(h: *mut c_void) -> *mut vbyte {
+        opt_string_to_hl(unsafe { state_of::<Option<String>>(h) }.and_then(read))
+    }
+    define_prim!(
+        hlp_blinc_signal_get_string,
+        hl_blinc_signal_get_string,
+        "PXblinc_signal__B"
+    );
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_signal_set_string(h: *mut c_void, v: *const vbyte) {
+        if let Some(s) = unsafe { state_of::<Option<String>>(h) } {
+            s.set(unsafe { opt_string_from(v) });
+        }
+    }
+    define_prim!(
+        hlp_blinc_signal_set_string,
+        hl_blinc_signal_set_string,
+        "PXblinc_signal_B_v"
+    );
+
+    // git-bug 2059910: lets a caller cache the decoded Haxe string and skip the
+    // UTF-8 round trip when the native value hasn't changed since it last read
+    // this version. Untracked — pair with `blinc_signal_touch` to still
+    // register the dependency.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_signal_string_version(h: *mut c_void) -> i32 {
+        unsafe { state_of::<Option<String>>(h) }
+            .and_then(|s| s.signal().version())
+            .map(|v| v as i32)
+            .unwrap_or(-1)
+    }
+    define_prim!(
+        hlp_blinc_signal_string_version,
+        hl_blinc_signal_string_version,
+        "PXblinc_signal__i"
+    );
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn hl_blinc_computed_string(closure: *mut c_void) -> *mut c_void {
+        into_handle(AnyComputed::Str(computed_from::<Option<String>>(closure)))
+    }
+    define_prim!(
+        hlp_blinc_computed_string,
+        hl_blinc_computed_string,
+        "PP_v_Xblinc_computed_"
+    );
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_computed_get_string(h: *mut c_void) -> *mut vbyte {
+        opt_string_to_hl(unsafe { computed_of::<Option<String>>(h) }.and_then(computed_value))
+    }
+    define_prim!(
+        hlp_blinc_computed_get_string,
+        hl_blinc_computed_get_string,
+        "PXblinc_computed__B"
+    );
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_return_string(v: *const vbyte) {
+        give(unsafe { opt_string_from(v) });
+    }
+    define_prim!(hlp_blinc_return_string, hl_blinc_return_string, "PB_v");
+
+    // ============================================================================
+    // VALUE SIGNALS (brush, color, radius, transform, shadow)
+    // ============================================================================
+    // Haxe keeps the wrapper object it set and returns that from `get`, so there
+    // are no value getters; `blinc_signal_touch` records the read.
+
+    /// # Safety
+    /// `h` must be null or a `blinc_value` handle.
+    unsafe fn value_of(h: *mut c_void) -> Value {
+        unsafe { handle_ref::<Value>(h) }
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_signal_value(initial: *mut c_void) -> *mut c_void {
+        into_handle(AnySignal::Value(new_state(unsafe { value_of(initial) })))
+    }
+    define_prim!(
+        hlp_blinc_signal_value,
+        hl_blinc_signal_value,
+        "PXblinc_value__Xblinc_signal_"
+    );
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_signal_set_value(h: *mut c_void, v: *mut c_void) {
+        if let Some(s) = unsafe { state_of::<Value>(h) } {
+            s.set(unsafe { value_of(v) });
+        }
+    }
+    define_prim!(
+        hlp_blinc_signal_set_value,
+        hl_blinc_signal_set_value,
+        "PXblinc_signal_Xblinc_value__v"
+    );
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn hl_blinc_computed_value(closure: *mut c_void) -> *mut c_void {
+        into_handle(AnyComputed::Value(computed_from::<Value>(closure)))
+    }
+    define_prim!(
+        hlp_blinc_computed_value,
+        hl_blinc_computed_value,
+        "PP_v_Xblinc_computed_"
+    );
+
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_return_value(v: *mut c_void) {
+        give(unsafe { value_of(v) });
+    }
+    define_prim!(
+        hlp_blinc_return_value,
+        hl_blinc_return_value,
+        "PXblinc_value__v"
+    );
+
+    // ============================================================================
+    // ANY TYPE
+    // ============================================================================
+
+    /// Read a signal for its side effect alone: inside a computation, recording
+    /// it as a dependency.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_signal_touch(h: *mut c_void) {
+        match unsafe { handle_ref::<AnySignal>(h) } {
+            Some(AnySignal::I32(s)) => {
+                read(s);
+            }
+            Some(AnySignal::F32(s)) => {
+                read(s);
+            }
+            Some(AnySignal::F64(s)) => {
+                read(s);
+            }
+            Some(AnySignal::Bool(s)) => {
+                read(s);
+            }
+            Some(AnySignal::Str(s)) => {
+                read(s);
+            }
+            Some(AnySignal::Value(s)) => {
+                read(s);
+            }
+            None => {}
+        }
+    }
+    define_prim!(
+        hlp_blinc_signal_touch,
+        hl_blinc_signal_touch,
+        "PXblinc_signal__v"
+    );
+
+    /// Release a computed before its handle is collected, as its owner does when
+    /// disposed. Queued like a finalizer's release, so it takes effect at the next
+    /// flush; releasing the same computed again is a no-op there.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_computed_release(h: *mut c_void) {
+        if let Some(c) = unsafe { handle_ref::<AnyComputed>(h) } {
+            c.release();
+        }
+    }
+    define_prim!(
+        hlp_blinc_computed_release,
+        hl_blinc_computed_release,
+        "PXblinc_computed__v"
+    );
+
+    /// Bring a computed up to date, running its closure if a dependency changed.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_computed_touch(h: *mut c_void) {
+        match unsafe { handle_ref::<AnyComputed>(h) } {
+            Some(AnyComputed::I32(c)) => {
+                c.try_get();
+            }
+            Some(AnyComputed::F32(c)) => {
+                c.try_get();
+            }
+            Some(AnyComputed::F64(c)) => {
+                c.try_get();
+            }
+            Some(AnyComputed::Bool(c)) => {
+                c.try_get();
+            }
+            Some(AnyComputed::Str(c)) => {
+                c.try_get();
+            }
+            Some(AnyComputed::Value(c)) => {
+                c.try_get();
+            }
+            None => {}
+        }
+    }
+    define_prim!(
+        hlp_blinc_computed_touch,
+        hl_blinc_computed_touch,
+        "PXblinc_computed__v"
+    );
+
+    // ============================================================================
+    // EFFECTS
+    // ============================================================================
+    // What a Haxe `Watch` tracks with: an effect whose body is a Haxe closure.
+    // Blinc runs it once at creation and again, inside the graph lock, whenever
+    // a signal or computed it read changes. The closure only reads and records;
+    // reacting waits for the next flush, outside the lock.
+
+    pub struct WatchEffect(Effect);
+
+    impl WatchEffect {
+        fn release(&self) {
+            RELEASED_EFFECTS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(self.0);
+        }
+    }
+
+    impl Drop for WatchEffect {
+        fn drop(&mut self) {
+            self.release();
+        }
+    }
+
+    /// Not to be called from inside a computation or effect: creating an effect
+    /// takes the graph lock.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn hl_blinc_effect(closure: *mut c_void) -> *mut c_void {
+        let closure = Rooted::new(closure);
+        let e = effect(move |_graph| unsafe { call_void(closure.get()) });
+        into_handle(WatchEffect(e))
+    }
+    define_prim!(hlp_blinc_effect, hl_blinc_effect, "PP_v_Xblinc_effect_");
+
+    /// Stop an effect before its handle is collected; it is removed at the next
+    /// flush, like a released computed.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn hl_blinc_effect_release(h: *mut c_void) {
+        if let Some(w) = unsafe { handle_ref::<WatchEffect>(h) } {
+            w.release();
+        }
+    }
+    define_prim!(
+        hlp_blinc_effect_release,
+        hl_blinc_effect_release,
+        "PXblinc_effect__v"
+    );
 }
 
 // ============================================================================

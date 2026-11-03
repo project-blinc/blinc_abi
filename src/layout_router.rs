@@ -607,7 +607,11 @@ pub(crate) fn bind_f32(
 ) {
     let node = LayoutNodeId::from_raw(node);
     if let Some((prop, write)) = f32_target(node, raw) {
-        let kind = if signal.is_some() { KIND_SIGNAL } else { KIND_COMPUTED };
+        let kind = if signal.is_some() {
+            KIND_SIGNAL
+        } else {
+            KIND_COMPUTED
+        };
         bind_to(node, prop, kind, <f32>::default(), signal, computed, write);
     }
 }
@@ -752,7 +756,11 @@ pub(crate) fn bind_i32(
 ) {
     let node = LayoutNodeId::from_raw(node);
     if let Some((prop, write)) = i32_target(node, raw) {
-        let kind = if signal.is_some() { KIND_SIGNAL } else { KIND_COMPUTED };
+        let kind = if signal.is_some() {
+            KIND_SIGNAL
+        } else {
+            KIND_COMPUTED
+        };
         bind_to(node, prop, kind, <i32>::default(), signal, computed, write);
     }
 }
@@ -888,8 +896,20 @@ pub(crate) fn bind_value(
 ) {
     let node = LayoutNodeId::from_raw(node);
     if let Some((prop, write)) = value_target(node, raw) {
-        let kind = if signal.is_some() { KIND_SIGNAL } else { KIND_COMPUTED };
-        bind_to(node, prop, kind, <Value>::default(), signal, computed, write);
+        let kind = if signal.is_some() {
+            KIND_SIGNAL
+        } else {
+            KIND_COMPUTED
+        };
+        bind_to(
+            node,
+            prop,
+            kind,
+            <Value>::default(),
+            signal,
+            computed,
+            write,
+        );
     }
 }
 
@@ -985,8 +1005,20 @@ pub(crate) fn bind_string(
 ) {
     let node = LayoutNodeId::from_raw(node);
     if let Some((prop, write)) = string_target(node, raw) {
-        let kind = if signal.is_some() { KIND_SIGNAL } else { KIND_COMPUTED };
-        bind_to(node, prop, kind, <Option<String>>::default(), signal, computed, write);
+        let kind = if signal.is_some() {
+            KIND_SIGNAL
+        } else {
+            KIND_COMPUTED
+        };
+        bind_to(
+            node,
+            prop,
+            kind,
+            <Option<String>>::default(),
+            signal,
+            computed,
+            write,
+        );
     }
 }
 

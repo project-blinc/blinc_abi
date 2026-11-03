@@ -117,9 +117,7 @@ impl Signal {
 
     /// Whether a text signal holds text.
     pub extern "C" fn has_text(this: &Signal) -> bool {
-        <Option<String>>::state(&this.0)
-            .and_then(read)
-            .is_some()
+        <Option<String>>::state(&this.0).and_then(read).is_some()
     }
 
     /// How many times a text signal changed, read without recording a dependency; -1 for another type.
@@ -234,7 +232,9 @@ impl Computed {
     }
 
     pub extern "C" fn get_int(this: &Computed) -> i32 {
-        i32::computed(&this.0).map(computed_value).unwrap_or_default()
+        i32::computed(&this.0)
+            .map(computed_value)
+            .unwrap_or_default()
     }
 
     pub extern "C" fn get_float(this: &Computed) -> f32 {

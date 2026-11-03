@@ -157,8 +157,7 @@ pub unsafe extern "C" fn hl_blinc_bitmap_resample(
         return false;
     }
     let _blocking = crate::hl::Blocking::enter();
-    let out =
-        unsafe { std::slice::from_raw_parts_mut(out, (width * height * 4) as usize) };
+    let out = unsafe { std::slice::from_raw_parts_mut(out, (width * height * 4) as usize) };
     resample_into(slot, width, height, fit, out)
 }
 #[cfg(feature = "hashlink")]
